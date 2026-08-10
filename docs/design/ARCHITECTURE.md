@@ -157,26 +157,42 @@ Output: human table by default, `--json` for CI/support. `doctor --fix` only per
 
 ### 4.3 Runtime Abstraction Layer ★ (the key decision)
 
-```
-interface Runtime {
-  Provision(ctx, ImageSpec) error            // one-time, idempotent
-  Destroy(ctx) error
-  Status(ctx) (RuntimeStatus, error)
+```go
+// L1. internal/runtime. Types only; implementations live in subpackages.
+type Runtime interface {
+	Provision(ctx context.Context, spec ImageSpec) error // one time, idempotent
+	Destroy(ctx context.Context) error
+	Status(ctx context.Context) (Status, error)
+	StartSession(ctx context.Context, spec SessionSpec) (Session, error)
+	Capabilities() Caps // {Networking, Systemd, MultiUser, Snapshotting, Privileged}
+}
 
-  StartSession(ctx, SessionSpec) (Session, error)
-
-  // Session
-  Exec(ctx, cmd []string, opts ExecOpts) (stdout, stderr []byte, exit int, err error)   // non-interactive probe
-  Attach(ctx, AttachOpts) (PtyHandle, error)                                            // interactive user shell
-  PushFiles(ctx, manifest FileManifest) error
-  PullFile(ctx, path string) ([]byte, error)
-
-  Snapshot(ctx, name string) (SnapshotRef, error)
-  Restore(ctx, ref SnapshotRef) error
-
-  Capabilities() Caps   // {Networking, Systemd, Privileged, MultiUser, Cgroups, Snapshotting}
+type Session interface {
+	Exec(ctx context.Context, argv []string, opts ExecOpts) (ExecResult, error) // non-interactive probe
+	Attach(ctx context.Context, opts AttachOpts) (PTY, error)                   // interactive user shell
+	PushFiles(ctx context.Context, m FileManifest) error
+	PullFile(ctx context.Context, path string) ([]byte, error)
+	Close() error
 }
 ```
+
+The code block above is the interface as implemented in issue #6, not the
+original sketch from this design document; that sketch was replaced in place
+and survives only in the file history (`git log -p` on this file). The code
+is now the authority, and it changed from that superseded sketch as follows:
+
+- `Session` is its own interface. A session has a lifetime and a `Close`; a
+  runtime does not.
+- `Exec` returns one `ExecResult` rather than four values, so it can also carry
+  `Duration` and `TimedOut`. The streams stay separate inside it, because a
+  combined output field makes a precise script-check diagnostic impossible.
+- `RuntimeStatus` is `Status` and `PtyHandle` is `PTY`, matching the initialism
+  rule in the go-style skill. `PTY` is declared at L1 so no runtime has to
+  import L2.
+- `Snapshot` and `Restore` are gone. v0.1 resets by wiping the scratch
+  directory on both backends, so keeping them would only mean two
+  implementations of `ErrNotSupported`. Add them when a caller exists.
+- `Caps.Cgroups` is gone. No level declares it and no backend reports it.
 
 `Capabilities()` is essential: a level declares `requires: [systemd, networking]` and the loader filters/greys-out levels the current runtime can't support. This is how you degrade gracefully instead of failing mysteriously.
 

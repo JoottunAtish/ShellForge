@@ -5,7 +5,7 @@ push, get CI green, and add a line here. No silent carry-over. If an exit criter
 is unchecked the next morning, it either gets done before new work or it gets
 formally cut.
 
-**Current state: Day 0 complete. No engine yet.**
+**Current state: Day 0 complete. Day 1 started: the runtime interface exists, no backend behind it yet.**
 
 ---
 
@@ -23,7 +23,7 @@ formally cut.
 | Sandbox image | `Containerfile` written, not yet built |
 | Shell instrumentation | `instrument.bash` written, not yet exercised |
 | Content pack | `pack.yaml` with six acts declared. Zero levels written. |
-| Runtimes | Not started |
+| Runtimes | `Runtime` and `Session` interfaces plus their value types and sentinel errors are defined in `internal/runtime`. No backend implemented. |
 | PTY multiplexer and OSC parser | Not started |
 | Verification engine | Not started |
 | Progress database | Not started |
@@ -131,6 +131,46 @@ Landed after the scaffold, before Day 1 work started. No engine code touched.
   does not decay the first time somebody adds a step. Verified against a
   deliberate tag pin. It has its own pytest suite under `scripts/tests/`, which is
   the first Python test in the repository and runs in the Style job.
+
+### Day 1, 2026-08-10: the runtime interface
+
+Issue #6. Types only, no behaviour, so nothing new runs yet.
+
+- `internal/runtime` now declares `Runtime` and `Session`, plus `ImageSpec`,
+  `SessionSpec`, `ExecOpts`, `ExecResult`, `AttachOpts`, `PTY`, `FileManifest`,
+  `FileEntry`, `Caps`, and `Status`, and the three sentinel errors.
+- `PTY` lives at L1 rather than in `internal/pty`, so that a runtime never has
+  to import L2. `internal/pty` consumes the interface, it does not own it.
+- `Exec` takes `argv []string` and there is no string form anywhere in the
+  package. A test parses the package source and fails on an exported function
+  or method regardless of receiver, or on a bare string parameter named like a
+  command on any interface the package declares (not a hardcoded list of
+  three), so a convenience overload cannot arrive quietly later.
+- `Snapshot` and `Restore` were left off deliberately. Reset wipes the scratch
+  directory on both backends and no caller needs them, so adding them now would
+  only buy two implementations of `ErrNotSupported`.
+- The allowlist requirement on `ImageSpec.Name`, on every `User` field, and on
+  `FileEntry.Path` is in the doc comments, and a test walks every exported
+  struct field by name so a new field called `Name`, `User`, or `Path` on a
+  future type is covered automatically rather than by a hardcoded table. The
+  allowlist regexp is `^[a-zA-Z0-9][a-zA-Z0-9_-]*$`, which additionally
+  refuses a leading hyphen so a validated value cannot be mistaken for a flag.
+  This is stricter than the regexp still quoted in the ticket and in the
+  security skill; those need a follow-up so the three do not drift apart. The
+  destroy path that will trust `ImageSpec.Name` has not been written yet, and
+  `Destroy` is now documented as idempotent, matching `Provision`, so that
+  path can call it without checking `Status` first.
+- Sentinel error identity is now covered two ways: by position rather than by
+  value in the wrapping test, so an accidental alias of one sentinel to
+  another cannot hide by being skipped as `this test's own sentinel`, and by a
+  direct pairwise comparison that fails on its own line if two sentinels are
+  ever the same value.
+- A reflect-based table pins the field count and the field types of every
+  value type in the ticket, so a deleted field, a renamed field, or a retyped
+  field (`fs.FileMode` silently becoming `uint32`, for example) fails even
+  though nothing else in the package changed.
+- Still zero dependencies. The package builds against the standard library
+  alone.
 
 ---
 
