@@ -46,7 +46,8 @@ GATE_NAME = "All checks green"
 # comment is invisible to a YAML parse, so the pinning pass reads raw lines: it
 # needs the comment, and it needs a line number to put in the failure message.
 USES_LINE_RE = re.compile(
-    r"^\s*(?:-\s+)?uses:\s*(?P<ref>\S+)(?:\s+#\s*(?P<comment>.*?))?\s*$"
+    r"^\s*(?:-\s+)?uses:\s*(?P<quote>[\"']?)(?P<ref>[^\"'\s]+)(?P=quote)"
+    r"(?:\s+#\s*(?P<comment>.*?))?\s*$"
 )
 
 # Lowercase only. Two spellings of one commit make a diff harder to read and give
