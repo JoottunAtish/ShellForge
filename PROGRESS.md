@@ -208,6 +208,46 @@ Issue #7. First working code in `internal/pty`.
   user-facing wrapping.
 - Still zero dependencies.
 
+### Day 1 follow-ups, 2026-08-10: OSC parser review fixes
+
+Three reviewers audited the parser branch. This pass applies the adjudicated
+findings. No behavior change to decoding; the fixes are new rejections, a
+tightened exit code bound, and test coverage.
+
+- The OSC 7 wire-format mismatch between the parser and
+  `images/rc/instrument.bash` is now documented in `recognize`'s comment and
+  pinned with hostile test rows, not fixed. The parser percent-decodes per
+  `url.PathUnescape`, which is correct: an OSC 7 payload is a file:// URI and a
+  URI is percent-encoded by definition. `instrument.bash:68` still emits `$PWD`
+  raw. Today, a path containing a bare `%` fails to decode and is forwarded as
+  an unrecognized OSC instead of reported. **Cwd reporting does not work end to
+  end for a path containing a literal `%`.** Fixing the producer is issue #25,
+  not done here.
+- `overflowWithHeldEsc` had zero test coverage: nothing in the suite called
+  the exact path that reaches it, a payload at `MaxOSCPayload` with an ESC
+  held mid-decision. Added, and verified against a deliberate regression
+  before committing.
+- The fuzz invariants only checked subsequence, which a byte-dropping parser
+  could still satisfy. Added an identity check for ESC-free input and a
+  byte-identical check whenever zero events fire.
+- `CommandDone.ExitCode` accepted anything up to `MaxInt64`. A wait status is
+  0-255, so anything larger is now rejected as unrecognized rather than
+  reported.
+- `Event.Cwd` reached the caller with no content validation: a percent escape
+  or a raw smuggled ESC could put a C0 control byte or DEL into a path string
+  handed to L3 and L4. Both routes are now rejected outright rather than
+  sanitized.
+- Pinned the `PathUnescape` over `QueryUnescape` decision with a test: a
+  literal `+` in a path must stay a `+`, not become a space.
+- Fixed a test that looked like it exercised the nil-writer substitution in
+  `NewParser` but did not: it wrote only a fully recognized marker, which is
+  stripped before ever reaching `p.out.Write`.
+- Opened issue #26 (upload fuzz crashers as a CI artifact, needs a pinned
+  Action SHA outside this session's reach) and issue #27 (re-capture the vim
+  fixture inside the sandbox image, needs Docker). Neither is done here.
+  Issue #22 tracks ratifying the ten Parser contract decisions from this
+  branch; also not done here, adjudication only.
+
 ---
 
 ## Day 1: the spike

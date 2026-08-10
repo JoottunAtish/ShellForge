@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -60,9 +61,19 @@ func (k EventKind) String() string {
 // noted against the journal and verify tickets.
 type Event struct {
 	Kind     EventKind
-	ExitCode int       // CommandDone only
-	Cwd      string    // CwdReport only, already percent-decoded, always begins with "/"
-	At       time.Time // stamped when the terminator byte is consumed
+	ExitCode int // CommandDone only
+
+	// Cwd, on a CwdReport event, is percent-decoded, begins with "/", and
+	// contains no C0 control byte (0x00-0x1f) and no DEL (0x7f). A payload
+	// that would decode to any of those, whether through a percent escape
+	// such as "%0d" or "%1b", or through a raw ESC smuggled into the
+	// payload ahead of decoding, is rejected outright: recognize returns
+	// false, so no Event is emitted and the bytes are forwarded as an
+	// unrecognized OSC sequence instead. The next layer can rely on this
+	// without checking it again.
+	Cwd string
+
+	At time.Time // stamped when the terminator byte is consumed
 }
 
 // state is the parser's position in the escape sequence grammar.
@@ -306,7 +317,11 @@ func recognize(payload []byte) (Event, bool) {
 			return Event{}, false
 		}
 		n, err := strconv.Atoi(string(rest))
-		if err != nil {
+		// A wait status is 0-255: 0-127 for a normal exit and 128+signal for
+		// a death by signal. Anything larger did not come from a shell, so
+		// it is forwarded as unrecognized rather than reported as a
+		// completion.
+		if err != nil || n > 255 {
 			return Event{}, false
 		}
 		return Event{Kind: CommandDone, ExitCode: n}, true
@@ -324,11 +339,40 @@ func recognize(payload []byte) (Event, bool) {
 		// "quest" today while the WSL backend may report a different
 		// hostname.
 		//
+		// Wire format contract: an OSC 7 payload is a file:// URI, and a URI
+		// is percent-encoded by definition, so the producer MUST
+		// percent-encode the path before writing it here. This decoding side
+		// is correct and does not change to accommodate a producer that gets
+		// it wrong. images/rc/instrument.bash:68 does not yet encode the
+		// path: it writes printf '\e]7;file://quest%s\a' "$PWD" with $PWD
+		// raw. Issue #25 tracks fixing the producer.
+		//
+		// The practical consequence today: a path containing a bare '%' that
+		// is not part of a valid escape, for example a directory literally
+		// named "50%off", fails url.PathUnescape below. The whole payload is
+		// then unrecognized, so it is forwarded to the terminal as an
+		// unrecognized OSC sequence rather than reported as a CwdReport
+		// event. This is not a decoding bug: it is the producer mismatch
+		// made visible. A raw-path fallback was proposed and rejected,
+		// because it would make a directory literally named "a%20b"
+		// permanently ambiguous with a directory named "a b" once the
+		// producer is fixed to encode correctly.
+		//
 		// url.PathUnescape, not url.QueryUnescape: QueryUnescape maps '+' to
 		// a space and would rename a directory literally called "a+b" to
 		// "a b", silently wrong.
 		dec, err := url.PathUnescape(string(rest[i:]))
 		if err != nil {
+			return Event{}, false
+		}
+		// dec reaches L3 and L4 unexamined otherwise. A percent escape can
+		// decode to anything: "%0d%1b[2J" decodes to a CR followed by an
+		// ESC-introduced CSI clear, and "%00" decodes to a NUL. A raw ESC
+		// can also arrive with no encoding at all, because the
+		// stateOSCEsc re-dispatch appends a non-ST ESC straight into the
+		// payload. Reject rather than sanitize: the caller should not be
+		// handed a "cleaned" path that a shell would have rejected too.
+		if strings.ContainsFunc(dec, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
 			return Event{}, false
 		}
 		return Event{Kind: CwdReport, Cwd: dec}, true

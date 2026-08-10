@@ -117,8 +117,22 @@ func FuzzParser(f *testing.F) {
 		if !isSubsequence(whole, in) {
 			t.Fatalf("forwarded bytes %q are not a subsequence of input %q", whole, in)
 		}
-		if len(whole) > len(in) {
-			t.Fatalf("forwarded %d bytes exceeds input length %d", len(whole), len(in))
+		// A stream with no ESC in it contains no sequence to strip, so the
+		// parser must be the identity function on it. isSubsequence alone
+		// would accept a parser that silently dropped bytes here.
+		if !bytes.Contains(in, []byte{0x1b}) {
+			if !bytes.Equal(whole, in) {
+				t.Fatalf("no ESC in input but output %q differs from input %q", whole, in)
+			}
+			if len(wholeEvents) != 0 {
+				t.Fatalf("no ESC in input but got %d events: %+v", len(wholeEvents), wholeEvents)
+			}
+		}
+		// Stripping only ever happens for a recognized marker, so no events
+		// means nothing was stripped and the passthrough must be byte
+		// identical.
+		if len(wholeEvents) == 0 && !bytes.Equal(whole, in) {
+			t.Fatalf("0 events but output %q differs from input %q", whole, in)
 		}
 		for _, e := range wholeEvents {
 			switch e.Kind {
@@ -127,8 +141,8 @@ func FuzzParser(f *testing.F) {
 					t.Fatalf("event %s carries unexpected payload: %+v", e.Kind, e)
 				}
 			case CommandDone:
-				if e.ExitCode < 0 {
-					t.Fatalf("CommandDone with negative ExitCode: %+v", e)
+				if e.ExitCode < 0 || e.ExitCode > 255 {
+					t.Fatalf("CommandDone with ExitCode outside 0-255: %+v", e)
 				}
 			case CwdReport:
 				if !strings.HasPrefix(e.Cwd, "/") {

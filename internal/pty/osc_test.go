@@ -40,6 +40,7 @@ func recognizedCases() []struct {
 		{"cwd percent slash", "\x1b]7;file://quest/home/a%2Fb\x07", Event{Kind: CwdReport, Cwd: "/home/a/b"}},
 		{"cwd empty host", "\x1b]7;file:///home/learner\x07", Event{Kind: CwdReport, Cwd: "/home/learner"}},
 		{"cwd other host", "\x1b]7;file://sandbox/srv\x07", Event{Kind: CwdReport, Cwd: "/srv"}},
+		{"cwd literal plus", "\x1b]7;file://quest/home/learner/c++\x07", Event{Kind: CwdReport, Cwd: "/home/learner/c++"}},
 	}
 }
 
@@ -63,11 +64,33 @@ func hostileCases() []struct {
 		{"done negative", "\x1b]133;D;-1\x07"},
 		{"done leading plus", "\x1b]133;D;+1\x07"},
 		{"done out of range", "\x1b]133;D;99999999999999999999\x07"},
+		// A wait status is 0-255. This parses cleanly as an int but exceeds
+		// that range, so it is forwarded as unrecognized rather than
+		// reported as a completion.
+		{"done exit code above 255", "\x1b]133;D;256\x07"},
 		{"cwd no scheme", "\x1b]7;/home/learner\x07"},
 		{"cwd wrong scheme", "\x1b]7;http://quest/home\x07"},
 		{"cwd bad percent", "\x1b]7;file://quest/home/%zz\x07"},
 		{"cwd truncated percent", "\x1b]7;file://quest/home/%2\x07"},
 		{"cwd no path separator", "\x1b]7;file://quest\x07"},
+		// The next two rows pin a KNOWN MISMATCH, not a desired end state.
+		// instrument.bash emits $PWD raw, unencoded, but the OSC 7 payload
+		// is a file:// URI and this parser correctly percent-decodes it per
+		// url.PathUnescape. A bare '%' that is not part of a valid escape
+		// fails to unescape, so the marker goes unrecognized today and is
+		// forwarded rather than reported. Issue #25 tracks fixing the
+		// producer to percent-encode the path; once it does, these rows
+		// stop being reachable and should be removed rather than updated.
+		{"cwd unencoded bare percent at end", "\x1b]7;file://quest/home/learner/100%\x07"},
+		{"cwd unencoded percent mid path", "\x1b]7;file://quest/home/learner/50%off\x07"},
+		// Both rows below reach recognize's OSC 7 branch and decode fine as
+		// far as url.PathUnescape is concerned, but the decoded path
+		// contains a C0 control byte, so it is rejected outright: no Event,
+		// bytes forwarded unrecognized. One route is a percent escape
+		// decoding to control bytes, the other is a raw ESC smuggled into
+		// the payload with no encoding at all.
+		{"cwd percent encoded control bytes", "\x1b]7;file://quest/tmp%0d%1b[2J\x07"},
+		{"cwd raw esc in payload no encoding", "\x1b]7;file://quest/tmp\x1bX\x07"},
 		{"window title zero", "\x1b]0;my title\x07"},
 		{"esc then non backslash in payload", "\x1b]133;A\x1bX\x07"},
 		{"esc esc backslash in payload", "\x1b]0;a\x1b\x1b\\"},
@@ -258,6 +281,10 @@ func stripRecognized(session string) string {
 // shellforge marker, so byte identity here is a strict equality with zero bytes
 // added and zero removed. Regenerate it the same way if vim's output ever needs
 // refreshing, and expect the counts in TestVimFixtureIsUnmodified to change.
+//
+// TODO(v0.2): re-capture this inside the sandbox image via script -q once a
+// Docker daemon is available, per issue #27. This capture came from local vim
+// and therefore does not pin vim's version, TERM, or locale to the image.
 func TestParserVimSessionByteIdentical(t *testing.T) {
 	in, err := os.ReadFile(filepath.Join("testdata", "vim-session.bin"))
 	if err != nil {
@@ -504,6 +531,90 @@ func TestParserPayloadCapOverflow(t *testing.T) {
 	}
 }
 
+// TestParserOverflowWithHeldEsc exercises overflowWithHeldEsc directly: a
+// payload that reaches MaxOSCPayload while an ESC is held in stateOSCEsc,
+// deciding whether it introduces ST, followed by a byte that is not a
+// backslash. osc.go:277 has no other caller and nothing else in this suite
+// reaches it. Verified against a deliberate regression: swapping the
+// p.overflowWithHeldEsc() call at osc.go:225 for p.overflow() silently drops
+// the held ESC, 4099 bytes out instead of 4100, and the rest of the suite
+// stays green. This test exists to catch exactly that.
+func TestParserOverflowWithHeldEsc(t *testing.T) {
+	heldEsc := "\x1b]" + strings.Repeat("x", MaxOSCPayload) + "\x1bZ"
+
+	for _, chunk := range []int{0, 1, 4095, 4096, 4097} {
+		t.Run(fmt.Sprintf("chunk-%d", chunk), func(t *testing.T) {
+			var out bytes.Buffer
+			var got []Event
+			p := NewParser(&out, func(e Event) { got = append(got, e) })
+			b := []byte(heldEsc)
+			c := chunk
+			if c <= 0 {
+				c = len(b)
+			}
+			for i := 0; i < len(b); i += c {
+				end := i + c
+				if end > len(b) {
+					end = len(b)
+				}
+				if _, err := p.Write(b[i:end]); err != nil {
+					t.Fatalf("chunk %d: Write: unexpected error: %v", chunk, err)
+				}
+			}
+			if err := p.Flush(); err != nil {
+				t.Fatalf("chunk %d: Flush: unexpected error: %v", chunk, err)
+			}
+			if out.String() != heldEsc {
+				t.Fatalf("chunk %d: want %q forwarded verbatim, got %q", chunk, heldEsc, out.String())
+			}
+			if len(got) != 0 {
+				t.Fatalf("chunk %d: want 0 events, got %d: %+v", chunk, len(got), got)
+			}
+		})
+	}
+}
+
+// TestParserPayloadCapBoundary pins MaxOSCPayload itself. A payload of
+// exactly MaxOSCPayload bytes followed by a terminator is not an overflow at
+// all: the terminator cases in step's stateOSC branch are matched before the
+// default overflow branch runs, so it resolves normally as an unrecognized
+// payload. One byte more and the cap is reached before the terminator byte
+// is ever seen, so that byte overflows instead. Both end up forwarding the
+// input verbatim with zero events, since an unrecognized payload and an
+// abandoned one are both forwarded whole either way; the two rows exist to
+// pin which path 4096 bytes takes, not to assume it.
+func TestParserPayloadCapBoundary(t *testing.T) {
+	atCap := "\x1b]" + strings.Repeat("x", MaxOSCPayload) + "\x07"
+	oneOver := "\x1b]" + strings.Repeat("x", MaxOSCPayload+1) + "\x07"
+
+	cases := []struct {
+		name string
+		in   string
+	}{
+		{"exactly at cap terminates normally", atCap},
+		{"one byte over cap overflows instead", oneOver},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var out bytes.Buffer
+			var got []Event
+			p := NewParser(&out, func(e Event) { got = append(got, e) })
+			if _, err := p.Write([]byte(c.in)); err != nil {
+				t.Fatalf("Write: unexpected error: %v", err)
+			}
+			if err := p.Flush(); err != nil {
+				t.Fatalf("Flush: unexpected error: %v", err)
+			}
+			if out.String() != c.in {
+				t.Fatalf("want %d bytes forwarded verbatim, got %d", len(c.in), out.Len())
+			}
+			if len(got) != 0 {
+				t.Fatalf("want 0 events, got %d: %+v", len(got), got)
+			}
+		})
+	}
+}
+
 // TestParserRecoversAfterHostileSequence: every hostile row followed by a
 // genuine marker must still yield exactly that marker's event, proving the
 // hostile input left no residue in parser state.
@@ -733,6 +844,14 @@ func TestParserNilOnEventAndNilOut(t *testing.T) {
 	t.Run("nil out", func(t *testing.T) {
 		var got []Event
 		p := NewParser(nil, func(e Event) { got = append(got, e) })
+		// "plain text and ... an unrecognized osc" must be forwarded, which
+		// is what actually exercises the nil writer: a fully recognized
+		// marker such as "\x1b]133;B\x07" alone is stripped entirely and
+		// never reaches p.out.Write, so it would leave NewParser's nil-out
+		// substitution untested on its own.
+		if _, err := p.Write([]byte("plain text and \x1b]0;a title\x07 an unrecognized osc")); err != nil {
+			t.Fatalf("Write: unexpected error: %v", err)
+		}
 		if _, err := p.Write([]byte("\x1b]133;B\x07")); err != nil {
 			t.Fatalf("Write: unexpected error: %v", err)
 		}
