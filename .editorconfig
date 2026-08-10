@@ -1,0 +1,45 @@
+# Shellforge editor configuration.
+# Line endings are enforced by .gitattributes as well. Both exist on purpose:
+# .gitattributes fixes what lands in the repository, .editorconfig fixes what your
+# editor writes in the first place.
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+max_line_length = off
+
+[*.go]
+indent_style = tab
+indent_size = 4
+
+[Makefile]
+indent_style = tab
+indent_size = 4
+
+[*.{sh,bash}]
+indent_style = space
+indent_size = 2
+
+# Windows tooling wants CRLF.
+[*.{ps1,psm1,bat,cmd}]
+end_of_line = crlf
+
+[*.md]
+# Two trailing spaces are a hard line break in Markdown.
+trim_trailing_whitespace = false
+
+[*.{yaml,yml}]
+indent_style = space
+indent_size = 2
+
+# Level assets are fixtures. Byte-for-byte fidelity matters more than tidiness,
+# because checks hash them.
+[packs/**/assets/**]
+insert_final_newline = false
+trim_trailing_whitespace = false

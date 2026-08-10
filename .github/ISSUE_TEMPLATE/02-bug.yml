@@ -1,0 +1,75 @@
+name: Bug
+description: Something in the game behaves incorrectly.
+title: "[bug] "
+labels: [bug, needs-triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For a security issue, do **not** open a public issue. Use private
+        vulnerability reporting instead. See
+        [SECURITY.md](../../SECURITY.md).
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. shellforge run pipe-05
+        2. type: grep -ri ERROR logs/ | wc -l > report.txt
+        3. type: check
+        4. it reports ...
+    validations:
+      required: true
+
+  - type: input
+    id: level
+    attributes:
+      label: Level id, if this happened during a level
+      placeholder: pipe-05
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `shellforge version`.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Runtime
+      options:
+        - WSL2 (Windows)
+        - Docker (Linux)
+        - Docker Desktop (Windows)
+        - Podman (Linux)
+        - Docker or Colima (macOS, community supported)
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: bugreport
+    attributes:
+      label: Diagnostics
+      description: >-
+        `shellforge bug-report` bundles doctor output, logs, versions, and a
+        redacted command journal. It contains the commands you ran but not their
+        output. Attach the zip if you can.
+      render: shell

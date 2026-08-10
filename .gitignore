@@ -1,0 +1,59 @@
+# Build output
+/bin/
+/dist/
+/build/
+shellforge
+shellforge.exe
+*.exe
+*.test
+*.out
+
+# Never commit sandbox artifacts. A rootfs tarball is 40-120 MB and a vhdx is 2 GB.
+*.tar
+*.tar.gz
+*.tgz
+*.vhdx
+/images/out/
+/rootfs*
+
+# Local progress and state
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+/state/
+/.shellforge/
+
+# Go
+/vendor/
+go.work
+go.work.sum
+coverage.out
+coverage.html
+*.prof
+/testdata/tmp/
+
+# Editors and OS
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Secrets. Nothing in this project should need one, which is why an accidental
+# commit would be worth catching.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Scratch
+/tmp/
+/scratch/
+*.log
+!packs/**/assets/*.log

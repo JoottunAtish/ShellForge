@@ -1,0 +1,41 @@
+version: 2
+
+updates:
+  # Go modules. Reviewed, never auto-merged: a dependency bump is a supply chain
+  # event and go.sum changes must go through code review. See SECURITY.md.
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    labels:
+      - dependencies
+
+  # The Actions used in CI are themselves a supply chain surface.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+    labels:
+      - dependencies
+      - ci
+
+  # The sandbox base image. A Debian security update here reaches every learner.
+  - package-ecosystem: docker
+    directory: "/images"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "image"
+    labels:
+      - dependencies
+      - sandbox

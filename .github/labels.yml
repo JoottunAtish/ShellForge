@@ -1,0 +1,157 @@
+# Shellforge issue and pull request labels.
+#
+# This file is the source of truth. The labels on GitHub are generated from it:
+#
+#   ./scripts/sync-labels.sh
+#
+# Rules for using them are in CLAUDE.md under "GitHub conventions".
+#
+# Every issue gets exactly one `type:` label. Area, platform and status labels
+# are added as they apply. Keep the set small: a taxonomy nobody can hold in
+# their head does not get used.
+
+# ---------------------------------------------------------------------------
+# Type. Exactly one per issue. What kind of work is this?
+# ---------------------------------------------------------------------------
+- name: "type: bug"
+  color: "d73a4a"
+  description: "Something behaves incorrectly"
+
+- name: "type: install"
+  color: "b60205"
+  description: "Someone could not install it. The highest value report we receive."
+
+- name: "type: content"
+  color: "0e8a16"
+  description: "A level, the curriculum, or level assets"
+
+- name: "type: feature"
+  color: "a2eeef"
+  description: "New capability"
+
+- name: "type: docs"
+  color: "0075ca"
+  description: "Documentation"
+
+- name: "type: ci"
+  color: "ededed"
+  description: "Build, CI, packaging, or tooling"
+
+- name: "type: refactor"
+  color: "c5def5"
+  description: "Internal change with no behaviour change"
+
+- name: "type: security"
+  color: "b60205"
+  description: "Security relevant. See SECURITY.md before opening one publicly."
+
+# ---------------------------------------------------------------------------
+# Area. Maps to the layer architecture in CLAUDE.md.
+# ---------------------------------------------------------------------------
+- name: "area: runtime"
+  color: "1d76db"
+  description: "L1. Docker and WSL backends, provisioning"
+
+- name: "area: pty"
+  color: "1d76db"
+  description: "L2. PTY multiplexer and the OSC 133 parser"
+
+- name: "area: verify"
+  color: "1d76db"
+  description: "L3. Check registry and the verification engine"
+
+- name: "area: content-engine"
+  color: "1d76db"
+  description: "L3. Pack loading, validation, setup and teardown"
+
+- name: "area: game"
+  color: "1d76db"
+  description: "L4. Orchestrator, scoring, hints, achievements"
+
+- name: "area: store"
+  color: "1d76db"
+  description: "L0. SQLite and migrations"
+
+- name: "area: doctor"
+  color: "1d76db"
+  description: "L0. Preflight diagnostics"
+
+- name: "area: cli"
+  color: "1d76db"
+  description: "L5. Commands and output rendering"
+
+- name: "area: sandbox-image"
+  color: "1d76db"
+  description: "Containerfile, rootfs, shell instrumentation"
+
+# ---------------------------------------------------------------------------
+# Platform. Only when the problem is platform specific.
+# ---------------------------------------------------------------------------
+- name: "platform: windows"
+  color: "5319e7"
+  description: "Windows and WSL specific"
+
+- name: "platform: linux"
+  color: "5319e7"
+  description: "Linux specific"
+
+- name: "platform: macos"
+  color: "5319e7"
+  description: "macOS specific. Community supported, not maintainer tested."
+
+# ---------------------------------------------------------------------------
+# Severity and status.
+# ---------------------------------------------------------------------------
+- name: "needs-triage"
+  color: "fbca04"
+  description: "Not yet looked at. Applied automatically by the issue templates."
+
+- name: "beginner-blocker"
+  color: "b60205"
+  description: "Stops a first-time user cold. Prioritise above everything else."
+
+- name: "accepts-wrong-answer"
+  color: "b60205"
+  description: "A level passes something it should reject. Treat as a correctness bug."
+
+- name: "blocked"
+  color: "d93f0b"
+  description: "Waiting on something outside this repository"
+
+- name: "needs-info"
+  color: "fbca04"
+  description: "Waiting on the reporter"
+
+- name: "wontfix"
+  color: "ffffff"
+  description: "Deliberate. The reasoning goes in a closing comment."
+
+- name: "duplicate"
+  color: "cfd3d7"
+  description: "Already tracked elsewhere. Link the original."
+
+# ---------------------------------------------------------------------------
+# Contributor signals.
+# ---------------------------------------------------------------------------
+- name: "good first issue"
+  color: "7057ff"
+  description: "Small, well scoped, and does not need deep context"
+
+- name: "help wanted"
+  color: "008672"
+  description: "Maintainer would welcome a pull request"
+
+- name: "dependencies"
+  color: "0366d6"
+  description: "Dependency updates. Raised by Dependabot."
+
+# ---------------------------------------------------------------------------
+# Scope management. From the cut ladder in the build plan.
+# ---------------------------------------------------------------------------
+- name: "cut: v0.2"
+  color: "e4e669"
+  description: "Deliberately deferred past v0.1. Not a bug, a decision."
+
+- name: "never-cut"
+  color: "0e8a16"
+  description: "Doctor, install docs, golden tests, reset, sandbox isolation"

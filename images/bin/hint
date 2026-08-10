@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# In-sandbox shim: reveal the next hint tier.
+#
+# Prints the cost first and asks for confirmation before spending XP. Passing
+# --reveal jumps straight to the solution tier.
+set -euo pipefail
+exec /opt/shellforge/bin/_sf-request hint "$@"

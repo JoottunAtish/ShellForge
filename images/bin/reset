@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# In-sandbox shim: rebuild this level's world from scratch.
+#
+# This is the escape hatch that makes the whole product safe to promise. It
+# tears down setup.root and re-runs setup, which is sub-second. It never touches
+# anything outside the level root.
+set -euo pipefail
+exec /opt/shellforge/bin/_sf-request reset "$@"

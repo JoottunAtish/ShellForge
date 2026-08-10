@@ -1,0 +1,193 @@
+# Progress
+
+One line per working session. The rule from the build plan: every evening, commit,
+push, get CI green, and add a line here. No silent carry-over. If an exit criterion
+is unchecked the next morning, it either gets done before new work or it gets
+formally cut.
+
+**Current state: Day 0 complete. No engine yet.**
+
+---
+
+## What actually works today
+
+| Area | State |
+|---|---|
+| Repository scaffold | Done. Builds, vets, and tests clean. |
+| `go build ./...` | Green |
+| `go vet ./...` | Green |
+| `go test ./...` | Green |
+| Layer dependency enforcement | Done, and verified to fail on a deliberate violation |
+| Punctuation gate | Done, and verified to fail on a deliberate violation |
+| CLI dispatcher | Skeleton. Every verb is registered; `version` and `help` work, the rest report that they are not built yet. |
+| Sandbox image | `Containerfile` written, not yet built |
+| Shell instrumentation | `instrument.bash` written, not yet exercised |
+| Content pack | `pack.yaml` with six acts declared. Zero levels written. |
+| Runtimes | Not started |
+| PTY multiplexer and OSC parser | Not started |
+| Verification engine | Not started |
+| Progress database | Not started |
+| Documentation | Design record complete. User docs are outlines. |
+| Engineering rules | `CLAUDE.md` index plus 13 on-demand skills under `.claude/skills/` |
+| Link checker | Done, and verified to catch a broken relative link |
+| Label taxonomy | 32 labels defined in `.github/labels.yml`, synced with a script |
+| Issue templates | Four forms, including a self-contained implementation ticket |
+| MCP servers | `.mcp.json` auto-connects jCodemunch and jDocmunch |
+
+**There is no release and nothing to install.**
+
+---
+
+## Log
+
+### Day 0, 2026-08-10: setup
+
+Repository initialised and structured. Nothing is running yet, which is correct for
+Day 0.
+
+Done:
+
+- `.gitattributes` committed first, before any other file, per the plan mandate.
+- Eight design documents restructured from a flat pile of numbered files into
+  `CLAUDE.md` at the root, the two living contracts under `docs/`, and the design
+  record under `docs/design/`.
+- All typographic punctuation removed repository-wide: 269 substitutions across the
+  eight documents. Em dashes, en dashes, curly quotes, and non-breaking spaces are
+  now banned by Rule 0 in `CLAUDE.md` and enforced by
+  `scripts/check-punctuation.sh` in CI.
+- `CLAUDE.md` extended with the typography rule, a Go style section grounded in the
+  Google Go Style Guide, and a security section covering the subprocess, path
+  handling, and supply chain rules that this codebase actually needs.
+- Go module `github.com/JoottunAtish/ShellForge`, Go 1.23 floor, zero dependencies.
+  The scaffold builds against the standard library alone so CI is green from the
+  first commit with no module download.
+- Layer packages created with `doc.go` files stating each package's layer and what
+  it must not import.
+- `internal/archtest` enforces the layer rule by parsing every import in the module.
+  Verified against a deliberate violation: it caught both the runtime
+  implementation leak and a `net/http` import at the game layer.
+- CLI skeleton with all twelve verbs from the brief registered, plus tests
+  asserting the table stays honest.
+- `Makefile` plus `make.ps1`, because `make` is not installed on a default Windows
+  box and Windows is the primary persona.
+- CI workflow: branch name gate, punctuation gate, CRLF gate, executable bit check,
+  gofmt, module tidiness, build, vet, layer test, test, race, govulncheck, gosec,
+  doc anchor check, link check, and a sandbox image build that asserts `man ls`
+  works. Matrixed over Linux and Windows.
+- Repository furniture: README, LICENSE, CONTRIBUTING, CODE_OF_CONDUCT, SECURITY,
+  four issue forms, a pull request template, and Dependabot across Go modules,
+  Actions, and the sandbox base image.
+- **Engineering rules split for progressive disclosure.** `CLAUDE.md` is now a slim
+  always-loaded index; the detail lives in 13 skills under `.claude/skills/` that
+  load only when the task needs them: `implementation`, `ticket-creation`,
+  `code-navigation`, `writing-style`, `go-style`, `destructive-safety`, `security`,
+  `testing`, `component-traps`, `level-authoring`, `github-workflow`,
+  `review-code`, `review-pr`.
+- **`destructive-safety` is the one to read first.** It enumerates the five things
+  that would be catastrophic on a learner's machine, with `wsl --unregister`
+  targeting the wrong distribution at the top, and it makes refusal tests mandatory
+  on every destructive path.
+- Branch naming is `<kind>/issue-<number>` across features, bugs, and chores, and
+  CI rejects anything else on a pull request.
+- 32 issue labels defined in `.github/labels.yml` and applied by
+  `./scripts/sync-labels.sh`, so the taxonomy is version controlled rather than
+  invented in the web interface.
+- `.mcp.json` auto-connects jCodemunch and jDocmunch for code and documentation
+  navigation.
+
+Environment notes for whoever picks this up:
+
+- **Go is not installed on the development machine.** The scaffold was verified
+  with a Go 1.26.5 toolchain fetched to a temporary directory. Install Go properly
+  before Day 1.
+- Docker is installed but the daemon was not running.
+- WSL2 is present with a `Debian` distribution. That distribution is the
+  developer's own and must stay untouched; the sandbox gets its own
+  `shellforge-sandbox` distribution.
+
+Not done, deliberately deferred to Day 1:
+
+- No runtime implementation. No PTY. No container image built.
+- `cobra` not yet added. The hand-rolled dispatcher exists only so that the
+  repository builds and CI is green from commit one, and Session A replaces it.
+
+---
+
+## Day 1: the spike
+
+> Goal: one hardcoded level, playable end to end, on Linux, with a real bash.
+
+Exit criteria, from the build plan:
+
+- [ ] `shellforge run demo` opens a real bash prompt inside a container
+- [ ] `vim`, `less`, `htop` all render correctly; terminal resize works mid-session
+- [ ] Ctrl-C interrupts a command without killing the game
+- [ ] Every command is logged with `{cmd, exit_code, cwd, duration}`, and no OSC
+      escape codes are visible to the user
+- [ ] Typing `check` inside the shell reports pass or fail correctly
+- [ ] `rm -rf /` inside the sandbox does nothing to the host
+
+Go or no-go: if the PTY multiplexer and the OSC parser are not working by end of
+day, stop and fix them on Day 2 morning. Do not proceed to content. There is no
+fallback for that component.
+
+## Day 2: content engine and verification
+
+- [ ] Levels load from YAML with zero Go changes
+- [ ] `author validate` catches duplicate id, cycle, missing asset, missing
+      `on_fail`, unknown check type
+- [ ] A failing check prints its authored `on_fail`, not a generic error
+- [ ] Only the first failing required objective is shown
+
+## Day 3: Windows, the highest-risk day
+
+- [ ] Clean Windows 11 VM: `doctor`, `init`, `run nav-01` works
+- [ ] `wsl -l -v` shows `shellforge-sandbox` and the user's own distros are untouched
+- [ ] Inside the sandbox: `echo $PATH` is clean and `/mnt/c` does not exist
+- [ ] `sandbox destroy` unregisters the distro and deletes the vhdx directory
+
+**Gate at 18:00.** If `WslRuntime` is not working, cut it, switch Windows to
+"requires Docker Desktop", and spend Day 4 on content. Do not let this bleed.
+
+## Day 4: game core
+
+- [ ] `shellforge play` auto-resumes at the correct next level
+- [ ] XP persists across restarts and `map` shows locks correctly
+- [ ] Passing a level prints XP earned, objectives hit, achievements unlocked
+- [ ] Hints deduct XP and show the cost before confirming
+
+## Day 5: content sprint
+
+- [ ] 25 levels validate clean
+- [ ] Whole campaign played start to finish in one sitting, friction noted
+- [ ] Every act ends in a boss level that takes 10 minutes or more
+
+## Day 6: hardening, CI, packaging
+
+- [ ] CI green on both platforms
+- [ ] A pre-release exists and `install.ps1` from it works on a clean VM
+- [ ] Uninstall verified: no orphaned vhdx, no stray config
+
+## Day 7: documentation and release
+
+- [ ] Someone who has never seen the project installs and plays using only the README
+- [ ] `v0.1.0` released with binaries and the rootfs artifact attached
+
+---
+
+## The cut ladder
+
+When behind, cut in this order:
+
+1. Levels 19 to 25 (Acts V and VI)
+2. Achievements beyond three
+3. Efficiency and first-try scoring bonuses
+4. `WslRuntime`, falling back to Docker Desktop on Windows
+5. macOS builds
+6. The `author record` helper
+7. Mutation tests
+
+**Never cut:** doctor, install docs, golden tests, reset, sandbox isolation.
+
+A game with 12 levels that installs cleanly and cannot hurt anyone beats a game with
+25 levels that strands a beginner at step three.

@@ -1,0 +1,57 @@
+name: Level problem
+description: A level is unclear, unfair, wrong, or accepts a wrong answer.
+title: "[level] "
+labels: [content, needs-triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Content problems matter as much as code problems. A level that accepts a
+        wrong answer teaches the wrong thing, and a level with a vague failure
+        message does more damage than a missing level.
+
+  - type: input
+    id: level
+    attributes:
+      label: Level id
+      placeholder: pipe-05
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of problem?
+      options:
+        - It rejected a solution that should have worked
+        - It accepted something that should not have passed
+        - The briefing or objectives were unclear
+        - The failure message did not help me
+        - A hint was wrong or unhelpful
+        - The setup was broken or inconsistent
+        - Difficulty feels wrong for where it sits
+        - Something else
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-you-typed
+    attributes:
+      label: What did you type?
+      description: The commands you ran, so we can reproduce it.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect, and what happened instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: How would you fix it?
+      description: Optional, but very welcome. Pull requests even more so.

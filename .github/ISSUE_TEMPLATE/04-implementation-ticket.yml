@@ -1,0 +1,188 @@
+name: Implementation ticket
+description: Planned work, specified so it can be picked up and finished without asking a question.
+title: "[ticket] "
+labels: [needs-triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **The standard: someone who has never seen this project should be able to
+        finish this ticket without asking a single question.**
+
+        Every field is required. "Not applicable" is a valid answer and is
+        different from leaving it blank, because it tells the implementer you
+        considered it.
+
+        The full guidance, with a worked example, is in
+        `.claude/skills/ticket-creation/SKILL.md`.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One sentence. What will be true when this is done that is not true now.
+      placeholder: A streaming OSC 133 parser that survives markers split across reads.
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: >-
+        Why this exists and why now. The implementer needs enough to make good
+        judgement calls when the specification runs out, which it always does.
+        Link the design section or the blocking ticket.
+    validations:
+      required: true
+
+  - type: textarea
+    id: layer
+    attributes:
+      label: Layer and files
+      description: Where the code goes, per the layer map in CLAUDE.md.
+      value: |
+        - Layer:
+        - Package:
+        - New files:
+        - Modified files:
+        - May import:
+        - Must not import:
+    validations:
+      required: true
+
+  - type: textarea
+    id: interfaces
+    attributes:
+      label: Interfaces
+      description: >-
+        The exact signatures to implement, or the exact YAML shape to support. If
+        the implementer has to invent an API, two people will invent two different
+        ones.
+      render: go
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: >-
+        Binary and checkable. Someone else must be able to verify each one without
+        asking what you meant. If you cannot tell when you are finished, this
+        section is not done.
+      value: |
+        - [ ]
+        - [ ]
+        - [ ]
+    validations:
+      required: true
+
+  - type: textarea
+    id: approach
+    attributes:
+      label: Approach
+      description: >-
+        The intended design and the traps. Include what has been ruled out and
+        why, so the implementer does not rediscover a dead end.
+    validations:
+      required: true
+
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Out of scope
+      description: >-
+        Explicit. This prevents scope creep and it prevents a reviewer asking
+        "why didn't you also". Link the follow-up tickets.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: touches-destructive
+    attributes:
+      label: Does this touch deletion, path resolution, WSL, mounts, elevation, or uninstall?
+      description: >-
+        If yes, the destructive-safety skill is mandatory and refusal tests are
+        required before merge.
+      options:
+        - "No"
+        - "Yes"
+    validations:
+      required: true
+
+  - type: textarea
+    id: safety
+    attributes:
+      label: Safety review
+      description: >-
+        If the answer above is yes: which destructive-safety rules apply, and which
+        refusal tests are required? If no: say why not, in one line.
+      placeholder: No. This code only reads a byte stream and never touches the filesystem.
+    validations:
+      required: true
+
+  - type: textarea
+    id: tests
+    attributes:
+      label: Test plan
+      description: >-
+        What proves it works, including the failure paths. "Add unit tests" means
+        this section has not been thought through.
+    validations:
+      required: true
+
+  - type: textarea
+    id: docs
+    attributes:
+      label: Docs to update
+      description: >-
+        Which documents change with this. Remember that a level format change must
+        update docs/LEVEL-FORMAT.md in the same commit, and a new doc anchor needs
+        a heading in docs/05-troubleshooting.md.
+      value: |
+        - PROGRESS.md
+    validations:
+      required: true
+
+  - type: input
+    id: skills
+    attributes:
+      label: Skills to load
+      description: Which .claude/skills the implementer should pull in.
+      placeholder: "implementation, go-style, component-traps, testing"
+    validations:
+      required: true
+
+  - type: textarea
+    id: references
+    attributes:
+      label: References
+      description: >-
+        Specific. Name the section, not the whole document. "See the architecture
+        doc" is not a reference.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: self-containment
+    attributes:
+      label: Self-containment check
+      description: Read it back as though you know nothing about this project.
+      options:
+        - label: I know which files to create or change
+          required: true
+        - label: I know the layer and what it may import
+          required: true
+        - label: I know the exact signatures or data shape
+          required: true
+        - label: I can tell without asking whether I am finished
+          required: true
+        - label: I know what is deliberately excluded
+          required: true
+        - label: I know whether this can damage the user's machine
+          required: true
+        - label: I know what to test, including the failure paths
+          required: true
+        - label: This is one branch and one pull request, not two
+          required: true

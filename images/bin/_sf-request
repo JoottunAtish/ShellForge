@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Control channel between the sandbox and the host.
+#
+# Writes a request line to the control FIFO and streams the host's reply back to
+# the learner's terminal. The host side is implemented on Day 1.
+#
+# Usage: _sf-request <verb> [args...]
+set -euo pipefail
+
+SF_STATE="${SF_STATE:-/opt/shellforge/state}"
+REQ="${SF_STATE}/control.req"
+RES="${SF_STATE}/control.res"
+
+verb="${1:-}"
+if [ -z "$verb" ]; then
+  echo "_sf-request: no verb given" >&2
+  exit 2
+fi
+shift || true
+
+if [ ! -p "$REQ" ]; then
+  echo "This command only works inside a Shellforge level." >&2
+  echo "The game does not appear to be listening. Try running 'shellforge run <level>' on your host." >&2
+  exit 1
+fi
+
+printf '%s\t%s\n' "$verb" "$*" > "$REQ"
+
+if [ -p "$RES" ]; then
+  cat "$RES"
+fi

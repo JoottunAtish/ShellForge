@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# In-sandbox shim: verify the current level.
+#
+# The learner types `check` at the prompt. The real work happens on the host,
+# because verification must run outside the learner's shell. This shim writes a
+# request to the control FIFO and prints whatever the host writes back.
+#
+# Keeping the shim dumb is deliberate: no game logic lives inside the sandbox,
+# where a learner could accidentally break it during a permissions level.
+set -euo pipefail
+exec /opt/shellforge/bin/_sf-request check "$@"

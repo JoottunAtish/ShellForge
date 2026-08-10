@@ -1,0 +1,77 @@
+# Shellforge core content pack.
+#
+# Schema: docs/LEVEL-FORMAT.md
+# Level designs: docs/CURRICULUM.md
+#
+# The act structure below is the plan of record. The level YAML files under
+# levels/ are written on Day 2 (levels 1 to 8) and Day 5 (levels 9 to 25).
+# `shellforge author validate` will report any id listed here without a matching
+# file, which is the intended signal while the pack is being filled in.
+
+id: core-linux-basics
+name: "Meridian Logistics: Atlas"
+version: 0.1.0
+
+# The engine refuses a pack whose content_api it does not understand. Bump this
+# only for a breaking change to the level schema.
+content_api: 1
+
+author: "Atish Joottun"
+license: MIT
+homepage: "https://github.com/JoottunAtish/ShellForge"
+
+description: >-
+  Twenty five levels taking a complete beginner from "what is a terminal" to
+  diagnosing a broken server at 3 AM. You are a new junior sysadmin at Meridian
+  Logistics, a shipping company whose one Linux server is held together by a
+  departed engineer named Kofi who left cryptic notes and a mess. Each level is
+  a ticket.
+
+# Narrative framing, shown once at campaign start.
+intro: |
+  ## Meridian Logistics
+  ### Atlas, the one server nobody understands
+
+  Kofi left on Friday. He was the only person who touched `atlas`, and he did
+  not write anything down that a human being can read.
+
+  You start Monday.
+
+acts:
+  - id: act1
+    title: "Orientation"
+    subtitle: "Your first day. Nobody has shown you anything."
+    levels: [nav-01, nav-02, nav-03, nav-04]
+
+  - id: act2
+    title: "Files and Directories"
+    subtitle: "Now make yourself useful."
+    levels: [files-01, files-02, files-03, files-04, files-05]
+
+  - id: act3
+    title: "Plumbing"
+    subtitle: "Commands are Lego. Here is how they connect."
+    levels: [pipe-01, pipe-02, pipe-03, pipe-04, pipe-05]
+
+  - id: act4
+    title: "Search"
+    subtitle: "The server has 400,000 files. Find the one that matters."
+    levels: [find-01, find-02, find-03, find-04]
+
+  - id: act5
+    title: "Permissions and Processes"
+    subtitle: "Why can't I run this?"
+    levels: [perm-01, perm-02, proc-01, perm-03]
+
+  - id: act6
+    title: "Environment and Scripting"
+    subtitle: "Stop typing the same thing twice."
+    levels: [env-01, script-01, boss-final]
+
+# Ranks awarded by cumulative XP. Displayed by `shellforge stats`.
+ranks:
+  - { id: novice,     title: "Novice",     min_xp: 0 }
+  - { id: apprentice, title: "Apprentice", min_xp: 300 }
+  - { id: operator,   title: "Operator",   min_xp: 800 }
+  - { id: sysadmin,   title: "Sysadmin",   min_xp: 1600 }
+  - { id: wizard,     title: "Wizard",     min_xp: 2600 }

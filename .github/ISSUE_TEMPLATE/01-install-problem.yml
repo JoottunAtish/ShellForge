@@ -1,0 +1,69 @@
+name: Install problem
+description: Shellforge would not install, or doctor reported something you could not fix.
+title: "[install] "
+labels: [install, needs-triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **This is the most useful bug report this project can receive.**
+
+        If you got stuck installing, that is a documentation failure on our side,
+        not a mistake on yours. Telling us the exact step you got stuck on is worth
+        more to us than a feature request.
+
+  - type: input
+    id: step
+    attributes:
+      label: Which step did you get stuck on?
+      description: The step number and heading from the install guide, if you can.
+      placeholder: "Step 4, Install WSL"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you expected, and what you got instead.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows 11
+        - Windows 10
+        - Linux
+        - macOS (community supported)
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `shellforge doctor`
+      description: >-
+        Run `shellforge doctor --json` if you can. If Shellforge would not install
+        at all, say so and skip this.
+      render: shell
+
+  - type: textarea
+    id: error
+    attributes:
+      label: The exact error text
+      description: Paste it rather than describing it. Screenshots are fine too.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I checked [docs/05-troubleshooting.md](../../docs/05-troubleshooting.md)
+          required: false
+        - label: I closed and reopened my terminal (PATH changes need this)
+          required: false

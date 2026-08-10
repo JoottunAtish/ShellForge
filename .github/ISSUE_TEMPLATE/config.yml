@@ -1,0 +1,17 @@
+blank_issues_enabled: true
+
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/JoottunAtish/ShellForge/security/advisories/new
+    about: >-
+      Do not open a public issue. Report privately here. See SECURITY.md for
+      what does and does not count as a vulnerability, since escaping your own
+      sandbox deliberately does not.
+
+  - name: Troubleshooting guide
+    url: https://github.com/JoottunAtish/ShellForge/blob/main/docs/05-troubleshooting.md
+    about: Every doctor error code has an entry here. Check it first.
+
+  - name: Contributing a level
+    url: https://github.com/JoottunAtish/ShellForge/blob/main/docs/07-authoring-levels.md
+    about: Levels are YAML. You do not need to write Go.

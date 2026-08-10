@@ -1,0 +1,118 @@
+# Shellforge sandbox image.
+#
+# One build, two artifacts:
+#   - the OCI image used by DockerRuntime on Linux and macOS
+#   - a rootfs tarball, produced by `docker export`, imported by WslRuntime on
+#     Windows via `wsl --import`
+#
+# One source of truth matters here. If the two diverge, a level passes on Linux
+# and fails on Windows for reasons nobody can reproduce.
+#
+# Build:   make image
+# Export:  make rootfs
+
+FROM debian:bookworm-slim
+
+# Deterministic and reproducible. The learner must see byte-identical starting
+# state on every machine, and a level that depends on locale collation or the
+# local timezone is a level that fails in CI at midnight.
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    TZ=UTC \
+    DEBIAN_FRONTEND=noninteractive
+
+# The toolset the curriculum actually teaches.
+#
+# Do NOT strip man pages. Reading `man` is level 4, and it is the single most
+# valuable level in the game. The default Debian slim image excludes them, so
+# the /etc/dpkg/dpkg.cfg.d/docker override below puts them back before man-db
+# is installed.
+RUN set -eux; \
+    rm -f /etc/dpkg/dpkg.cfg.d/docker-nodoc /etc/dpkg/dpkg.cfg.d/excludes; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        bash \
+        bash-completion \
+        coreutils \
+        findutils \
+        grep \
+        sed \
+        gawk \
+        diffutils \
+        less \
+        nano \
+        vim-tiny \
+        tree \
+        jq \
+        file \
+        procps \
+        psmisc \
+        htop \
+        cron \
+        ca-certificates \
+        curl \
+        git \
+        openssh-client \
+        sudo \
+        man-db \
+        manpages \
+        tzdata \
+    ; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*
+
+# Reinstall the core packages so their man pages land now that the exclusion
+# rules are gone. Without this, `man ls` fails and level 4 is unplayable.
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --reinstall --no-install-recommends coreutils findutils grep sed; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*; \
+    mandb -q || true
+
+# The learner. uid 1000 so file ownership matches on a bind mount and so `id`
+# shows something familiar in level 20.
+#
+# sudo is granted because Act V teaches it. It is scoped to the sudo group, and
+# levels that must deny privilege remove the user from that group in setup
+# rather than relying on the image.
+RUN set -eux; \
+    groupadd --gid 1000 learner; \
+    useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash learner; \
+    echo 'learner ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/learner; \
+    chmod 0440 /etc/sudoers.d/learner; \
+    groupadd --gid 1100 logistics
+
+# Game mount point. Bind-mounted read-only at run time and holding the
+# instrumentation rc file, the in-sandbox shims, and the level payload.
+# This is the ONLY host path visible inside the sandbox.
+RUN set -eux; \
+    mkdir -p /opt/shellforge/bin /opt/shellforge/rc /opt/shellforge/state; \
+    chown -R root:root /opt/shellforge; \
+    chmod 0755 /opt/shellforge
+
+COPY rc/instrument.bash /opt/shellforge/rc/instrument.bash
+COPY bin/ /opt/shellforge/bin/
+
+RUN set -eux; \
+    chmod 0644 /opt/shellforge/rc/instrument.bash; \
+    chmod 0755 /opt/shellforge/bin/*; \
+    chown -R learner:learner /opt/shellforge/state
+
+# WSL reads this on import. It is written again by WslRuntime after import
+# because the values matter enough to verify rather than assume, but baking it
+# in means a manually imported rootfs behaves correctly too.
+#
+# automount off:          no /mnt/c, so the learner cannot reach their real files
+# interop off:            cannot launch notepad.exe from bash
+# appendWindowsPath off:  $PATH is not polluted with 300 Windows entries, which
+#                         would make every PATH lesson nonsense
+COPY wsl.conf /etc/wsl.conf
+
+USER learner
+WORKDIR /home/learner
+
+# PID 1 does nothing. The learner's shell arrives via `docker exec -it`, which
+# keeps the container alive independently of any one session and makes reset a
+# matter of recreating the container from the pristine image.
+CMD ["sleep", "infinity"]

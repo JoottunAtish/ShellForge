@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# In-sandbox shim: reprint the current level briefing and objectives.
+#
+# Exists because a learner who has filled the screen with `find` output should
+# not have to quit to remember what they were asked to do.
+set -euo pipefail
+exec /opt/shellforge/bin/_sf-request brief "$@"

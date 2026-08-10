@@ -1,0 +1,279 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Dependency changes must arrive through a reviewed commit, never as a side
+  # effect of a build. This is the default since Go 1.16; setting it explicitly
+  # means a future change to that default cannot weaken the guarantee.
+  GOFLAGS: -mod=readonly
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Fast gates. These fail in seconds and catch the most common mistakes, so
+  # they run before anything that needs a toolchain matrix.
+  # -------------------------------------------------------------------------
+  # -------------------------------------------------------------------------
+  # Branch naming. Runs first and fails in seconds: it is cheaper to rename a
+  # branch now than to discover at merge time that the work is not traceable to
+  # a decision.
+  # -------------------------------------------------------------------------
+  branch:
+    name: Branch name
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Branch is <kind>/issue-<number>
+        env:
+          BRANCH: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+
+          # Dependabot has its own naming and we do not fight it.
+          case "$BRANCH" in
+            dependabot/*) echo "OK: dependabot branch, exempt"; exit 0 ;;
+          esac
+
+          if printf '%s' "$BRANCH" | grep -qE '^(feature|bug|chore)/issue-[0-9]+$'; then
+            echo "OK: $BRANCH"
+            exit 0
+          fi
+
+          echo "FAIL: branch name '$BRANCH' does not match <kind>/issue-<number>"
+          echo
+          echo "  feature/issue-24   new capability, new levels or content"
+          echo "  bug/issue-31       something behaves incorrectly"
+          echo "  chore/issue-7      docs, CI, refactor, dependencies"
+          echo
+          echo "Every branch traces to a ticket. Open the issue first, then:"
+          echo "  git branch -m <kind>/issue-<number>"
+          echo "  git push origin -u <kind>/issue-<number>"
+          exit 1
+
+  style:
+    name: Style and punctuation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: No em dashes, en dashes, or smart quotes
+        # Rule 0 in CLAUDE.md. A smart quote in a copy-pasteable command is a
+        # broken command, and an em dash in a level briefing renders as a box in
+        # a terminal that is not UTF-8 clean.
+        run: ./scripts/check-punctuation.sh
+
+      - name: No CRLF in files bound for the sandbox
+        # CRLF in a .sh produces "bad interpreter: /bin/bash^M" inside Linux.
+        # .gitattributes prevents it; this proves .gitattributes is working.
+        #
+        # grep -U stops GNU grep from doing its own line-ending translation, so
+        # a stray CR is actually seen rather than silently normalized away.
+        run: |
+          set -uo pipefail
+          bad=$(git ls-files -z -- '*.sh' '*.bash' '*.yaml' '*.yml' '*.go' \
+                                   'images/bin/*' 'images/rc/*' 'Makefile' 'Containerfile' \
+                | xargs -0 -r grep -lU "$(printf '\r')" 2>/dev/null || true)
+          if [ -n "$bad" ]; then
+            echo "FAIL: carriage returns found in files that must be LF:"
+            echo "$bad"
+            echo
+            echo "These run inside Linux. CRLF gives: bad interpreter: /bin/bash^M"
+            exit 1
+          fi
+          echo "OK: no CRLF in sandbox-bound files"
+
+      - name: Sandbox shims are executable
+        run: |
+          set -euo pipefail
+          fail=0
+          for f in images/bin/*; do
+            mode=$(git ls-files --stage "$f" | awk '{print $1}')
+            if [ "$mode" != "100755" ]; then
+              echo "FAIL: $f is mode $mode, expected 100755"
+              fail=1
+            fi
+          done
+          [ "$fail" -eq 0 ] && echo "OK: all shims executable"
+          exit $fail
+
+  # -------------------------------------------------------------------------
+  # Build and test on both platforms that matter. Windows is not optional here:
+  # it is the primary persona and the place things break.
+  # -------------------------------------------------------------------------
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify formatting
+        shell: bash
+        run: |
+          set -euo pipefail
+          unformatted=$(gofmt -s -l .)
+          if [ -n "$unformatted" ]; then
+            echo "FAIL: these files are not gofmt -s clean:"
+            echo "$unformatted"
+            echo
+            echo "Run: gofmt -s -w ."
+            exit 1
+          fi
+          echo "OK: gofmt clean"
+
+      - name: Verify go.mod and go.sum are tidy
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp go.mod go.mod.bak
+          [ -f go.sum ] && cp go.sum go.sum.bak || true
+          go mod tidy
+          if ! diff -q go.mod go.mod.bak > /dev/null; then
+            echo "FAIL: go.mod is not tidy. Run: go mod tidy"
+            diff go.mod.bak go.mod || true
+            exit 1
+          fi
+          if [ -f go.sum.bak ] && ! diff -q go.sum go.sum.bak > /dev/null; then
+            echo "FAIL: go.sum is not tidy. Run: go mod tidy"
+            exit 1
+          fi
+          rm -f go.mod.bak go.sum.bak
+          echo "OK: modules tidy"
+
+      - name: Build
+        run: go build -v ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Layer dependency rule
+        # internal/game must never import a Docker or WSL type. This is what
+        # keeps "drop WSL support" a one-day decision.
+        run: go test -v ./internal/archtest/...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Test with race detector
+        # The PTY multiplexer is concurrent by nature, so this is not optional.
+        run: go test -race ./...
+
+  # -------------------------------------------------------------------------
+  # Security. Separate job so a vulnerability report does not hide behind a
+  # compile error, and so it can be read at a glance in the checks list.
+  # -------------------------------------------------------------------------
+  security:
+    name: Security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: govulncheck
+        # Reachability aware: reports only vulnerabilities this code can
+        # actually hit, which keeps the signal usable instead of noise.
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+      - name: gosec
+        # Subprocess handling, path traversal, credentials, weak crypto.
+        # Shellforge shells out to docker and wsl.exe constantly, so the
+        # subprocess rules are the ones that matter here.
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          gosec -quiet -exclude-dir=docs ./...
+
+  # -------------------------------------------------------------------------
+  # Documentation integrity. Every doctor failure code must link somewhere real.
+  # -------------------------------------------------------------------------
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Every doc anchor emitted by Go code exists in the docs
+        # A doctor probe that points at a heading nobody wrote is worse than no
+        # link at all: the learner follows it and lands nowhere.
+        run: |
+          set -uo pipefail
+          missing=0
+          anchors=$(grep -rhoE 'DocAnchor:\s*"[a-z0-9-]+"' --include='*.go' . \
+                    | sed -E 's/.*"([a-z0-9-]+)".*/\1/' | sort -u || true)
+          if [ -z "$anchors" ]; then
+            echo "No doc anchors emitted yet, nothing to verify."
+            exit 0
+          fi
+          for a in $anchors; do
+            if ! grep -qE "^#{1,4} .*$a" docs/05-troubleshooting.md 2>/dev/null; then
+              echo "FAIL: doc anchor '$a' has no heading in docs/05-troubleshooting.md"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] && echo "OK: every doc anchor resolves"
+          exit $missing
+
+      - name: No broken relative links in Markdown
+        run: ./scripts/check-links.sh
+
+  # -------------------------------------------------------------------------
+  # The sandbox image. Not gated on the rest, because a Docker Hub hiccup should
+  # not block a documentation fix.
+  # -------------------------------------------------------------------------
+  image:
+    name: Sandbox image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the sandbox image
+        run: docker build -f images/Containerfile -t shellforge-sandbox:ci images/
+
+      - name: The image has what the curriculum teaches
+        run: |
+          set -euo pipefail
+          docker run --rm shellforge-sandbox:ci bash -lc '
+            set -e
+            for c in ls grep find sed awk less vim tree jq htop man id sudo; do
+              command -v "$c" >/dev/null || { echo "MISSING: $c"; exit 1; }
+            done
+            # Level 4 is "read the manual". If man pages were stripped, that
+            # level is unplayable and the whole curriculum loses its spine.
+            man ls >/dev/null 2>&1 || { echo "MISSING: man pages for ls"; exit 1; }
+            id learner >/dev/null || { echo "MISSING: learner user"; exit 1; }
+            echo "OK: image contents verified"
+          '
+
+      - name: The rootfs tarball exports cleanly
+        run: |
+          set -euo pipefail
+          docker create --name sf-export shellforge-sandbox:ci /bin/true
+          docker export sf-export | gzip -9 > rootfs.tar.gz
+          docker rm -f sf-export
+          ls -lh rootfs.tar.gz
+          sha256sum rootfs.tar.gz
