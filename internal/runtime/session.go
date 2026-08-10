@@ -11,6 +11,20 @@ import (
 //
 // The same Session type serves the learner's interactive shell and the
 // non-interactive probes that verification runs. The caller closes it.
+//
+// A Session is safe for concurrent use by multiple goroutines: Exec,
+// Attach, PushFiles, and PullFile may be called concurrently on the same
+// Session, and a call in progress on one goroutine must not corrupt or
+// block a call in progress on another. Both planned backends run each Exec
+// as its own subprocess, so this costs neither of them anything, and
+// verification needs it: a check observes a process running inside the
+// sandbox by calling PullFile or Exec on the same Session that started it,
+// while that first call is still in flight.
+//
+// Close is the exception. A caller must not call Close concurrently with
+// another in-flight call on the same Session; the outcome of that other
+// call is unspecified if it does. Close itself is safe to call more than
+// once.
 type Session interface {
 	// Exec runs argv inside the sandbox without a shell and waits for it to
 	// finish.

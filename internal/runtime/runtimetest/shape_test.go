@@ -37,6 +37,35 @@ func parseContractFile(t *testing.T) *ast.File {
 	return f
 }
 
+// packageSourceFiles parses every non-test *.go file in this package's
+// directory, so a completeness guard built on it has no blind spot for a
+// thirteenth assertion declared outside contract.go. _test.go files are
+// excluded on purpose: they are the suite's own tests, not assertions the
+// dispatch table is supposed to register.
+func packageSourceFiles(t *testing.T) []*ast.File {
+	t.Helper()
+	dir := packageDir(t)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("reading %s: %v", dir, err)
+	}
+	fset := token.NewFileSet()
+	var files []*ast.File
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		f, err := parser.ParseFile(fset, path, nil, parser.AllErrors)
+		if err != nil {
+			t.Fatalf("parsing %s: %v", path, err)
+		}
+		files = append(files, f)
+	}
+	return files
+}
+
 // typeString renders a type expression the way it would be written in
 // source, for the narrow set of forms an assertion signature can use.
 func typeString(e ast.Expr) string {
@@ -85,17 +114,21 @@ func topLevelFuncs(file *ast.File) map[string]*ast.FuncDecl {
 }
 
 // sourceAssertionNames returns the name of every exported function declared
-// in contract.go whose signature matches an assertion: func(t *testing.T, f Factory).
+// anywhere in this package's non-test files whose signature matches an
+// assertion: func(t *testing.T, f Factory). It is not limited to
+// contract.go: a thirteenth assertion declared in any other non-test file
+// would otherwise be exported, callable, and invisible to this check.
 func sourceAssertionNames(t *testing.T) []string {
 	t.Helper()
-	file := parseContractFile(t)
 	var names []string
-	for name, fn := range topLevelFuncs(file) {
-		if !fn.Name.IsExported() || !strings.HasPrefix(name, "Test") {
-			continue
-		}
-		if isAssertionSignature(fn.Type) {
-			names = append(names, name)
+	for _, file := range packageSourceFiles(t) {
+		for name, fn := range topLevelFuncs(file) {
+			if !fn.Name.IsExported() || !strings.HasPrefix(name, "Test") {
+				continue
+			}
+			if isAssertionSignature(fn.Type) {
+				names = append(names, name)
+			}
 		}
 	}
 	return names
@@ -188,31 +221,52 @@ func TestAssertionSignatures(t *testing.T) {
 	}
 }
 
+// modulePath is this module's import path, per go.mod. Any import that
+// starts with this prefix is module-internal.
+const modulePath = "github.com/JoottunAtish/ShellForge"
+
+// runtimePackagePath is the one module-internal import this package is
+// permitted to make: internal/runtime itself.
+const runtimePackagePath = modulePath + "/internal/runtime"
+
+// deniedStdlib names standard library packages that are forbidden here even
+// though the allowlist below only governs module-internal imports. Both
+// packages let this test-infrastructure code reach outside the sandbox
+// contract: os/exec can spawn a host process, net/http can make a network
+// call, and neither belongs in a package whose only job is to drive a
+// Runtime through its documented interface.
+var deniedStdlib = []string{"net/http", "os/exec"}
+
+// checkImport reports the forbidden import in p, or "" if p is allowed.
+// This package is only ever permitted to import the standard library and
+// internal/runtime itself: an allowlist naming the one module-internal
+// import that is fine, rather than a denylist naming known-bad ones, so a
+// new backend package or a renamed one is caught by default instead of
+// passing silently.
+func checkImport(p string) string {
+	for _, bad := range deniedStdlib {
+		if p == bad {
+			return p
+		}
+	}
+	isModuleInternal := p == modulePath || strings.HasPrefix(p, modulePath+"/")
+	if isModuleInternal && p != runtimePackagePath {
+		return p
+	}
+	return ""
+}
+
 // TestPackageImportsNoBackend parses every .go file in this package,
-// including _test.go files, and asserts none of them imports a backend
-// implementation or a package above L1. internal/archtest already enforces
-// the non-test half of this; this guard additionally covers _test.go files,
-// which archtest deliberately skips and which is exactly where a fake
-// backend import would most plausibly land.
+// including _test.go files, and asserts none of them imports anything but
+// the standard library and internal/runtime. internal/archtest already
+// enforces the non-test half of this; this guard additionally covers
+// _test.go files, which archtest deliberately skips and which is exactly
+// where a fake backend import would most plausibly land.
 func TestPackageImportsNoBackend(t *testing.T) {
 	dir := packageDir(t)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatalf("reading %s: %v", dir, err)
-	}
-
-	forbidden := []string{
-		"/internal/runtime/docker",
-		"/internal/runtime/wsl",
-		"/internal/pty",
-		"/internal/journal",
-		"/internal/content",
-		"/internal/verify",
-		"/internal/game",
-		"/cmd/shellforge",
-		"/internal/platform",
-		"net/http",
-		"os/exec",
 	}
 
 	for _, entry := range entries {
@@ -229,10 +283,13 @@ func TestPackageImportsNoBackend(t *testing.T) {
 			}
 			for _, imp := range f.Imports {
 				p := strings.Trim(imp.Path.Value, `"`)
-				for _, bad := range forbidden {
-					if strings.Contains(p, bad) {
-						t.Errorf("%s imports %q, which contains the forbidden substring %q", name, p, bad)
-					}
+				if checkImport(p) == "" {
+					continue
+				}
+				if p == modulePath || strings.HasPrefix(p, modulePath+"/") {
+					t.Errorf("%s imports %q: runtimetest may import only the standard library and %q, not another module-internal package", name, p, runtimePackagePath)
+				} else {
+					t.Errorf("%s imports %q, which is denied here even though it is standard library", name, p)
 				}
 			}
 		})

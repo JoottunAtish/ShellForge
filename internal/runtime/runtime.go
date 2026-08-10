@@ -14,6 +14,12 @@ type Runtime interface {
 	// Provision prepares the sandbox described by spec. It is idempotent:
 	// calling it on an already provisioned sandbox succeeds and changes
 	// nothing.
+	//
+	// A successful Provision leaves the sandbox running, not merely
+	// created: Status called immediately afterward reports Running true,
+	// and StartSession succeeds without any separate start step. A backend
+	// that provisions a stopped image or distribution and starts it lazily
+	// on first StartSession does not satisfy this method.
 	Provision(ctx context.Context, spec ImageSpec) error
 
 	// Destroy removes the sandbox this Runtime owns. It is idempotent,

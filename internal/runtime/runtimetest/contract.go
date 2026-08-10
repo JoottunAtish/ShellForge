@@ -2,23 +2,46 @@ package runtimetest
 
 // THIS SUITE DESTROYS SANDBOXES. READ THIS BEFORE WRITING A FACTORY.
 //
-// TestDestroyThenStatusReportsMissing calls Runtime.Destroy. On the WSL
-// backend, Destroy eventually means wsl --unregister, which is instant,
-// irreversible, and has no undo. A Factory that hands this suite a
-// Runtime pointed at the developer's real sandbox, or at any distribution
-// the developer cares about, is a bug, and the consequence is somebody's
-// Linux installation gone for good.
+// Several assertions call Runtime.Destroy. On the WSL backend, Destroy
+// eventually means wsl --unregister, which is instant, irreversible, and
+// has no undo. A Factory that hands this suite a Runtime pointed at the
+// developer's real sandbox, or at any distribution the developer cares
+// about, is a bug, and the consequence is somebody's Linux installation
+// gone for good.
 //
 // A Factory must therefore build a Runtime scoped to SandboxName, which
 // is a fixed test-only constant. Never the production sandbox name, never
 // a name read from the environment, never a name derived from anything a
-// test can influence.
+// test can influence. This is the ONLY guard this suite has. Read the
+// next two paragraphs before assuming otherwise.
 //
-// The suite defends itself as far as the interface allows: before every
-// Destroy it writes a marker file and reads it back, so a Runtime that is
-// not the one this test provisioned fails the marker check instead of
-// being destroyed. That is a backstop, not permission to be careless. The
-// name in the Factory is the real guard.
+// The suite controls what it provisions and cannot control what Destroy
+// removes. Runtime.Destroy takes no name, and ImageSpec.Name documents
+// that a destroy path must derive its target from a package constant of
+// its own, never from the spec. So a Factory that returns a backend's
+// ordinary production constructor, instead of a test-only constructor
+// whose compile-time destroy target happens to be SandboxName, provisions
+// shellforge-contracttest and destroys the production sandbox instead.
+// Every downstream assertion still goes green: Status carries no sandbox
+// identity (tracked as F2 in issue #32), so nothing in this package can
+// detect that the wrong sandbox was removed. Exposing a test-only
+// constructor whose destroy constant is SandboxName is the backend
+// author's responsibility; returning the production constructor from a
+// Factory is the specific mistake that loses a distribution.
+//
+// An earlier version of this suite wrote a marker file before Destroy and
+// read it back, calling that an identity check. It was not one: pushing a
+// file and reading the same file back through the same Session proves
+// PushFiles and PullFile round trip, which TestPullFileRoundTrips already
+// covers, and nothing about which sandbox is on the other end. That
+// mechanism has been removed. What each assertion that provisions does
+// instead is call ensureNoSandbox first: Destroy, then assert Status
+// reports Provisioned false, then Provision. That proves the assertion's
+// own precondition rather than assuming it, and it means any Destroy call
+// later in that same assertion is acting on a sandbox the assertion is
+// provably the one that created. It proves nothing about a sandbox this
+// suite did not create; if the Factory is wrong, the sandbox is already
+// lost the moment Destroy is first called, exactly as before.
 //
 // Refusal tests for the deletion path itself do not live here. They live
 // with the implementation that does the deleting, which is the only place
@@ -93,10 +116,42 @@ func contractContext(t *testing.T) context.Context {
 	return ctx
 }
 
-// provisionedSession provisions the contract sandbox and opens a session on
-// it with networking off, which is the default the product ships.
+// ensureNoSandbox establishes a known-clean precondition: it calls Destroy,
+// which is documented idempotent, and then asserts Status reports
+// Provisioned false. Every assertion that provisions calls this first,
+// rather than assuming the Runtime a Factory handed it starts clean.
+//
+// This is what gives a later Destroy call in the same assertion its
+// authority: the assertion observed the sandbox absent and then created it
+// itself, so the thing it goes on to destroy is one it made. See the file
+// header for what this does and does not prove.
+//
+// Calling Destroy here adds a call site beyond the ones that already
+// existed. That is deliberate: the suite's authority to destroy anything at
+// all comes entirely from the Factory building a Runtime scoped to
+// SandboxName, and if the Factory is wrong the sandbox is already lost at
+// the pre-existing call sites regardless. One more call does not change the
+// risk class; it buys a precondition that is checked instead of assumed.
+func ensureNoSandbox(ctx context.Context, t *testing.T, rt runtime.Runtime) {
+	t.Helper()
+	if err := rt.Destroy(ctx); err != nil {
+		t.Fatalf("Destroy establishing the no-sandbox precondition: %v, want nil (Destroy is documented as idempotent)", err)
+	}
+	status, err := rt.Status(ctx)
+	if err != nil {
+		t.Fatalf("Status establishing the no-sandbox precondition: %v", err)
+	}
+	if status.Provisioned {
+		t.Fatalf("Status after Destroy: Provisioned = true, want false; this Runtime cannot establish a known-clean precondition, so nothing later in this assertion can trust what it destroys")
+	}
+}
+
+// provisionedSession establishes the no-sandbox precondition, provisions the
+// contract sandbox, and opens a session on it with networking off, which is
+// the default the product ships.
 func provisionedSession(ctx context.Context, t *testing.T, rt runtime.Runtime) runtime.Session {
 	t.Helper()
+	ensureNoSandbox(ctx, t, rt)
 	if err := rt.Provision(ctx, ImageSpec()); err != nil {
 		t.Fatalf("Provision(%q): %v", SandboxName, err)
 	}
@@ -125,6 +180,7 @@ func provisionedSession(ctx context.Context, t *testing.T, rt runtime.Runtime) r
 func TestProvisionIsIdempotent(t *testing.T, f Factory) {
 	rt := newRuntime(t, f)
 	ctx := contractContext(t)
+	ensureNoSandbox(ctx, t, rt)
 
 	if err := rt.Provision(ctx, ImageSpec()); err != nil {
 		t.Fatalf("first Provision(%q): %v", SandboxName, err)
@@ -171,6 +227,7 @@ func TestProvisionIsIdempotent(t *testing.T, f Factory) {
 func TestStatusReportsProvisioned(t *testing.T, f Factory) {
 	rt := newRuntime(t, f)
 	ctx := contractContext(t)
+	ensureNoSandbox(ctx, t, rt)
 
 	before, err := rt.Status(ctx)
 	if err != nil {
@@ -293,7 +350,19 @@ func TestExecHonoursContextCancellation(t *testing.T, f Factory) {
 
 	t.Run("cancel aborts", func(t *testing.T) {
 		pidPath := contractHome + "/.contract-pid"
+
+		// Clear any pid file a previous run of this assertion left behind.
+		// Without this, the poll below can observe a stale pid immediately,
+		// before the process this run starts has written anything, and the
+		// orphan probe at the end would then check a pid that was never
+		// running in this run at all: it would pass without proving
+		// anything.
+		if _, err := sess.Exec(base, []string{"/bin/sh", "-c", "rm -f " + pidPath}, runtime.ExecOpts{}); err != nil {
+			t.Fatalf("clearing a stale pid file before the run: %v", err)
+		}
+
 		execCtx, cancel := context.WithCancel(base)
+		t.Cleanup(cancel) // idempotent with the explicit cancel() below; guards an early t.Fatal.
 
 		errCh := make(chan error, 1)
 		go func() {
@@ -302,17 +371,27 @@ func TestExecHonoursContextCancellation(t *testing.T, f Factory) {
 		}()
 
 		deadline := time.Now().Add(2 * time.Second)
-		var pid []byte
+		var pid string
 		for time.Now().Before(deadline) {
 			got, err := sess.PullFile(base, pidPath)
-			if err == nil && len(bytes.TrimSpace(got)) > 0 {
-				pid = got
-				break
+			if err == nil {
+				if p := strings.TrimSpace(string(got)); p != "" {
+					pid = p
+					break
+				}
 			}
 			time.Sleep(50 * time.Millisecond)
 		}
-		if len(pid) == 0 {
+		if pid == "" {
 			t.Fatal("the sandbox-side process never wrote its pid within 2 seconds")
+		}
+		// pid came from inside the sandbox and is about to be interpolated
+		// into a command argument. Refuse it if it is not exactly what
+		// "echo $$" can produce, rather than trusting it.
+		for _, r := range pid {
+			if r < '0' || r > '9' {
+				t.Fatalf("pid file content is not all ASCII digits, refusing to use it: %q", pid)
+			}
 		}
 
 		cancel()
@@ -326,12 +405,15 @@ func TestExecHonoursContextCancellation(t *testing.T, f Factory) {
 			t.Fatal("Exec did not return within 10 seconds of context cancellation")
 		}
 
-		probe, err := sess.Exec(base, []string{"/bin/sh", "-c", "test -d /proc/$(cat " + pidPath + ")"}, runtime.ExecOpts{})
+		// Use the pid this run captured rather than re-reading pidPath: a
+		// re-read cannot tell a value this run wrote from a value a prior
+		// run left behind.
+		probe, err := sess.Exec(base, []string{"/bin/sh", "-c", "test -d /proc/" + pid}, runtime.ExecOpts{})
 		if err != nil {
 			t.Fatalf("orphan probe Exec: %v", err)
 		}
 		if probe.ExitCode == 0 {
-			t.Errorf("orphan probe: /proc/<pid> still exists after cancellation, the sandbox-side process was not reaped")
+			t.Errorf("orphan probe: /proc/%s still exists after cancellation, the sandbox-side process was not reaped", pid)
 		}
 	})
 
@@ -525,9 +607,24 @@ func TestPushFilesStripsCarriageReturns(t *testing.T, f Factory) {
 	})
 }
 
-// sanitizeName turns a table case name into something safe to use as a path
-// component inside the sandbox.
-func sanitizeName(name string) string {
+// sanitizeName turns a table case name into a path component inside the
+// sandbox. It refuses, rather than rewrites, any character outside the
+// small set it knows how to turn into a safe path component: the house rule
+// for anything that becomes a path is refuse an unexpected input, never
+// adjust it into place, and FileEntry.Path says so explicitly. Every case
+// name here is a compile-time literal today, so nothing can escape yet, but
+// a future case name containing "/" or ".." must fail loudly instead of
+// silently producing a path outside contractRoot.
+func sanitizeName(t *testing.T, name string) string {
+	t.Helper()
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == ' ' || r == ',' || r == '\'':
+		default:
+			t.Fatalf("sanitizeName: table case name %q contains unexpected character %q; refusing to turn it into a path rather than adjusting it", name, r)
+		}
+	}
 	r := strings.NewReplacer(" ", "-", ",", "", "'", "")
 	return r.Replace(name)
 }
@@ -555,7 +652,7 @@ func TestPullFileRoundTrips(t *testing.T, f Factory) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			path := contractRoot + "/roundtrip-" + sanitizeName(tc.name) + ".txt"
+			path := contractRoot + "/roundtrip-" + sanitizeName(t, tc.name) + ".txt"
 			if err := sess.PushFiles(ctx, runtime.FileManifest{Files: []runtime.FileEntry{
 				{Path: path, Content: []byte(tc.content), Mode: 0644, Owner: contractUser + ":" + contractUser},
 			}}); err != nil {
@@ -606,38 +703,23 @@ func TestPullFileRoundTrips(t *testing.T, f Factory) {
 	})
 }
 
-// TestDestroyThenStatusReportsMissing is the safety-critical assertion. It
-// writes a marker naming this sandbox and this test, reads it back, and
-// refuses to call Destroy unless the marker matches: a Runtime that is not
-// the one this test provisioned fails the marker check instead of being
-// destroyed. See the file-level comment for why this matters.
+// TestDestroyThenStatusReportsMissing is the safety-critical assertion.
+// provisionedSession calls ensureNoSandbox before it provisions, so by the
+// time this test calls Destroy it has already proven the sandbox it is
+// about to remove is one it created itself, not a preexisting one a
+// misconfigured Factory happened to hand it. See the file-level comment for
+// exactly what that does and does not guarantee.
 func TestDestroyThenStatusReportsMissing(t *testing.T, f Factory) {
 	rt := newRuntime(t, f)
 	ctx := contractContext(t)
 	sess := provisionedSession(ctx, t, rt)
-
-	markerPath := contractHome + "/.contract-marker"
-	want := SandboxName + "/" + t.Name()
-	if err := sess.PushFiles(ctx, runtime.FileManifest{Files: []runtime.FileEntry{
-		{Path: markerPath, Content: []byte(want), Mode: 0644, Owner: contractUser + ":" + contractUser},
-	}}); err != nil {
-		t.Fatalf("PushFiles(%s): %v", markerPath, err)
-	}
-
-	got, err := sess.PullFile(ctx, markerPath)
-	if err != nil {
-		t.Fatalf("PullFile(%s): %v", markerPath, err)
-	}
-	if string(got) != want {
-		t.Fatalf("refusing to call Destroy: the marker at %s reads %q, want %q; this Runtime is not the sandbox this test provisioned", markerPath, got, want)
-	}
 
 	status, err := rt.Status(ctx)
 	if err != nil {
 		t.Fatalf("Status before Destroy: %v", err)
 	}
 	if !status.Provisioned {
-		t.Fatalf("refusing to call Destroy: Status reports Provisioned = false before this test provisioned anything")
+		t.Fatalf("Status before Destroy: Provisioned = false, want true; this test provisioned the sandbox itself")
 	}
 
 	if err := sess.Close(); err != nil {
@@ -678,6 +760,7 @@ func TestDestroyThenStatusReportsMissing(t *testing.T, f Factory) {
 func TestCapabilitiesAreSelfConsistent(t *testing.T, f Factory) {
 	rt := newRuntime(t, f)
 	ctx := contractContext(t)
+	ensureNoSandbox(ctx, t, rt)
 
 	snapshot := func(when string) runtime.Caps {
 		t.Helper()
@@ -720,13 +803,19 @@ func TestCapabilitiesAreSelfConsistent(t *testing.T, f Factory) {
 
 // TestNoNetworkByDefault leaves SessionSpec.Networking at its zero value,
 // which is the default the product ships, and asserts that an outbound
-// connection attempt fails fast rather than succeeding or hanging. A
-// TimedOut result is treated as a failure of the assertion itself: per
-// destructive-safety, this suite fails closed rather than reporting an
+// connection attempt fails fast rather than succeeding or hanging.
+//
+// A non-zero exit code on its own is not accepted as proof, because the
+// probe fails the same way whether the network is blocked or the probe
+// itself cannot run. All three ways it can be unusable fail the assertion
+// rather than pass it: a TimedOut result, a bash that will not run a
+// trivial command, and a bash without the /dev/tcp redirection built in.
+// Per destructive-safety, this suite fails closed rather than reporting an
 // inconclusive pass.
 func TestNoNetworkByDefault(t *testing.T, f Factory) {
 	rt := newRuntime(t, f)
 	ctx := contractContext(t)
+	ensureNoSandbox(ctx, t, rt)
 
 	if err := rt.Provision(ctx, ImageSpec()); err != nil {
 		t.Fatalf("Provision(%q): %v", SandboxName, err)
@@ -742,6 +831,18 @@ func TestNoNetworkByDefault(t *testing.T, f Factory) {
 	}
 	t.Cleanup(func() { _ = sess.Close() })
 
+	// The probe below is a bash feature: no POSIX shell has /dev/tcp. An
+	// image with no bash at all would fail the probe for a reason that has
+	// nothing to do with the network, and a failure that is indistinguishable
+	// from success of the isolation is the one outcome this assertion must
+	// never report. So establish that bash runs at all before the probe's
+	// verdict is worth anything.
+	if check, err := sess.Exec(ctx, []string{"/bin/bash", "-c", "exit 0"}, runtime.ExecOpts{Timeout: 5 * time.Second}); err != nil {
+		t.Fatalf("network probe mechanism unusable: running /bin/bash at all: %v; this assertion cannot verify network isolation here", err)
+	} else if check.ExitCode != 0 {
+		t.Fatalf("network probe mechanism unusable: /bin/bash exited %d for a trivial command (stderr: %q); this assertion cannot verify network isolation here", check.ExitCode, check.Stderr)
+	}
+
 	res, err := sess.Exec(ctx, []string{"/bin/bash", "-c", "exec 3<>/dev/tcp/1.1.1.1/443"}, runtime.ExecOpts{Timeout: 5 * time.Second})
 	if err != nil {
 		t.Fatalf("Exec of the network probe: %v", err)
@@ -749,6 +850,20 @@ func TestNoNetworkByDefault(t *testing.T, f Factory) {
 	if res.TimedOut {
 		t.Fatal("network probe timed out instead of failing fast; the connection attempt did not fail closed and the sandbox may have a network")
 	}
+
+	// A non-zero exit alone proves nothing about network isolation: bash
+	// reports the same shape of failure whether the connection was actually
+	// refused or the /dev/tcp redirection form is simply not built into
+	// this bash (a busybox or Alpine-derived rootfs, for one, or a bash
+	// built without --enable-net-redirections). When the feature itself is
+	// missing, bash treats the /dev/tcp path as a literal, nonexistent
+	// file, which is a different failure than a refused or unreachable
+	// connection. Fail the assertion outright when the probe cannot tell
+	// the difference, rather than reporting a pass that proves nothing.
+	if strings.Contains(string(res.Stderr), "No such file or directory") {
+		t.Fatalf("network probe mechanism unusable: bash does not appear to support the /dev/tcp redirection on this image (stderr: %q); this assertion cannot verify network isolation here", res.Stderr)
+	}
+
 	if res.ExitCode == 0 {
 		t.Error("network probe succeeded with Networking left at its default (false); an outbound connection should fail")
 	}
