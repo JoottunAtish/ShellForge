@@ -55,6 +55,16 @@ Dockerfile      text eol=lf
 *.vhdx          binary
 *.cast          binary
 
+# Raw PTY captures used as byte-identity test fixtures. These files contain CR
+# bytes on purpose: they are what a real terminal emitted.
+# internal/pty/testdata/vim-session.bin holds 19 CRLF pairs and 7 lone CRs. git
+# leaves them alone today only because the lone CRs make `* text=auto` guess
+# binary, and that is an accident. A re-capture without them would have its CRLF
+# pairs rewritten to LF on checkin, and nothing would go red, because the fixture
+# is compared against itself. It would simply stop being a faithful recording of
+# the bytes the parser has to survive. Say binary and stop depending on a guess.
+*.bin           binary
+
 # Keep documentation and generated content out of the language statistics.
 docs/**             linguist-documentation
 packs/**/assets/**  linguist-generated

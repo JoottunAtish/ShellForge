@@ -22,7 +22,7 @@ LDFLAGS     := -s -w \
 CONTAINER_ENGINE := $(shell command -v docker 2>/dev/null || command -v podman 2>/dev/null || echo docker)
 
 .DEFAULT_GOAL := help
-.PHONY: help build install test race cover lint fmt vet punct links arch labels \
+.PHONY: help build install test race fuzz cover lint fmt vet punct links arch labels \
         sec vuln gosec image rootfs run golden validate clean tools ci
 
 ## help: Show this help.
@@ -50,6 +50,10 @@ test:
 ## race: Run tests under the race detector.
 race:
 	go test -race ./...
+
+## fuzz: Fuzz the OSC parser for 60s.
+fuzz:
+	go test -run '^FuzzParser$$' -fuzz '^FuzzParser$$' -fuzztime 60s ./internal/pty
 
 ## cover: Run tests and open a coverage report.
 cover:

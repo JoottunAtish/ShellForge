@@ -152,6 +152,7 @@ code, the code is right.
 make build           # go build -o bin/shellforge ./cmd/shellforge
 make test            # go test ./...
 make race            # go test -race ./...
+make fuzz            # fuzz the OSC parser for 60s
 make lint            # gofmt + vet + punctuation + links + layer test
 make sec             # govulncheck + gosec
 make image           # build the sandbox image
@@ -163,6 +164,10 @@ make ci              # everything
 
 On Windows use `.\make.ps1 <target>`. `make` is not installed on a default Windows
 box, which is why both exist.
+
+`make fuzz` is deliberately not part of `make ci`: CI already runs a 30 second fuzz
+tripwire on every pull request, and a full 60 second local run on top of that would
+only slow the everything-target down without adding coverage worth the wait.
 
 Run before every commit:
 
