@@ -23,7 +23,7 @@ formally cut.
 | Sandbox image | `Containerfile` written, not yet built |
 | Shell instrumentation | `instrument.bash` written, not yet exercised |
 | Content pack | `pack.yaml` with six acts declared. Zero levels written. |
-| Runtimes | `Runtime` and `Session` interfaces plus their value types and sentinel errors are defined in `internal/runtime`. No backend implemented. |
+| Runtimes | `Runtime` and `Session` interfaces plus their value types and sentinel errors are defined in `internal/runtime`, and the reusable contract suite is defined in `internal/runtime/runtimetest`. No backend implemented, so the suite has not yet run against a real sandbox. |
 | PTY multiplexer and OSC parser | Parser done: streaming OSC 133 and OSC 7 state machine, fuzzed, with a recorded vim session passing through byte-identical. Multiplexer not started. |
 | Verification engine | Not started |
 | Progress database | Not started |
@@ -247,6 +247,29 @@ tightened exit code bound, and test coverage.
   fixture inside the sandbox image, needs Docker). Neither is done here.
   Issue #22 tracks ratifying the ten Parser contract decisions from this
   branch; also not done here, adjudication only.
+
+### Day 1, 2026-08-10: the runtime contract suite
+
+Issue #8. Test infrastructure only. There is still no backend, so the suite
+does not yet run against a real sandbox; the Docker ticket is where it first
+goes green.
+
+- `internal/runtime/runtimetest` now defines `Factory`, `RunContract`, and the
+  twelve exported contract assertions. A backend proves itself by calling
+  `runtimetest.RunContract` and writing zero tests of its own. `WslRuntime` on
+  Day 3 is expected to pass it unchanged.
+- The suite only ever provisions and destroys `runtimetest.SandboxName`, which
+  is `shellforge-contracttest`. Before every `Destroy` it writes a marker file
+  and reads it back, so a `Factory` wired to a real sandbox fails the marker
+  check instead of unregistering somebody's Linux.
+- The package's own tests cover its plumbing rather than any backend: a
+  skipping `Factory` must produce twelve skipped subtests and no failures, the
+  dispatch table must list every exported assertion, and no file in the package
+  may import a backend.
+- Two gaps in the interface surfaced and are recorded for the Docker ticket
+  rather than worked around: `ImageSpec` has no way to say "use the backend's
+  own default reference", and `Status` carries no sandbox identity, which is
+  why the destroy assertion verifies identity with a marker file.
 
 ---
 
