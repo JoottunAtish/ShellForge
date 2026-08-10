@@ -66,7 +66,7 @@ jobs:
     name: Style and punctuation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: No em dashes, en dashes, or smart quotes
         # Rule 0 in CLAUDE.md. A smart quote in a copy-pasteable command is a
@@ -129,7 +129,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v5
         with:
@@ -195,7 +195,7 @@ jobs:
     name: Security
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # A current toolchain, deliberately NOT the go.mod floor. The security
       # tools track recent Go releases (govulncheck v1.6.0 needs Go 1.25+), and
@@ -230,7 +230,7 @@ jobs:
     name: Docs
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Every doc anchor emitted by Go code exists in the docs
         # A doctor probe that points at a heading nobody wrote is worse than no
@@ -264,7 +264,7 @@ jobs:
     name: Sandbox image
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build the sandbox image
         run: docker build -f images/Containerfile -t shellforge-sandbox:ci images/
