@@ -30,6 +30,8 @@ formally cut.
 | Documentation | Design record complete. User docs are outlines. |
 | Engineering rules | `CLAUDE.md` index plus 13 on-demand skills under `.claude/skills/` |
 | Link checker | Done, and verified to catch a broken relative link |
+| Merge gate check | Done. `scripts/check-ci-gates.py` asserts no CI job can fail without blocking a merge |
+| Action pinning gate | Done, and verified to fail on a deliberate tag pin. Covered by `scripts/tests/test_check_ci_gates.py` |
 | Label taxonomy | Defined in `.github/labels.yml`, applied by `./scripts/sync-labels.sh` |
 | Issue templates | Four forms, including a self-contained implementation ticket |
 | MCP servers | `.mcp.json` auto-connects jCodemunch and jDocmunch |
@@ -111,6 +113,24 @@ Not done, deliberately deferred to Day 1:
 - No runtime implementation. No PTY. No container image built.
 - `cobra` not yet added. The hand-rolled dispatcher exists only so that the
   repository builds and CI is green from commit one, and Session A replaces it.
+
+### Day 0 follow-ups, 2026-08-10: CI supply chain
+
+Landed after the scaffold, before Day 1 work started. No engine code touched.
+
+- CI was red on the initial scaffold. Fixed by installing `vim` rather than
+  `vim-tiny` in the sandbox image, and by giving the security job a current
+  toolchain instead of the `go.mod` floor, because `govulncheck` v1.6.0 needs
+  Go 1.25 and `setup-go` sets `GOTOOLCHAIN=local`. Issue #3.
+- Every GitHub Action is now pinned to its commit SHA rather than a `@v7` major
+  tag, with the version in a trailing comment. `SECURITY.md` already committed
+  this project to treating the Actions in CI as a supply chain surface, and a
+  mutable tag was the one place that line was not held. Issue #5.
+- `scripts/check-ci-gates.py` grew a second job: it now also fails on any `uses:`
+  that is not a 40 character lowercase SHA with a version comment, so the pinning
+  does not decay the first time somebody adds a step. Verified against a
+  deliberate tag pin. It has its own pytest suite under `scripts/tests/`, which is
+  the first Python test in the repository and runs in the Style job.
 
 ---
 

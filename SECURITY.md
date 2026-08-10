@@ -93,6 +93,7 @@ These run on every pull request and are documented in [CLAUDE.md](CLAUDE.md):
 | Fuzzing | The OSC parser has a fuzz target; it consumes an adversarial byte stream by design |
 | `go.sum` plus `-mod=readonly` | Dependency changes can only land through a reviewed commit |
 | Dependabot | Dependency updates, reviewed rather than auto-merged |
+| Actions pinned by SHA | Every CI step runs a named commit, not a mutable tag its publisher can repoint. `scripts/check-ci-gates.py` fails the build if a tag pin appears |
 | Layer test | `internal/archtest` prevents the game layer reaching into a runtime implementation |
 
 Design rules we hold ourselves to:
@@ -102,6 +103,9 @@ Design rules we hold ourselves to:
 - Identifiers interpolated into an argv are allowlist-validated and rejected, not
   sanitized.
 - Downloaded artifacts are sha256-verified **before** use, never after.
+- The same rule applies to CI's own tooling. Every GitHub Action is referenced by
+  its 40 character commit SHA with the version in a trailing comment, because a
+  tag is a mutable pointer and a workflow runs with the repository token.
 - The container never runs `--privileged`, defaults to `--network none`, and mounts
   exactly one read-only host path.
 - No telemetry exists in the codebase, so there is nothing to accidentally enable.
