@@ -54,6 +54,17 @@ ACCEPTED = [
         "beefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdead",
         id="image-by-digest",
     ),
+    # YAML allows a quoted scalar, and a correctly pinned action is still
+    # correctly pinned when quoted. An earlier version of the line regex
+    # captured the quote characters as part of the ref, so these failed as
+    # "not a 40 character SHA" while being perfectly valid.
+    pytest.param(
+        f'"actions/checkout@{GOOD_SHA}" # v7.0.1', id="double-quoted-ref"
+    ),
+    pytest.param(
+        f"'actions/checkout@{GOOD_SHA}' # v7.0.1", id="single-quoted-ref"
+    ),
+    pytest.param('"./.github/actions/setup" # local', id="quoted-local-action"),
 ]
 
 
@@ -90,6 +101,12 @@ REJECTED = [
         id="short-sha",
     ),
     pytest.param("docker://alpine:3.20", "by tag", id="image-by-tag"),
+    # Quoting must not become a way to smuggle a tag pin past the gate.
+    pytest.param('"actions/checkout@v7"', "mutable tag", id="double-quoted-tag"),
+    pytest.param("'actions/checkout@v7'", "mutable tag", id="single-quoted-tag"),
+    pytest.param(
+        f'"actions/checkout@{GOOD_SHA}"', "no version comment", id="quoted-no-comment"
+    ),
 ]
 
 
