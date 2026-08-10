@@ -2,8 +2,10 @@ package runtime_test
 
 import (
 	"context"
+	"io/fs"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/JoottunAtish/ShellForge/internal/runtime"
 )
@@ -54,12 +56,153 @@ var (
 // so that a reader who greps for "func Test" finds this file. This is the
 // real test for an interface-only package: it proves the interface is
 // implementable.
+//
+// It does not compare the interface values above to nil: a typed nil pointer
+// stored in an interface value is never itself a nil interface, so
+// "r == nil" can never be false here and that assertion could not have
+// failed no matter what the fakes did. Instead it calls a method on each
+// fake and checks the exact zero value the fakes promise to return, which
+// does fail if a fake stops doing what it says.
 func TestFakesImplementBothInterfaces(t *testing.T) {
 	var r runtime.Runtime = (*fakeRuntime)(nil)
+	if caps := r.Capabilities(); caps != (runtime.Caps{}) {
+		t.Errorf("fakeRuntime.Capabilities() = %+v, want the zero value", caps)
+	}
+	if status, err := r.Status(context.Background()); err != nil || status != (runtime.Status{}) {
+		t.Errorf("fakeRuntime.Status() = (%+v, %v), want (zero value, nil)", status, err)
+	}
+
 	var s runtime.Session = (*fakeSession)(nil)
+	if content, err := s.PullFile(context.Background(), "/x"); err != nil || content != nil {
+		t.Errorf("fakeSession.PullFile() = (%v, %v), want (nil, nil)", content, err)
+	}
+
 	var p runtime.PTY = (*fakePTY)(nil)
-	if r == nil || s == nil || p == nil {
-		t.Fatal("typed nil interface values must be non-nil interfaces")
+	if err := p.Wait(); err != nil {
+		t.Errorf("fakePTY.Wait() = %v, want nil", err)
+	}
+}
+
+// TestValueTypeFieldSets pins the field set of every value type in the
+// ticket. reflect.Type.NumField catches a field silently added or removed;
+// FieldByName plus a type comparison catches a rename or a retype, such as
+// FileEntry.Mode changing from fs.FileMode to uint32, that NumField alone
+// would miss because the count would stay the same.
+func TestValueTypeFieldSets(t *testing.T) {
+	tests := []struct {
+		name   string
+		typ    reflect.Type
+		fields map[string]reflect.Type
+	}{
+		{
+			name: "ImageSpec",
+			typ:  reflect.TypeOf(runtime.ImageSpec{}),
+			fields: map[string]reflect.Type{
+				"Name":      reflect.TypeOf(""),
+				"Tag":       reflect.TypeOf(""),
+				"Reference": reflect.TypeOf(""),
+				"SHA256":    reflect.TypeOf(""),
+			},
+		},
+		{
+			name: "SessionSpec",
+			typ:  reflect.TypeOf(runtime.SessionSpec{}),
+			fields: map[string]reflect.Type{
+				"User":       reflect.TypeOf(""),
+				"WorkDir":    reflect.TypeOf(""),
+				"Env":        reflect.TypeOf(map[string]string(nil)),
+				"StateDir":   reflect.TypeOf(""),
+				"Networking": reflect.TypeOf(false),
+			},
+		},
+		{
+			name: "ExecOpts",
+			typ:  reflect.TypeOf(runtime.ExecOpts{}),
+			fields: map[string]reflect.Type{
+				"User":    reflect.TypeOf(""),
+				"WorkDir": reflect.TypeOf(""),
+				"Env":     reflect.TypeOf(map[string]string(nil)),
+				"Stdin":   reflect.TypeOf([]byte(nil)),
+				"Timeout": reflect.TypeOf(time.Duration(0)),
+			},
+		},
+		{
+			name: "ExecResult",
+			typ:  reflect.TypeOf(runtime.ExecResult{}),
+			fields: map[string]reflect.Type{
+				"Stdout":   reflect.TypeOf([]byte(nil)),
+				"Stderr":   reflect.TypeOf([]byte(nil)),
+				"ExitCode": reflect.TypeOf(0),
+				"Duration": reflect.TypeOf(time.Duration(0)),
+				"TimedOut": reflect.TypeOf(false),
+			},
+		},
+		{
+			name: "AttachOpts",
+			typ:  reflect.TypeOf(runtime.AttachOpts{}),
+			fields: map[string]reflect.Type{
+				"User":    reflect.TypeOf(""),
+				"WorkDir": reflect.TypeOf(""),
+				"Env":     reflect.TypeOf(map[string]string(nil)),
+				"Command": reflect.TypeOf([]string(nil)),
+			},
+		},
+		{
+			name: "FileManifest",
+			typ:  reflect.TypeOf(runtime.FileManifest{}),
+			fields: map[string]reflect.Type{
+				"Files": reflect.TypeOf([]runtime.FileEntry(nil)),
+			},
+		},
+		{
+			name: "FileEntry",
+			typ:  reflect.TypeOf(runtime.FileEntry{}),
+			fields: map[string]reflect.Type{
+				"Path":    reflect.TypeOf(""),
+				"Content": reflect.TypeOf([]byte(nil)),
+				"Mode":    reflect.TypeOf(fs.FileMode(0)),
+				"Owner":   reflect.TypeOf(""),
+			},
+		},
+		{
+			name: "Caps",
+			typ:  reflect.TypeOf(runtime.Caps{}),
+			fields: map[string]reflect.Type{
+				"Networking":   reflect.TypeOf(false),
+				"Systemd":      reflect.TypeOf(false),
+				"MultiUser":    reflect.TypeOf(false),
+				"Snapshotting": reflect.TypeOf(false),
+				"Privileged":   reflect.TypeOf(false),
+			},
+		},
+		{
+			name: "Status",
+			typ:  reflect.TypeOf(runtime.Status{}),
+			fields: map[string]reflect.Type{
+				"Provisioned": reflect.TypeOf(false),
+				"Running":     reflect.TypeOf(false),
+				"Backend":     reflect.TypeOf(""),
+				"Detail":      reflect.TypeOf(""),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got, want := tt.typ.NumField(), len(tt.fields); got != want {
+				t.Fatalf("%s has %d fields, want %d; the field set must match the ticket exactly", tt.name, got, want)
+			}
+			for name, wantType := range tt.fields {
+				f, ok := tt.typ.FieldByName(name)
+				if !ok {
+					t.Errorf("%s has no field %s", tt.name, name)
+					continue
+				}
+				if f.Type != wantType {
+					t.Errorf("%s.%s is %s, want %s", tt.name, name, f.Type, wantType)
+				}
+			}
+		})
 	}
 }
 

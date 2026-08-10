@@ -16,7 +16,11 @@ type Runtime interface {
 	// nothing.
 	Provision(ctx context.Context, spec ImageSpec) error
 
-	// Destroy removes the sandbox this Runtime owns.
+	// Destroy removes the sandbox this Runtime owns. It is idempotent,
+	// mirroring Provision: calling it when nothing has been provisioned
+	// succeeds and returns nil rather than an error, so a caller does not
+	// need to check Status first just to avoid an error on a clean
+	// teardown.
 	//
 	// An implementation compares the target against a compile-time
 	// constant before acting. See ImageSpec.Name.

@@ -176,8 +176,10 @@ type Session interface {
 }
 ```
 
-Changed from the original sketch above, in issue #6, and the code is now the
-authority:
+The code block above is the interface as implemented in issue #6, not the
+original sketch from this design document; that sketch was replaced in place
+and survives only in the file history (`git log -p` on this file). The code
+is now the authority, and it changed from that superseded sketch as follows:
 
 - `Session` is its own interface. A session has a lifetime and a `Close`; a
   runtime does not.

@@ -69,12 +69,15 @@ type PTY interface {
 // directory, with no extra environment and no timeout of its own.
 type ExecOpts struct {
 	// User is the sandbox user to run as. Empty means the session user.
-	// The caller must allowlist-validate it against ^[a-zA-Z0-9_-]+$
-	// before it reaches an argv.
+	// The caller must allowlist-validate it against
+	// ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ before it reaches an argv.
 	User string
 
 	// WorkDir is an absolute path inside the sandbox. Empty means the
 	// session working directory.
+	//
+	// Like FileEntry.Path, it must resolve under /home/learner/. A value
+	// that does not is refused rather than adjusted.
 	WorkDir string
 
 	// Env is added to the session environment for this call only.
@@ -86,7 +89,9 @@ type ExecOpts struct {
 
 	// Timeout bounds this call. Zero means the context alone bounds it. A
 	// call that exceeds it returns with TimedOut set rather than an error,
-	// so a level can report a timeout as its own kind of failure.
+	// so a level can report a timeout as its own kind of failure. When
+	// that happens, ExecResult.ExitCode does not carry a real process exit
+	// status; see ExecResult.TimedOut.
 	Timeout time.Duration
 }
 
@@ -104,14 +109,18 @@ type ExecResult struct {
 	Stderr []byte
 
 	// ExitCode is the exit status. A non-zero value is a normal result,
-	// not an error.
+	// not an error. When TimedOut is true, ExitCode is not a process exit
+	// status: the process was killed before it could exit on its own, and
+	// an implementation sets ExitCode to -1 so a caller cannot mistake a
+	// killed process for one that exited cleanly.
 	ExitCode int
 
 	// Duration is how long the call took.
 	Duration time.Duration
 
 	// TimedOut reports that ExecOpts.Timeout elapsed and the process was
-	// killed.
+	// killed. When this is true, read ExitCode as -1, not as a pass or
+	// fail exit status.
 	TimedOut bool
 }
 
@@ -119,12 +128,15 @@ type ExecResult struct {
 // terminal.
 type AttachOpts struct {
 	// User is the sandbox user to run as. Empty means the session user.
-	// The caller must allowlist-validate it against ^[a-zA-Z0-9_-]+$
-	// before it reaches an argv.
+	// The caller must allowlist-validate it against
+	// ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ before it reaches an argv.
 	User string
 
 	// WorkDir is an absolute path inside the sandbox. Empty means the
 	// session working directory.
+	//
+	// Like FileEntry.Path, it must resolve under /home/learner/. A value
+	// that does not is refused rather than adjusted.
 	WorkDir string
 
 	// Env is added to the session environment for the attached process.
@@ -145,8 +157,15 @@ type FileManifest struct {
 // FileEntry is one file to write inside the sandbox.
 type FileEntry struct {
 	// Path is absolute and inside the sandbox. It must resolve under the
-	// level setup root, and the caller checks that before calling
-	// PushFiles.
+	// level setup root, which lives under /home/learner/. This is what a
+	// materialize call trusts and what a reset path later trusts again, so
+	// it is checked twice: the caller validates it before calling
+	// PushFiles, and an implementation checks it again before writing.
+	// Both checks apply the same order: clean the path, check the prefix,
+	// resolve symlinks, then check the prefix again, because a symlink
+	// placed during the level can point outside the root even when the
+	// unresolved path looks fine. A path that fails either check is
+	// refused, never adjusted or truncated into place.
 	Path string
 
 	// Content is the file body. An implementation strips carriage returns

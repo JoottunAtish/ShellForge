@@ -143,14 +143,32 @@ Issue #6. Types only, no behaviour, so nothing new runs yet.
   to import L2. `internal/pty` consumes the interface, it does not own it.
 - `Exec` takes `argv []string` and there is no string form anywhere in the
   package. A test parses the package source and fails on an exported function
-  or on a bare string parameter named like a command, so a convenience overload
-  cannot arrive quietly later.
+  or method regardless of receiver, or on a bare string parameter named like a
+  command on any interface the package declares (not a hardcoded list of
+  three), so a convenience overload cannot arrive quietly later.
 - `Snapshot` and `Restore` were left off deliberately. Reset wipes the scratch
   directory on both backends and no caller needs them, so adding them now would
   only buy two implementations of `ErrNotSupported`.
-- The allowlist requirement on `ImageSpec.Name` and on every `User` field is in
-  the doc comments and a test asserts the wording is still there, because the
-  destroy path that will trust those fields has not been written yet.
+- The allowlist requirement on `ImageSpec.Name`, on every `User` field, and on
+  `FileEntry.Path` is in the doc comments, and a test walks every exported
+  struct field by name so a new field called `Name`, `User`, or `Path` on a
+  future type is covered automatically rather than by a hardcoded table. The
+  allowlist regexp is `^[a-zA-Z0-9][a-zA-Z0-9_-]*$`, which additionally
+  refuses a leading hyphen so a validated value cannot be mistaken for a flag.
+  This is stricter than the regexp still quoted in the ticket and in the
+  security skill; those need a follow-up so the three do not drift apart. The
+  destroy path that will trust `ImageSpec.Name` has not been written yet, and
+  `Destroy` is now documented as idempotent, matching `Provision`, so that
+  path can call it without checking `Status` first.
+- Sentinel error identity is now covered two ways: by position rather than by
+  value in the wrapping test, so an accidental alias of one sentinel to
+  another cannot hide by being skipped as `this test's own sentinel`, and by a
+  direct pairwise comparison that fails on its own line if two sentinels are
+  ever the same value.
+- A reflect-based table pins the field count and the field types of every
+  value type in the ticket, so a deleted field, a renamed field, or a retyped
+  field (`fs.FileMode` silently becoming `uint32`, for example) fails even
+  though nothing else in the package changed.
 - Still zero dependencies. The package builds against the standard library
   alone.
 
