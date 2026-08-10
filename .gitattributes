@@ -1,0 +1,60 @@
+# Line endings are not a style preference in this project, they are a bug class.
+#
+# A .sh file checked out with CRLF fails inside the Linux sandbox with
+#   bad interpreter: /bin/bash^M
+# which is an opaque error that costs roughly half a day to diagnose the first
+# time you meet it. This file is committed before any other file in the repo so
+# that no contributor can ever check out a CRLF shell script.
+#
+# The engine ALSO strips \r when materializing files into the sandbox. Both
+# defences are deliberate. Do not remove either one.
+
+* text=auto eol=lf
+
+# Anything that runs inside the Linux sandbox must be LF.
+*.sh            text eol=lf
+*.bash          text eol=lf
+*.yaml          text eol=lf
+*.yml           text eol=lf
+*.go            text eol=lf
+*.md            text eol=lf
+*.toml          text eol=lf
+*.json          text eol=lf
+*.sql           text eol=lf
+*.tsv           text eol=lf
+*.log           text eol=lf
+Makefile        text eol=lf
+Containerfile   text eol=lf
+Dockerfile      text eol=lf
+.gitattributes  text eol=lf
+.gitignore      text eol=lf
+.editorconfig   text eol=lf
+
+# Anything consumed by Windows tooling must be CRLF.
+*.ps1           text eol=crlf
+*.psm1          text eol=crlf
+*.bat           text eol=crlf
+*.cmd           text eol=crlf
+
+# Never touched by line ending conversion.
+*.tar           binary
+*.tar.gz        binary
+*.tgz           binary
+*.gz            binary
+*.zst           binary
+*.zip           binary
+*.png           binary
+*.jpg           binary
+*.jpeg          binary
+*.gif           binary
+*.ico           binary
+*.woff          binary
+*.woff2         binary
+*.db            binary
+*.sqlite        binary
+*.vhdx          binary
+*.cast          binary
+
+# Keep documentation and generated content out of the language statistics.
+docs/**             linguist-documentation
+packs/**/assets/**  linguist-generated
