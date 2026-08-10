@@ -5,7 +5,7 @@ push, get CI green, and add a line here. No silent carry-over. If an exit criter
 is unchecked the next morning, it either gets done before new work or it gets
 formally cut.
 
-**Current state: Day 0 complete. No engine yet.**
+**Current state: Day 0 complete. Day 1 started: the runtime interface exists, no backend behind it yet.**
 
 ---
 
@@ -23,7 +23,7 @@ formally cut.
 | Sandbox image | `Containerfile` written, not yet built |
 | Shell instrumentation | `instrument.bash` written, not yet exercised |
 | Content pack | `pack.yaml` with six acts declared. Zero levels written. |
-| Runtimes | Not started |
+| Runtimes | `Runtime` and `Session` interfaces plus their value types and sentinel errors are defined in `internal/runtime`. No backend implemented. |
 | PTY multiplexer and OSC parser | Not started |
 | Verification engine | Not started |
 | Progress database | Not started |
@@ -131,6 +131,28 @@ Landed after the scaffold, before Day 1 work started. No engine code touched.
   does not decay the first time somebody adds a step. Verified against a
   deliberate tag pin. It has its own pytest suite under `scripts/tests/`, which is
   the first Python test in the repository and runs in the Style job.
+
+### Day 1, 2026-08-10: the runtime interface
+
+Issue #6. Types only, no behaviour, so nothing new runs yet.
+
+- `internal/runtime` now declares `Runtime` and `Session`, plus `ImageSpec`,
+  `SessionSpec`, `ExecOpts`, `ExecResult`, `AttachOpts`, `PTY`, `FileManifest`,
+  `FileEntry`, `Caps`, and `Status`, and the three sentinel errors.
+- `PTY` lives at L1 rather than in `internal/pty`, so that a runtime never has
+  to import L2. `internal/pty` consumes the interface, it does not own it.
+- `Exec` takes `argv []string` and there is no string form anywhere in the
+  package. A test parses the package source and fails on an exported function
+  or on a bare string parameter named like a command, so a convenience overload
+  cannot arrive quietly later.
+- `Snapshot` and `Restore` were left off deliberately. Reset wipes the scratch
+  directory on both backends and no caller needs them, so adding them now would
+  only buy two implementations of `ErrNotSupported`.
+- The allowlist requirement on `ImageSpec.Name` and on every `User` field is in
+  the doc comments and a test asserts the wording is still there, because the
+  destroy path that will trust those fields has not been written yet.
+- Still zero dependencies. The package builds against the standard library
+  alone.
 
 ---
 
