@@ -5,7 +5,7 @@ push, get CI green, and add a line here. No silent carry-over. If an exit criter
 is unchecked the next morning, it either gets done before new work or it gets
 formally cut.
 
-**Current state: Day 0 complete. Day 1 started: the runtime interface exists, no backend behind it yet.**
+**Current state: Day 0 complete. Day 1 in progress: the runtime interface and the streaming OSC parser exist. No PTY multiplexer, and no backend behind the runtime interface yet.**
 
 ---
 
@@ -24,7 +24,7 @@ formally cut.
 | Shell instrumentation | `instrument.bash` written, not yet exercised |
 | Content pack | `pack.yaml` with six acts declared. Zero levels written. |
 | Runtimes | `Runtime` and `Session` interfaces plus their value types and sentinel errors are defined in `internal/runtime`. No backend implemented. |
-| PTY multiplexer and OSC parser | Not started |
+| PTY multiplexer and OSC parser | Parser done: streaming OSC 133 and OSC 7 state machine, fuzzed, with a recorded vim session passing through byte-identical. Multiplexer not started. |
 | Verification engine | Not started |
 | Progress database | Not started |
 | Documentation | Design record complete. User docs are outlines. |
@@ -171,6 +171,42 @@ Issue #6. Types only, no behaviour, so nothing new runs yet.
   though nothing else in the package changed.
 - Still zero dependencies. The package builds against the standard library
   alone.
+
+---
+
+### Day 1, 2026-08-10: the streaming OSC parser
+
+Issue #7. First working code in `internal/pty`.
+
+- `internal/pty` declares `Parser`, `NewParser`, `Write`, `Flush`, `Event`,
+  `EventKind`, and `MaxOSCPayload`. It recognizes `133;A`, `133;B`, `133;C`,
+  `133;D;<exit>`, and `7;file://<host><path>`, with both terminators, BEL and
+  ESC backslash.
+- A byte-level state machine over four states, not a regex over a buffer. Only
+  the payload is buffered, capped at 4096 bytes, and a sequence that reaches the
+  cap is abandoned with every held byte forwarded and nothing stripped.
+- Only a fully parsed and recognized sequence is stripped. Everything else is
+  forwarded byte for byte: window title sequences, CSI traffic, and any payload
+  that starts with `133;` but names no subcommand we know.
+- `Event.At` is stamped by the parser when the terminator byte is consumed. The
+  clock is an unexported field so tests can pin it.
+- `testdata/vim-session.bin` is 4601 bytes of real PTY master output from vim.
+  It passes through with zero bytes added and zero removed. A test asserts its
+  length, its 19 CRLF pairs, and its two OSC title sequences, so a line ending
+  rewrite cannot change the fixture unnoticed. `.gitattributes` now marks
+  `*.bin` binary for the same reason: git was only leaving those CRs alone
+  because seven lone CRs made `text=auto` guess binary, which is an accident.
+- `FuzzParser` runs for 30 s in CI as a step inside the Test job. Its
+  invariants: the output is always a subsequence of the input, and feeding a
+  stream one byte per `Write` produces the same bytes and the same events as
+  feeding it whole.
+- A learner can type a byte-identical forged marker and the parser cannot tell
+  the difference, by construction. Nothing about scoring may trust a journal
+  exit code; verification checks state. That needs a follow-up on the journal
+  side before Act VI.
+- No user-facing error path here, so no doc anchor. The multiplexer owns the
+  user-facing wrapping.
+- Still zero dependencies.
 
 ---
 

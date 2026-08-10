@@ -200,6 +200,23 @@ jobs:
         # The PTY multiplexer is concurrent by nature, so this is not optional.
         run: go test -race ./...
 
+      - name: Fuzz the OSC parser
+        # The parser consumes an adversarial byte stream by construction: the
+        # learner can type any bytes at the prompt, including a forged OSC 133.
+        # Thirty seconds is not a proof, it is a tripwire that catches a panic
+        # or a chunk-boundary regression before it reaches anybody.
+        #
+        # A step inside this job, not a job of its own: scripts/check-ci-gates.py
+        # asserts that all-green depends on every job and that every produced
+        # check is required in .github/rulesets/main.json, so a new job would
+        # need a ruleset change to stay inside the merge gate.
+        #
+        # Linux only. Fuzzing needs coverage instrumentation and a writable
+        # build cache, the Windows runner is slower, and the parser has no
+        # platform-specific code, so a second run buys minutes and nothing else.
+        if: matrix.os == 'ubuntu-latest'
+        run: go test -run '^FuzzParser$' -fuzz '^FuzzParser$' -fuzztime 30s ./internal/pty
+
   # -------------------------------------------------------------------------
   # Security. Separate job so a vulnerability report does not hide behind a
   # compile error, and so it can be read at a glance in the checks list.
