@@ -76,6 +76,10 @@ links:
 arch:
 	go test ./internal/archtest/...
 
+## gates: Assert no CI job can fail without blocking a merge.
+gates:
+	@python3 scripts/check-ci-gates.py 2>/dev/null || python scripts/check-ci-gates.py
+
 ## labels: Sync GitHub issue labels from .github/labels.yml.
 labels:
 	@bash scripts/sync-labels.sh

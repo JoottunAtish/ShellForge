@@ -45,12 +45,28 @@
       }
     },
     {
-      "_comment": "The Day 0 gates. A branch cannot merge past a red build.",
+      "_comment": [
+        "The Day 0 gates. A branch cannot merge past a red build, and cannot",
+        "merge while behind main with stale passing checks.",
+        "",
+        "'All checks green' is the important one. GitHub only blocks a merge on",
+        "checks listed here, so a job that is not listed can fail and be merged",
+        "past, and a job added later is not listed by definition. That aggregate",
+        "job depends on every other job, runs with if: always(), and fails if any",
+        "of them failed. So ANY failing check blocks the merge, required or not.",
+        "",
+        "The individual checks are listed as well, deliberately. If the aggregate",
+        "job were renamed or removed, its context would stop reporting and the",
+        "hole would reopen quietly. scripts/check-ci-gates.py asserts both that",
+        "the aggregate depends on every job and that every job is listed here, and",
+        "it runs in the Style job, so this list cannot drift from the workflow."
+      ],
       "type": "required_status_checks",
       "parameters": {
         "strict_required_status_checks_policy": true,
         "do_not_enforce_on_create": false,
         "required_status_checks": [
+          { "context": "All checks green" },
           { "context": "Branch name" },
           { "context": "Style and punctuation" },
           { "context": "Test (ubuntu-latest)" },
