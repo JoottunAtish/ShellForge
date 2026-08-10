@@ -23,7 +23,7 @@ formally cut.
 | Sandbox image | `Containerfile` written, not yet built |
 | Shell instrumentation | `instrument.bash` written, not yet exercised |
 | Content pack | `pack.yaml` with six acts declared. Zero levels written. |
-| Runtimes | `Runtime` and `Session` interfaces plus their value types and sentinel errors are defined in `internal/runtime`. No backend implemented. |
+| Runtimes | `Runtime` and `Session` interfaces plus their value types and sentinel errors are defined in `internal/runtime`, and the reusable contract suite is defined in `internal/runtime/runtimetest`. No backend implemented, so the suite has not yet run against a real sandbox. |
 | PTY multiplexer and OSC parser | Parser done: streaming OSC 133 and OSC 7 state machine, fuzzed, with a recorded vim session passing through byte-identical. Multiplexer not started. |
 | Verification engine | Not started |
 | Progress database | Not started |
@@ -247,6 +247,54 @@ tightened exit code bound, and test coverage.
   fixture inside the sandbox image, needs Docker). Neither is done here.
   Issue #22 tracks ratifying the ten Parser contract decisions from this
   branch; also not done here, adjudication only.
+
+### Day 1, 2026-08-10: the runtime contract suite
+
+Issue #8, PR #31. Test infrastructure only. There is still no backend, so the
+suite does not yet run against a real sandbox; the Docker ticket is where it
+first goes green.
+
+- `internal/runtime/runtimetest` now defines `Factory`, `RunContract`, and the
+  twelve exported contract assertions. A backend proves itself by calling
+  `runtimetest.RunContract` and writing zero tests of its own. `WslRuntime` on
+  Day 3 is expected to pass it unchanged.
+- The suite only ever provisions and destroys `runtimetest.SandboxName`, which
+  is `shellforge-contracttest`. This is the suite's only real guard against
+  destroying the wrong sandbox: a `Factory` must return a test-only
+  constructor whose compile-time destroy target is `SandboxName`, never a
+  backend's production constructor. An earlier draft wrote a marker file
+  before `Destroy` and read it back, and called that an identity check. It
+  was not one: pushing a file and reading it back through the same `Session`
+  proves round-tripping, already covered by `TestPullFileRoundTrips`, and
+  nothing about which sandbox is on the other end. That mechanism is gone.
+  Every assertion that provisions now calls `ensureNoSandbox` first
+  (`Destroy`, then assert `Status().Provisioned == false`), which proves the
+  assertion's own precondition instead of assuming it, but proves nothing
+  about a sandbox this suite did not itself create. If a `Factory` is wired
+  wrong, the sandbox is lost the moment `Destroy` is first called, same as
+  before.
+- Review also settled two open contract questions, recorded for issue #32:
+  `Session` (`Exec`, `Attach`, `PushFiles`, `PullFile`) is safe for
+  concurrent use, `Close` is not concurrent-safe with another in-flight call
+  but is idempotent; and a successful `Provision` leaves the sandbox
+  running, not merely created, so `StartSession` needs no separate start
+  step.
+- The package's own tests cover its plumbing rather than any backend: a
+  skipping `Factory` must produce twelve skipped subtests and no failures,
+  the dispatch table must list every exported assertion declared anywhere
+  in the package's non-test files (not just `contract.go`), and no file in
+  the package may import anything but the standard library and
+  `internal/runtime` itself, `net/http` and `os/exec` included even though
+  both are standard library.
+- Four gaps in the interface surfaced and are recorded for issue #32 rather
+  than worked around: no way to enumerate or count sandboxes, so "leaves
+  exactly one sandbox" is only assertable as "the same sandbox still works"
+  (F1); `Status` carrying no sandbox identity, the reason the destroy
+  assertion can only prove its own precondition rather than verify identity
+  (F2); `FileEntry` having no way to mark content binary, so the CR-stripping
+  rule cannot be fully stated without risking asset corruption (F3); and
+  `ImageSpec` having no way to say "use the backend's own default reference"
+  (F4).
 
 ---
 
