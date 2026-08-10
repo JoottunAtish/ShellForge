@@ -74,6 +74,9 @@ jobs:
         # a terminal that is not UTF-8 clean.
         run: ./scripts/check-punctuation.sh
 
+      - name: Allowlist regexp consistency
+        run: ./scripts/check-allowlist-regexp.sh
+
       - name: No CRLF in files bound for the sandbox
         # CRLF in a .sh produces "bad interpreter: /bin/bash^M" inside Linux.
         # .gitattributes prevents it; this proves .gitattributes is working.

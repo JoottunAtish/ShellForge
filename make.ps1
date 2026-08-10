@@ -92,10 +92,11 @@ function Show-Help {
         'fmt'      = 'Format all Go source in place'
         'vet'      = 'Run go vet'
         'punct'    = 'Fail on em dashes, en dashes, smart quotes (Rule 0)'
+        'allowlist' = 'Fail if the argv identifier allowlist regexp drifts'
         'links'    = 'Fail on broken relative links in Markdown'
         'arch'     = 'Enforce the layer dependency rule'
         'labels'   = 'Sync GitHub labels from .github/labels.yml'
-        'lint'     = 'gofmt check, vet, punctuation, links, layer test'
+        'lint'     = 'gofmt check, vet, punctuation, allowlist, links, layer test'
         'vuln'     = 'govulncheck against dependencies and toolchain'
         'gosec'    = 'Static security analysis'
         'sec'      = 'All security checks'
@@ -134,13 +135,15 @@ switch ($Target.ToLowerInvariant()) {
         go tool cover -func=coverage.out | Select-Object -Last 1
     }
 
-    'punct'  { Invoke-Bash 'scripts/check-punctuation.sh' }
-    'links'  { Invoke-Bash 'scripts/check-links.sh' }
-    'labels' { Invoke-Bash 'scripts/sync-labels.sh' }
+    'punct'     { Invoke-Bash 'scripts/check-punctuation.sh' }
+    'allowlist' { Invoke-Bash 'scripts/check-allowlist-regexp.sh' }
+    'links'     { Invoke-Bash 'scripts/check-links.sh' }
+    'labels'    { Invoke-Bash 'scripts/sync-labels.sh' }
 
     'lint' {
         Invoke-Step 'vet' { go vet ./... }
         Invoke-Bash 'scripts/check-punctuation.sh'
+        Invoke-Bash 'scripts/check-allowlist-regexp.sh'
         Invoke-Bash 'scripts/check-links.sh'
         Invoke-Step 'arch' { go test ./internal/archtest/... }
         $unformatted = & gofmt -s -l .

@@ -48,8 +48,14 @@ highest-risk code in the project.
   (`docker`, `wsl.exe`) and let `exec.LookPath` find them. Do not accept a runtime
   binary path from config or from a level.
 - **Validate before you execute.** Distro names, container names, level IDs and
-  user names go through a strict allowlist regexp (`^[a-zA-Z0-9_-]+$` for
-  identifiers) before reaching an argv. **Reject, do not sanitize.**
+  user names go through a strict allowlist regexp
+  (`^[a-zA-Z0-9][a-zA-Z0-9_-]*$` for identifiers) before reaching an argv.
+  **Reject, do not sanitize.** The first character must be alphanumeric because a
+  value that can start with a hyphen is flag-shaped: once it reaches an argv
+  vector as a positional operand, `docker` or `wsl.exe` reads it as an option
+  rather than as a value, so a name like `-f` or `--force` becomes an argument
+  injection. That is a different failure from shell injection, and passing an
+  argv vector instead of a command string does not stop it.
 - **Prefer the standard library over a subprocess.** If `os`, `io/fs`, or
   `archive/tar` can do it, do not spawn a process.
 - `Session.Exec` takes `argv []string`, not a command string. That is a security
