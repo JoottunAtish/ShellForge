@@ -21,12 +21,30 @@ ENV LANG=C.UTF-8 \
     TZ=UTC \
     DEBIAN_FRONTEND=noninteractive
 
+# Put documentation back before installing anything.
+#
+# Debian slim images ship a dpkg configuration fragment full of `path-exclude`
+# lines that discard man pages, and once a package is unpacked under those rules
+# its documentation is simply not on disk. The fragment's filename has varied
+# across base images and over time (`docker`, `docker-nodoc`, `excludes`), so
+# this finds it by content rather than guessing the name. Guessing the name is
+# exactly how this silently failed the first time.
+#
+# This has to be its own layer, ahead of every apt-get install below.
+RUN set -eux; \
+    grep -rl 'path-exclude' /etc/dpkg/dpkg.cfg.d/ 2>/dev/null | xargs -r rm -fv; \
+    if grep -rq 'path-exclude' /etc/dpkg/dpkg.cfg.d/ 2>/dev/null; then \
+        echo "FATAL: a path-exclude rule survived, man pages would be stripped"; \
+        grep -r 'path-exclude' /etc/dpkg/dpkg.cfg.d/; \
+        exit 1; \
+    fi
+
 # The toolset the curriculum actually teaches.
 #
-# Do NOT strip man pages. Reading `man` is level 4, and it is the single most
-# valuable level in the game. The default Debian slim image excludes them, so
-# the /etc/dpkg/dpkg.cfg.d/docker override below puts them back before man-db
-# is installed.
+# Do NOT strip man pages. Reading `man` is level 4, the single most valuable
+# level in the game, and everything after it assumes the learner can read a
+# manual. The layer above removes the exclusion rules and the layer below
+# reinstalls the base packages so their pages land.
 #
 # `vim` and not `vim-tiny`, deliberately deviating from the toolset list in
 # docs/design/ARCHITECTURE.md section 4.4. On Debian, vim-tiny installs
@@ -38,7 +56,6 @@ ENV LANG=C.UTF-8 \
 # 2.5 GB budget. `nano` stays, because someone who lands in an editor by
 # accident needs an obvious way out.
 RUN set -eux; \
-    rm -f /etc/dpkg/dpkg.cfg.d/docker-nodoc /etc/dpkg/dpkg.cfg.d/excludes; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
         bash \
@@ -71,14 +88,26 @@ RUN set -eux; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*
 
-# Reinstall the core packages so their man pages land now that the exclusion
-# rules are gone. Without this, `man ls` fails and level 4 is unplayable.
+# Reinstall the packages that came with the base image.
+#
+# coreutils, grep, sed and findutils were unpacked while the path-exclude rules
+# were still in force, so their man pages are not on disk no matter what we do
+# afterwards. Reinstalling is the only way to get them back.
+#
+# The assertions at the end fail the BUILD rather than shipping an image where
+# level 4 is unplayable. Catching this in CI was already too late once.
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --reinstall --no-install-recommends coreutils findutils grep sed; \
+    apt-get install -y --reinstall --no-install-recommends \
+        coreutils findutils grep sed bash; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*; \
-    mandb -q || true
+    mandb -q; \
+    for page in man1/ls.1.gz man1/grep.1.gz man1/find.1.gz man1/chmod.1.gz; do \
+        test -f "/usr/share/man/$page" || { echo "FATAL: /usr/share/man/$page is missing"; exit 1; }; \
+    done; \
+    man ls >/dev/null 2>&1 || { echo "FATAL: 'man ls' does not work, level nav-04 would be unplayable"; exit 1; }; \
+    echo "OK: man pages present and 'man ls' works"
 
 # The learner. uid 1000 so file ownership matches on a bind mount and so `id`
 # shows something familiar in level 20.
