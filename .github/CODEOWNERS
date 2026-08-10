@@ -1,0 +1,47 @@
+# Shellforge code owners.
+#
+# Every pull request touching a matched path needs an approving review from the
+# listed owner before it can merge. The `main` branch ruleset enforces this; see
+# .github/rulesets/main.json and ./scripts/sync-ruleset.sh.
+#
+# Syntax note: the LAST matching pattern wins, so the catch-all goes first and
+# the more specific rules follow it.
+
+# Default owner for everything not matched below.
+*                           @JoottunAtish
+
+# ---------------------------------------------------------------------------
+# Safety critical. These are the paths where a mistake reaches the learner's
+# own machine, and they must never merge without an owner's eyes on them.
+# ---------------------------------------------------------------------------
+/images/                    @JoottunAtish
+/internal/runtime/          @JoottunAtish
+/internal/sandbox/          @JoottunAtish
+/internal/platform/         @JoottunAtish
+/scripts/                   @JoottunAtish
+
+# ---------------------------------------------------------------------------
+# The rules themselves. A change here changes how everything else is judged.
+# ---------------------------------------------------------------------------
+/CLAUDE.md                  @JoottunAtish
+/.claude/                    @JoottunAtish
+/SECURITY.md                @JoottunAtish
+/CODE_OF_CONDUCT.md         @JoottunAtish
+/.github/                   @JoottunAtish
+/.gitattributes             @JoottunAtish
+/.mcp.json                  @JoottunAtish
+
+# ---------------------------------------------------------------------------
+# The two living contracts. Drift between these and the code is how content
+# authors lose trust in both.
+# ---------------------------------------------------------------------------
+/docs/LEVEL-FORMAT.md       @JoottunAtish
+/docs/05-troubleshooting.md @JoottunAtish
+
+# ---------------------------------------------------------------------------
+# Content. Deliberately listed separately: when a second maintainer joins, this
+# is the first block to hand over, because level review is a different skill
+# from engine review.
+# ---------------------------------------------------------------------------
+/packs/                     @JoottunAtish
+/docs/CURRICULUM.md         @JoottunAtish

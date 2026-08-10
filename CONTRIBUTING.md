@@ -144,6 +144,10 @@ and is worried about breaking their laptop.
 
 ## Pull requests
 
+- **Branch naming is `<kind>/issue-<number>`**, where kind is `feature`, `bug`, or
+  `chore`. For example `feature/issue-24`. CI rejects anything else, so open the
+  issue first. Every branch traces to a ticket, because the ticket is where the
+  reasoning lives when someone asks in six months why this happened.
 - Branch from `main`. One logical change per PR.
 - Include tests. Write them alongside the code, not "later".
 - If your change touches the level format, update
@@ -155,6 +159,19 @@ and is worried about breaking their laptop.
 
 CI must be green. If Windows CI is flaky rather than genuinely broken, say so in the
 PR and a maintainer will make the call.
+
+### Merging
+
+`main` is protected. A pull request needs **an approving review from a code owner**
+before it can merge, all status checks green, and the branch up to date with `main`.
+Code owners are listed in [.github/CODEOWNERS](.github/CODEOWNERS), and the
+safety-critical paths (the sandbox image, the runtimes, the platform layer, the
+scripts, and the rules themselves) are owned explicitly.
+
+This means you cannot merge your own contribution, and neither can we without a
+second pair of eyes once there is a second maintainer. That is deliberate: this
+project runs a real shell on a beginner's laptop and promises them nothing can go
+wrong.
 
 ---
 

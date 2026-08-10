@@ -94,6 +94,15 @@ jobs:
           fi
           echo "OK: no CRLF in sandbox-bound files"
 
+      - name: No CI job can escape the merge gate
+        # Asserts that `all-green` depends on every job, that it is
+        # `if: always()`, and that every produced check is required in the
+        # ruleset. Without this, adding a job silently creates a check that can
+        # fail without blocking a merge.
+        run: |
+          python3 -m pip install --quiet pyyaml
+          python3 scripts/check-ci-gates.py
+
       - name: Sandbox shims are executable
         run: |
           set -euo pipefail
@@ -188,9 +197,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # A current toolchain, deliberately NOT the go.mod floor. The security
+      # tools track recent Go releases (govulncheck v1.6.0 needs Go 1.25+), and
+      # setup-go v7 sets GOTOOLCHAIN=local so `go install ...@latest` cannot
+      # fetch a newer one for itself. A newer toolchain analyses a `go 1.23`
+      # module correctly, so nothing is lost here. The Test matrix keeps using
+      # go.mod, because verifying the declared floor is the point of that job.
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: stable
           cache: true
 
       - name: govulncheck
@@ -259,7 +274,9 @@ jobs:
           set -euo pipefail
           docker run --rm shellforge-sandbox:ci bash -lc '
             set -e
-            for c in ls grep find sed awk less vim tree jq htop man id sudo; do
+            # Both vim and vi. vim-tiny provides vi but NOT vim, so checking
+            # only one of them lets a package swap silently remove the other.
+            for c in ls grep find sed awk less nano vim vi tree jq file htop man id sudo; do
               command -v "$c" >/dev/null || { echo "MISSING: $c"; exit 1; }
             done
             # Level 4 is "read the manual". If man pages were stripped, that
@@ -277,3 +294,65 @@ jobs:
           docker rm -f sf-export
           ls -lh rootfs.tar.gz
           sha256sum rootfs.tar.gz
+
+  # -------------------------------------------------------------------------
+  # The merge gate.
+  #
+  # GitHub only blocks a merge on checks listed as required in the ruleset. A
+  # job that is not listed can fail and still be merged past, and a job added
+  # later is not listed by definition. That is the hole this job closes.
+  #
+  # It depends on every other job, runs even when they fail, and fails if any
+  # of them did not succeed. The ruleset requires THIS check, so any failing
+  # job blocks the merge whether or not it is individually required.
+  #
+  # The individual checks stay in the ruleset as well. Belt and braces: this
+  # job going missing or being renamed would otherwise silently open the hole
+  # back up, and the meta-check in the `style` job guards against exactly that.
+  # -------------------------------------------------------------------------
+  all-green:
+    name: All checks green
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [branch, style, test, security, docs, image]
+    steps:
+      - name: Every job must have succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+
+          # `branch` is the only job allowed to be skipped, and only because it
+          # is scoped to pull_request events. Every other skip is treated as a
+          # failure, so a job cannot escape the gate by not running.
+          SKIPPABLE="branch"
+
+          failed=0
+          while read -r job result; do
+            case "$result" in
+              success)
+                printf '  ok        %s\n' "$job"
+                ;;
+              skipped)
+                if grep -qw "$job" <<<"$SKIPPABLE" && [ "$EVENT" != "pull_request" ]; then
+                  printf '  skipped   %s (expected on %s)\n' "$job" "$EVENT"
+                else
+                  printf '  SKIPPED   %s (not allowed to skip here)\n' "$job"
+                  failed=1
+                fi
+                ;;
+              *)
+                printf '  FAILED    %s (%s)\n' "$job" "$result"
+                failed=1
+                ;;
+            esac
+          done < <(jq -r 'to_entries[] | "\(.key) \(.value.result)"' <<<"$NEEDS")
+
+          if [ "$failed" -ne 0 ]; then
+            echo
+            echo "One or more checks did not pass. Merge is blocked."
+            exit 1
+          fi
+          echo
+          echo "All checks green."

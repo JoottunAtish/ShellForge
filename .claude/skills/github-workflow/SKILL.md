@@ -145,6 +145,42 @@ the CLI, pass it as the body and fill it in.
 - **One logical change per PR.** A refactor bundled with a bug fix makes both harder
   to review and impossible to revert cleanly.
 
+## Merging: only code owners
+
+`main` is protected by a ruleset. The rules, and the reason each exists:
+
+| Rule | Effect |
+|---|---|
+| Pull request required | Nothing reaches `main` directly |
+| 1 approving review, **from a code owner** | Only a code owner can authorise a merge |
+| Stale reviews dismissed on push | An approval covers the code that was approved, not whatever landed afterwards |
+| Last push requires approval | You cannot approve, then push, then merge |
+| Review threads resolved | A blocking comment cannot be merged past silently |
+| All status checks green, up to date with `main` | No merging past a red build, and no merging stale |
+| No deletion, no force push | `main` history is shared |
+
+Code owners are declared in `.github/CODEOWNERS`. The safety-critical paths are
+owned explicitly: `images/`, `internal/runtime/`, `internal/sandbox/`,
+`internal/platform/`, `scripts/`, `.github/`, `CLAUDE.md`, `.claude/`, and the two
+living contracts. A change to any of those cannot merge without an owner's
+approval.
+
+The ruleset itself lives in `.github/rulesets/main.json` and is applied with
+`./scripts/sync-ruleset.sh`. GitHub does not version control rulesets, so keeping
+the JSON in the repository means a protection rule cannot be quietly weakened in
+the web interface without a reviewable diff.
+
+**The admin bypass, and why it is there.** GitHub does not let anyone approve their
+own pull request. On a single-maintainer repository, a code-owner-review requirement
+with no bypass locks the maintainer out of their own project completely. So
+`RepositoryAdmin` is on the bypass list. **Remove that entry as soon as a second
+maintainer exists**, because until then it is the difference between a rule and a
+wall. An admin merging past a red build is then a deliberate and visible act rather
+than an accident.
+
+**Never merge your own PR by bypassing when someone else could review it.** The
+bypass is a lock pick for when you are alone in the building, not a normal door.
+
 ## Review comments
 
 Reviewing is a teaching act in a project about teaching. Match the tone.
