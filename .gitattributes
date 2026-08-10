@@ -55,6 +55,15 @@ Dockerfile      text eol=lf
 *.vhdx          binary
 *.cast          binary
 
+# Recorded terminal traffic, used as a byte-identity test fixture. These files
+# contain CR bytes on purpose: they are what a real PTY emitted. Without an
+# explicit `binary` here, `* text=auto` classifies such a capture by heuristic,
+# and a capture whose CRs all happen to be part of CRLF pairs would have those
+# pairs normalized to LF on checkin. The fixture would still compare equal to
+# itself, so no test would fail; it would simply stop being a faithful recording
+# of the bytes the parser has to survive.
+*.bin           binary
+
 # Keep documentation and generated content out of the language statistics.
 docs/**             linguist-documentation
 packs/**/assets/**  linguist-generated
