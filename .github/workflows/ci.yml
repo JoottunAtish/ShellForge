@@ -94,14 +94,27 @@ jobs:
           fi
           echo "OK: no CRLF in sandbox-bound files"
 
-      - name: No CI job can escape the merge gate
+      - name: No CI job escapes the merge gate, no action pinned to a tag
+        # Two invariants, one script.
+        #
         # Asserts that `all-green` depends on every job, that it is
         # `if: always()`, and that every produced check is required in the
         # ruleset. Without this, adding a job silently creates a check that can
         # fail without blocking a merge.
+        #
+        # Also asserts that every `uses:` names a commit SHA rather than a tag.
+        # A tag is a mutable pointer: whoever controls it can repoint it at any
+        # commit, and this workflow would run that commit with the repository
+        # token.
         run: |
-          python3 -m pip install --quiet pyyaml
+          python3 -m pip install --quiet pyyaml pytest
           python3 scripts/check-ci-gates.py
+
+      - name: The gate checker's own tests
+        # A check nobody tests is a check that quietly stops checking. These
+        # cover the pinning matcher against known-good and known-bad references,
+        # so a future relaxation of it fails here rather than going unnoticed.
+        run: python3 -m pytest scripts/tests -q
 
       - name: Sandbox shims are executable
         run: |
