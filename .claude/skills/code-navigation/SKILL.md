@@ -13,6 +13,36 @@ are about to edit a file, because the harness requires a `Read` before `Edit` or
 Both servers auto-connect from `.mcp.json` at the repository root. If either is
 unavailable, fall back to the default tools for that side only. Do not block on it.
 
+`.mcp.json` launches both servers through `uvx` rather than by calling the
+installed binary directly. That is deliberate: the direct-binary form did not
+connect reliably. Do not "simplify" it back to a bare command name. Two
+consequences worth knowing:
+
+- `uvx` resolves the package at launch, so the version that runs is whatever it
+  picks rather than whatever is installed on the machine.
+- The jcodemunch `--watcher` flag is not passed, so there is no filesystem
+  watcher. Reindexing relies on the `PostToolUse` hooks instead, which fire on
+  `Edit` and `Write`. If the index looks stale, call `register_edit` rather than
+  assuming a watcher will catch up.
+
+### If a server is not connected
+
+MCP servers are spawned at session start. Editing `.mcp.json` mid-session does not
+connect anything; the session has to be reloaded. Symptoms and what they mean:
+
+- **Neither server appears:** `.mcp.json` was added or changed after the session
+  started. Reload the window.
+- **One appears, the other does not:** that server failed to launch. Check it runs
+  by hand before assuming the config is wrong.
+- **Tools appear but the repo is not indexed:** call `resolve_repo` for code or
+  `doc_resolve_repo` for docs, then `index_folder` or `index_local` as needed. The
+  two suites keep independent indexes, so one being present says nothing about the
+  other.
+
+When indexing docs here, pass `include_dot_dirs: [".claude"]`. Dotted directories
+are skipped by default, and the skills in `.claude/skills/` are the project's
+actual rules, so leaving them out of the index hides the thing most worth finding.
+
 ## Opening move
 
 ```

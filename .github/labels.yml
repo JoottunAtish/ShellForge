@@ -41,6 +41,10 @@
   color: "c5def5"
   description: "Internal change with no behaviour change"
 
+- name: "type: chore"
+  color: "d4c5f9"
+  description: "Housekeeping with no user-visible change: tests, tooling, cleanup"
+
 - name: "type: security"
   color: "b60205"
   description: "Security relevant. See SECURITY.md before opening one publicly."

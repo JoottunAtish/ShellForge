@@ -30,7 +30,7 @@ formally cut.
 | Documentation | Design record complete. User docs are outlines. |
 | Engineering rules | `CLAUDE.md` index plus 13 on-demand skills under `.claude/skills/` |
 | Link checker | Done, and verified to catch a broken relative link |
-| Label taxonomy | 32 labels defined in `.github/labels.yml`, synced with a script |
+| Label taxonomy | Defined in `.github/labels.yml`, applied by `./scripts/sync-labels.sh` |
 | Issue templates | Four forms, including a self-contained implementation ticket |
 | MCP servers | `.mcp.json` auto-connects jCodemunch and jDocmunch |
 
@@ -89,9 +89,10 @@ Done:
   on every destructive path.
 - Branch naming is `<kind>/issue-<number>` across features, bugs, and chores, and
   CI rejects anything else on a pull request.
-- 32 issue labels defined in `.github/labels.yml` and applied by
-  `./scripts/sync-labels.sh`, so the taxonomy is version controlled rather than
-  invented in the web interface.
+- The issue label taxonomy is defined in `.github/labels.yml` and applied by
+  `./scripts/sync-labels.sh`, so it is version controlled rather than invented in
+  the web interface. No count is quoted here on purpose: the file is the source of
+  truth and a number in prose goes stale the first time a label is added.
 - `.mcp.json` auto-connects jCodemunch and jDocmunch for code and documentation
   navigation.
 

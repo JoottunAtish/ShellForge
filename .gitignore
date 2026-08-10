@@ -33,6 +33,13 @@ coverage.html
 *.prof
 /testdata/tmp/
 
+# Python. Only the CI gate checker and its tests are Python, but pytest leaves
+# bytecode caches next to them and they must never be committed.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
 # Editors and OS
 .idea/
 .vscode/*
