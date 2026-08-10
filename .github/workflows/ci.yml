@@ -66,7 +66,7 @@ jobs:
     name: Style and punctuation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: No em dashes, en dashes, or smart quotes
         # Rule 0 in CLAUDE.md. A smart quote in a copy-pasteable command is a
@@ -129,9 +129,9 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
@@ -195,7 +195,7 @@ jobs:
     name: Security
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # A current toolchain, deliberately NOT the go.mod floor. The security
       # tools track recent Go releases (govulncheck v1.6.0 needs Go 1.25+), and
@@ -203,7 +203,7 @@ jobs:
       # fetch a newer one for itself. A newer toolchain analyses a `go 1.23`
       # module correctly, so nothing is lost here. The Test matrix keeps using
       # go.mod, because verifying the declared floor is the point of that job.
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
           cache: true
@@ -230,7 +230,7 @@ jobs:
     name: Docs
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Every doc anchor emitted by Go code exists in the docs
         # A doctor probe that points at a heading nobody wrote is worse than no
@@ -264,7 +264,7 @@ jobs:
     name: Sandbox image
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Build the sandbox image
         run: docker build -f images/Containerfile -t shellforge-sandbox:ci images/
