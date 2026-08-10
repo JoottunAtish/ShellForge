@@ -85,6 +85,31 @@ highest-risk code in the project.
   before placing anything on PATH. An installer that does not verify is worse than
   no installer.
 - **Dependabot is enabled.** Review the diff; do not merge on green alone.
+- **Every GitHub Action is pinned to a 40 character commit SHA**, lowercase, with
+  the version in a trailing comment so a reader and Dependabot both know what it
+  is:
+
+  ```yaml
+  - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+  ```
+
+  `@v7` is a mutable pointer. Whoever controls the tag can repoint it at any
+  commit and CI would run that commit with the repository token, so a SHA is the
+  only immutable form of Action reference. `scripts/check-ci-gates.py` fails the
+  Style job on a tag pin, a branch pin, an abbreviated SHA, or a missing version
+  comment, and `scripts/tests/test_check_ci_gates.py` covers that matcher.
+
+  Resolve a tag to its commit rather than copying a value from a search result,
+  and remember that an annotated tag points at a tag object, not a commit:
+
+  ```bash
+  gh api repos/actions/checkout/git/ref/tags/v7.0.1 --jq '.object | "\(.type) \(.sha)"'
+  gh api repos/actions/checkout/git/tags/<that-sha> --jq .object.sha
+  ```
+
+  There is no allowlist of trusted publishers. The GitHub-owned actions are the
+  likeliest to be fine and also the highest-value target, so exempting them would
+  defeat the point.
 
 ## Required tooling
 
