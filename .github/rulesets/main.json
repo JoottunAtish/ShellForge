@@ -1,0 +1,73 @@
+{
+  "name": "main: protected",
+  "target": "branch",
+  "enforcement": "active",
+
+  "_comment_bypass": [
+    "RepositoryAdmin can bypass. This is here for one reason: GitHub does not",
+    "let anyone approve their own pull request, so on a single-maintainer",
+    "repository a code-owner-review requirement would lock the maintainer out",
+    "of their own project entirely.",
+    "",
+    "REMOVE THIS ENTRY the moment a second maintainer exists. Until then it is",
+    "the difference between a rule and a wall.",
+    "",
+    "Note that the bypass permits the merge, it does not skip the status checks",
+    "in the GitHub UI, and an admin merging past a red build is a deliberate,",
+    "visible act rather than an accident."
+  ],
+  "bypass_actors": [
+    {
+      "actor_id": 5,
+      "actor_type": "RepositoryRole",
+      "bypass_mode": "always"
+    }
+  ],
+
+  "conditions": {
+    "ref_name": {
+      "include": ["refs/heads/main"],
+      "exclude": []
+    }
+  },
+
+  "rules": [
+    {
+      "_comment": "Only code owners can approve, so only code owners can merge.",
+      "type": "pull_request",
+      "parameters": {
+        "require_code_owner_review": true,
+        "required_approving_review_count": 1,
+        "dismiss_stale_reviews_on_push": true,
+        "require_last_push_approval": true,
+        "required_review_thread_resolution": true,
+        "allowed_merge_methods": ["squash", "merge"]
+      }
+    },
+    {
+      "_comment": "The Day 0 gates. A branch cannot merge past a red build.",
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": true,
+        "do_not_enforce_on_create": false,
+        "required_status_checks": [
+          { "context": "Branch name" },
+          { "context": "Style and punctuation" },
+          { "context": "Test (ubuntu-latest)" },
+          { "context": "Test (windows-latest)" },
+          { "context": "Security" },
+          { "context": "Docs" },
+          { "context": "Sandbox image" }
+        ]
+      }
+    },
+    {
+      "_comment": "main cannot be deleted.",
+      "type": "deletion"
+    },
+    {
+      "_comment": "No force pushing over shared history.",
+      "type": "non_fast_forward"
+    }
+  ]
+}

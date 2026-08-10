@@ -27,6 +27,16 @@ ENV LANG=C.UTF-8 \
 # valuable level in the game. The default Debian slim image excludes them, so
 # the /etc/dpkg/dpkg.cfg.d/docker override below puts them back before man-db
 # is installed.
+#
+# `vim` and not `vim-tiny`, deliberately deviating from the toolset list in
+# docs/design/ARCHITECTURE.md section 4.4. On Debian, vim-tiny installs
+# /usr/bin/vim.tiny and provides `vi` through alternatives, but it never
+# provides a `vim` command. Success criterion 5 in the project brief and the
+# Day 1 exit criteria both require `vim` itself to work inside the instrumented
+# shell, and a beginner typing `vim` and getting "command not found" is exactly
+# the friction this project exists to remove. Costs roughly 30 MB against a
+# 2.5 GB budget. `nano` stays, because someone who lands in an editor by
+# accident needs an obvious way out.
 RUN set -eux; \
     rm -f /etc/dpkg/dpkg.cfg.d/docker-nodoc /etc/dpkg/dpkg.cfg.d/excludes; \
     apt-get update; \
@@ -41,7 +51,7 @@ RUN set -eux; \
         diffutils \
         less \
         nano \
-        vim-tiny \
+        vim \
         tree \
         jq \
         file \
