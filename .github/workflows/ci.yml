@@ -131,7 +131,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -203,7 +203,7 @@ jobs:
       # fetch a newer one for itself. A newer toolchain analyses a `go 1.23`
       # module correctly, so nothing is lost here. The Test matrix keeps using
       # go.mod, because verifying the declared floor is the point of that job.
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
           cache: true
