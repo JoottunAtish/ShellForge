@@ -10,6 +10,7 @@
 package platform
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -66,6 +67,13 @@ func DataDir() (string, error) {
 		return windowsDataDir(base), nil
 	}
 	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
+		// A relative value is an error, not a silent fallback. os.UserConfigDir
+		// and os.UserCacheDir both refuse a relative XDG variable for the same
+		// reason, so all three sibling functions agree, and a resolved data
+		// directory is never accidentally relative to the working directory.
+		if !filepath.IsAbs(xdg) {
+			return "", fmt.Errorf("platform: XDG_DATA_HOME is %q, which is relative; set it to an absolute path or unset it", xdg)
+		}
 		return filepath.Join(xdg, appDir), nil
 	}
 	home, err := os.UserHomeDir()

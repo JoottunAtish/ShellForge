@@ -106,6 +106,20 @@ func TestLogDirIsUnderCacheDir(t *testing.T) {
 	}
 }
 
+// TestDataDirRejectsRelativeXDG matches the standard library: os.UserConfigDir
+// and os.UserCacheDir both refuse a relative XDG variable, so DataDir does too
+// rather than resolving a data directory relative to the working directory.
+func TestDataDirRejectsRelativeXDG(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("XDG_DATA_HOME is not consulted on windows")
+	}
+	t.Setenv("XDG_DATA_HOME", filepath.Join("relative", "data"))
+
+	if _, err := DataDir(); err == nil {
+		t.Fatal("DataDir accepted a relative XDG_DATA_HOME; expected an error")
+	}
+}
+
 // TestWindowsDataDirDistinctFromCacheDirLive runs the real functions and is the
 // Windows-guarded companion to TestWindowsCacheDirIsDistinctFromDataDir: it
 // proves the wiring, not just the helper, on the platform that actually

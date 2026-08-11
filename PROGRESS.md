@@ -358,7 +358,13 @@ Issue #42, the consolidation of six tracking issues (#22, #23, #32, #38, #40,
   test that runs on Linux CI, not only behind a Windows build. New
   `internal/platform/paths_test.go` asserts the three roots are distinct on
   every platform, that `DatabasePath` never sits under `CacheDir`, and that
-  `LogDir` does.
+  `LogDir` does. `DataDir` now also refuses a relative `XDG_DATA_HOME` rather
+  than resolving relative to the working directory, matching `os.UserConfigDir`
+  and `os.UserCacheDir` (PR #39 decision 2, which never actually landed here).
+- **The interface-binding runtime decisions moved into doc comments**:
+  `ImageSpec.Reference` empty means the backend default (F4), `Session.Exec`
+  states the cancellation and missing-binary contract (decisions 8 and 12), and
+  `Status` records why it carries no identity field (F2).
 - **The journal trust rule is now written down** in `internal/journal/doc.go`,
   `internal/verify/doc.go`, and the `component-traps` skill: journal contents
   are learner-influenced and never evidence for scoring, a learner can forge a
