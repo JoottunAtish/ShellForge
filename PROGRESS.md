@@ -486,18 +486,25 @@ is imported yet.
   `CAP_CHOWN` and `CAP_FOWNER` specifically, which is the security skill's
   own rule for this ("drop all capabilities, add back only what a level
   provably needs") applied to a need every level has, not a specific one.
-- **A cancelled `Exec` left the sandbox-side process running**, also found
-  by running the contract suite live, not by unit tests. `exec.CommandContext`
-  cancels by sending the local `docker` client SIGKILL, which it cannot
-  catch, so `docker exec`'s own `--sig-proxy` (default true, non-tty) never
-  gets a chance to forward anything into the container. Sending SIGTERM
-  instead, via `cmd.Cancel`, lets the client proxy it in on Linux and macOS.
-  Confirmed why this cannot be verified on this Windows dev box: a two-line
-  repro shows `os.Process.Signal(syscall.SIGTERM)` returns "not supported by
-  windows" for a plain child process, so `TestDockerContract/ExecHonoursContextCancellation/cancel_aborts`
-  fails here specifically and is expected to pass on CI's `ubuntu-latest`
-  job, where `docker exec` runs natively rather than through Docker
-  Desktop's Windows-to-Linux-VM bridge.
+- **A cancelled `Exec` left the sandbox-side process running**, found by
+  running the contract suite live, not by any unit test, and it turned out
+  to need two attempts. `exec.CommandContext` cancels by sending the local
+  `docker` client SIGKILL, which only ever stops the local client. The first
+  attempt sent SIGTERM instead, on the theory that `docker exec`'s
+  `--sig-proxy` would forward it into the container; that theory was wrong,
+  proven wrong by CI rather than caught locally: `docker exec` has no
+  `--sig-proxy` flag at all (only `docker run` and `docker attach` do), and
+  the orphan reproduced identically on CI's `ubuntu-latest` job, a real
+  Linux daemon, ruling out "this is just a Windows Docker Desktop artifact."
+  The actual fix: every `Exec` now wraps argv in a tiny sandbox-side shell
+  that announces its own PID on the first line of stderr before `exec`-ing
+  into the real command, and a cancelled or timed-out call sends an
+  explicit follow-up `docker exec <name> kill -9 <pid>` using that PID. The
+  marker line is stripped back out of `ExecResult.Stderr` before it reaches
+  a caller. `cmd.Cancel` still sends SIGTERM to the local client, but only
+  to end it promptly; that alone was never what killed the sandbox-side
+  process. `TestDockerContract/ExecHonoursContextCancellation/cancel_aborts`
+  is green locally and, per the CI run this depends on, on `ubuntu-latest`.
 - `PushFiles` stages every file into one host temp directory under
   `os.MkdirTemp`, mirroring each entry's absolute sandbox path, so one
   `docker cp` of the staging root onto the container's `/` places everything
@@ -525,13 +532,22 @@ is imported yet.
   failures (binary missing, daemon down, permission denied) are wrapped
   here, because nothing above this package could discover those.
 - Gates run locally on Windows: `gofmt -s -w .`, `go vet ./...`,
-  `go test ./...` (green except the one documented Windows-only subtest),
-  `go test -race ./...` (green, run with that subtest excluded),
+  `go test ./...` (green except the one documented pre-existing contract
+  fixture bug), `go test -race ./...` (green, same exclusion),
   `go test ./internal/archtest/...`, `./scripts/check-punctuation.sh`,
-  `./scripts/check-allowlist-regexp.sh`, `./scripts/check-links.sh`. Not run:
-  `python3 scripts/check-ci-gates.py` and `python3 -m pytest scripts/tests -q`
-  (no `python3` in this environment), `govulncheck ./...` and `gosec ./...`
-  (neither installed). CI is authoritative for all four.
+  `./scripts/check-allowlist-regexp.sh`, `./scripts/check-links.sh`. Not run
+  locally: `python3 scripts/check-ci-gates.py` and
+  `python3 -m pytest scripts/tests -q` (no `python3` in this environment),
+  `govulncheck ./...` (not installed). CI's `gosec` job did run and found
+  four real issues on the first push: two `G204` subprocess findings
+  (justified with `#nosec` comments naming exactly why `argv` is safe: the
+  binary path is fixed by `exec.LookPath` in `New`, the vector is built from
+  allowlisted identifiers), and two permission findings, `os.MkdirAll` at
+  `0o755` and `os.WriteFile` at `0o644` for the host-side `PushFiles`
+  staging directory, tightened to `0o750` and `0o600` since the mode a
+  level actually sees is applied inside the container afterward, not by
+  these bits. All four fixed in this branch; CI is authoritative that they
+  stay fixed.
 
 ---
 

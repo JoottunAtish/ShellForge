@@ -44,20 +44,21 @@ func (r execRunner) run(ctx context.Context, argv []string, stdin []byte) (stdou
 		return nil, nil, 0, errors.New("docker: runner.run called with an argv that does not start with \"docker\"")
 	}
 
+	// #nosec G204 -- r.bin is exec.LookPath("docker") resolved once in New
+	// and never variable from config; argv[1:] is the vector every method
+	// in this package builds from allowlist-validated identifiers and
+	// caller-supplied argv elements passed straight to the sandbox, never
+	// a shell string.
 	cmd := exec.CommandContext(ctx, r.bin, argv[1:]...)
 	// exec.CommandContext's default cancellation is cmd.Process.Kill(),
-	// SIGKILL, which the docker CLI cannot catch. docker exec's own
-	// --sig-proxy (default true in non-tty mode) forwards a caught signal
-	// into the exec'd process running inside the container, so sending
-	// SIGTERM here, not the default SIGKILL, is what actually reaches the
-	// sandbox-side process rather than just killing the local client and
-	// leaving the container-side process running. WaitDelay bounds how
-	// long that is given to work before falling back to a hard kill.
-	//
-	// os.Process.Signal does not support an arbitrary signal on Windows;
-	// there Cancel fails and WaitDelay's forced kill is the same fallback
-	// this had before, so this is a Linux and macOS fix specifically,
-	// matching the platforms this backend actually ships on.
+	// SIGKILL, on the local docker client. That only ever stops the local
+	// client: unlike `docker run` and `docker attach`, `docker exec` has
+	// no --sig-proxy, so killing the client, gently or otherwise, does
+	// not by itself tell the daemon to stop the process it started inside
+	// the container. Terminating the sandbox-side process is
+	// dockerSession.Exec's job, via the PID marker in session.go; this
+	// SIGTERM is only about ending the local client promptly rather than
+	// leaving it to WaitDelay's hard kill.
 	cmd.Cancel = func() error {
 		return cmd.Process.Signal(syscall.SIGTERM)
 	}

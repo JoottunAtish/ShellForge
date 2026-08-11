@@ -130,7 +130,7 @@ func (s *dockerSession) Exec(ctx context.Context, argv []string, opts runtime.Ex
 		return runtime.ExecResult{}, err
 	}
 
-	full := s.execArgv(user, workdir, opts.Env, argv)
+	full := s.execArgv(user, workdir, opts.Env, wrapWithPIDMarker(argv))
 
 	execCtx := ctx
 	if opts.Timeout > 0 {
@@ -142,8 +142,12 @@ func (s *dockerSession) Exec(ctx context.Context, argv []string, opts runtime.Ex
 	start := time.Now()
 	stdout, stderr, code, runErr := s.rt.run.run(execCtx, full, opts.Stdin)
 	duration := time.Since(start)
+	pid, cleanStderr := parseExecPIDMarker(stderr)
 
 	if runErr != nil {
+		if pid != "" {
+			s.killSandboxProcess(pid)
+		}
 		if ctx.Err() != nil {
 			return runtime.ExecResult{}, ctx.Err()
 		}
@@ -153,7 +157,66 @@ func (s *dockerSession) Exec(ctx context.Context, argv []string, opts runtime.Ex
 		return runtime.ExecResult{}, fmt.Errorf("docker exec: %w", runErr)
 	}
 
-	return runtime.ExecResult{Stdout: stdout, Stderr: stderr, ExitCode: code, Duration: duration}, nil
+	return runtime.ExecResult{Stdout: stdout, Stderr: cleanStderr, ExitCode: code, Duration: duration}, nil
+}
+
+// execPIDMarkerPrefix tags the line wrapWithPIDMarker's shell prepends to
+// stderr, ahead of anything argv itself writes.
+const execPIDMarkerPrefix = "SFPID:"
+
+// wrapWithPIDMarker rewrites argv so the sandbox-side process announces its
+// own PID as the first line of stderr before anything else runs, then execs
+// straight into argv so the PID it reports is argv[0]'s, not a wrapper
+// shell's.
+//
+// This exists because killing the local docker client, which is all a
+// cancelled context lets exec.CommandContext do on its own, does not stop
+// what docker exec started inside the container: unlike docker run and
+// docker attach, docker exec has no --sig-proxy, so the daemon is never
+// told to act. Exec uses the PID this reports to send an explicit kill into
+// the sandbox once its own invocation has failed, so a cancelled or timed
+// out call does not orphan a process there.
+func wrapWithPIDMarker(argv []string) []string {
+	wrapped := []string{"/bin/sh", "-c", `printf '` + execPIDMarkerPrefix + `%d\n' "$$" >&2; exec "$@"`, "--"}
+	return append(wrapped, argv...)
+}
+
+// parseExecPIDMarker splits the marker wrapWithPIDMarker prepends off of
+// stderr, so a caller of Exec sees exactly what argv itself wrote and
+// nothing this package added. A missing or malformed marker (the process
+// was killed before it could write one, for instance) is reported as no
+// PID rather than an error: Exec still has a real result or a real error
+// to return either way, and a marker that never arrived just means there is
+// nothing to kill, not that something is wrong with stderr.
+func parseExecPIDMarker(stderr []byte) (pid string, rest []byte) {
+	nl := bytes.IndexByte(stderr, '\n')
+	if nl < 0 {
+		return "", stderr
+	}
+	line := stderr[:nl]
+	if !bytes.HasPrefix(line, []byte(execPIDMarkerPrefix)) {
+		return "", stderr
+	}
+	digits := line[len(execPIDMarkerPrefix):]
+	if len(digits) == 0 {
+		return "", stderr
+	}
+	for _, b := range digits {
+		if b < '0' || b > '9' {
+			return "", stderr
+		}
+	}
+	return string(digits), stderr[nl+1:]
+}
+
+// killSandboxProcess best-effort kills pid inside the container. Its own
+// outcome is not reported: it only ever runs after Exec's own invocation
+// has already failed, so the caller already has the real error to act on,
+// and there is nothing more useful to tell them about a cleanup step.
+// pid is digits-only, checked by parseExecPIDMarker, and this still reaches
+// the sandbox as an argv element rather than a shell string regardless.
+func (s *dockerSession) killSandboxProcess(pid string) {
+	_, _, _, _ = s.rt.run.run(context.Background(), []string{"docker", "exec", "--", s.rt.name, "kill", "-9", pid}, nil)
 }
 
 // defaultAttachCommand is what AttachOpts.Command's doc comment calls "the
@@ -195,6 +258,10 @@ func (s *dockerSession) Attach(ctx context.Context, opts runtime.AttachOpts) (ru
 		return nil, errors.New("docker: Attach needs the real docker binary and cannot run against a fake runner")
 	}
 
+	// #nosec G204 -- real.bin is exec.LookPath("docker") resolved once in
+	// New and never variable from config; argv[1:] is the vector this
+	// method builds above from allowlist-validated fields (user, workdir,
+	// name) and the caller's own Command, never a shell string.
 	cmd := exec.CommandContext(ctx, real.bin, argv[1:]...)
 	f, err := pty.Start(cmd)
 	if err != nil {
@@ -257,11 +324,16 @@ func (s *dockerSession) PushFiles(ctx context.Context, m runtime.FileManifest) e
 		}
 		clean := path.Clean(f.Path)
 
+		// The permissions here are host-side staging only, on a directory
+		// os.MkdirTemp created under the current user's own temp dir. The
+		// mode a level actually sees inside the sandbox comes from
+		// FileEntry.Mode, applied by the chmod step below after `docker
+		// cp`, not from these bits.
 		dest := filepath.Join(stage, filepath.FromSlash(clean))
-		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(dest), 0o750); err != nil {
 			return fmt.Errorf("docker: stage %s: %w", f.Path, err)
 		}
-		if err := os.WriteFile(dest, stripCR(f.Content), 0o644); err != nil {
+		if err := os.WriteFile(dest, stripCR(f.Content), 0o600); err != nil {
 			return fmt.Errorf("docker: stage %s: %w", f.Path, err)
 		}
 		toApply = append(toApply, pending{path: clean, owner: f.Owner, mode: f.Mode})

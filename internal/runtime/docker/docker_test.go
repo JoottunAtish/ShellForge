@@ -216,7 +216,7 @@ func TestExecArgvConstruction(t *testing.T) {
 	}
 
 	want := [][]string{
-		{"docker", "exec", "-u", "root", "-w", "/home/learner/quest", "-e", "A=1", "-e", "B=2", "--", "shellforge-sandbox", "/bin/sh", "-c", "true"},
+		append([]string{"docker", "exec", "-u", "root", "-w", "/home/learner/quest", "-e", "A=1", "-e", "B=2", "--", "shellforge-sandbox"}, wrapWithPIDMarker([]string{"/bin/sh", "-c", "true"})...),
 	}
 	assertArgvSequence(t, "Exec", fake.calls, want)
 }
@@ -234,7 +234,7 @@ func TestExecUsesSessionDefaultsWhenOptsEmpty(t *testing.T) {
 	}
 
 	want := [][]string{
-		{"docker", "exec", "-u", "learner", "-w", "/home/learner", "--", "shellforge-sandbox", "/bin/sh", "-c", "true"},
+		append([]string{"docker", "exec", "-u", "learner", "-w", "/home/learner", "--", "shellforge-sandbox"}, wrapWithPIDMarker([]string{"/bin/sh", "-c", "true"})...),
 	}
 	assertArgvSequence(t, "Exec", fake.calls, want)
 }
@@ -376,6 +376,67 @@ func TestExecCancellationReturnsContextCanceled(t *testing.T) {
 	_, err := sess.Exec(ctx, []string{"/bin/sh", "-c", "true"}, runtime.ExecOpts{})
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("Exec after cancellation: err = %v, want errors.Is(err, context.Canceled)", err)
+	}
+}
+
+// TestExecCancellationKillsSandboxProcessByPID asserts that when Exec's own
+// invocation fails after the sandbox-side process announced its PID, Exec
+// issues a follow-up `docker exec kill -9 <pid>` against that exact PID.
+// This is the mechanism TestDockerContract/ExecHonoursContextCancellation's
+// orphan probe depends on: killing the local docker client alone, which is
+// all a cancelled context lets exec.CommandContext do, never reaches the
+// process docker exec started inside the container.
+func TestExecCancellationKillsSandboxProcessByPID(t *testing.T) {
+	fake := &fakeRunner{results: []fakeResult{
+		{stderr: []byte("SFPID:4242\n"), code: -1, err: errors.New("boom")}, // the cancelled Exec
+		{code: 0}, // the follow-up kill
+	}}
+	rt := &dockerRuntime{name: "shellforge-sandbox", image: "shellforge-sandbox", run: fake}
+	sess := &dockerSession{rt: rt}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := sess.Exec(ctx, []string{"/bin/sh", "-c", "true"}, runtime.ExecOpts{})
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Exec after cancellation: err = %v, want errors.Is(err, context.Canceled)", err)
+	}
+
+	if len(fake.calls) != 2 {
+		t.Fatalf("Exec after cancellation ran %d docker invocation(s), want 2 (the exec, then the kill): %v", len(fake.calls), fake.calls)
+	}
+	want := []string{"docker", "exec", "--", "shellforge-sandbox", "kill", "-9", "4242"}
+	if !equalArgv(fake.calls[1], want) {
+		t.Errorf("follow-up kill argv = %v, want %v", fake.calls[1], want)
+	}
+}
+
+// TestParseExecPIDMarker is the pure unit test for the marker
+// wrapWithPIDMarker prepends to stderr: it needs no Docker daemon.
+func TestParseExecPIDMarker(t *testing.T) {
+	cases := []struct {
+		name       string
+		stderr     string
+		wantPID    string
+		wantStderr string
+	}{
+		{"marker with trailing output", "SFPID:123\nreal stderr", "123", "real stderr"},
+		{"marker alone", "SFPID:7\n", "7", ""},
+		{"no marker at all", "just some output", "", "just some output"},
+		{"empty", "", "", ""},
+		{"malformed pid is not numeric", "SFPID:12x3\nrest", "", "SFPID:12x3\nrest"},
+		{"empty pid", "SFPID:\nrest", "", "SFPID:\nrest"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pid, rest := parseExecPIDMarker([]byte(tc.stderr))
+			if pid != tc.wantPID {
+				t.Errorf("parseExecPIDMarker(%q) pid = %q, want %q", tc.stderr, pid, tc.wantPID)
+			}
+			if string(rest) != tc.wantStderr {
+				t.Errorf("parseExecPIDMarker(%q) rest = %q, want %q", tc.stderr, rest, tc.wantStderr)
+			}
+		})
 	}
 }
 
