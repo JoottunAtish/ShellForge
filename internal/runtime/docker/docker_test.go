@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/JoottunAtish/ShellForge/internal/runtime"
@@ -314,6 +315,54 @@ func TestPushFilesCleansUpStagingOnFailure(t *testing.T) {
 	stagingArg := fake.calls[0][2]
 	stagingDir := stagingArg[:len(stagingArg)-2] // strip the trailing separator and "."
 	assertPathAbsent(t, stagingDir)
+}
+
+// TestPushFilesChmodsAncestorDirectories asserts that the follow-up Exec
+// PushFiles runs as root chmods every ancestor directory it created, up to
+// but not including sandboxRoot, before it chmods and chowns the file
+// itself. This is what lets the session user, not just root, actually
+// reach a pushed file: docker cp preserves the uid of whoever ran it on
+// the host, an account that owns none of these directories inside the
+// container.
+func TestPushFilesChmodsAncestorDirectories(t *testing.T) {
+	fake := &fakeRunner{results: []fakeResult{{code: 0}, {code: 0}}}
+	rt := &dockerRuntime{name: "shellforge-sandbox", image: "shellforge-sandbox", run: fake}
+	sess := &dockerSession{rt: rt}
+
+	err := sess.PushFiles(context.Background(), runtime.FileManifest{Files: []runtime.FileEntry{
+		{Path: "/home/learner/contract/a/b/c.txt", Content: []byte("hi"), Mode: 0o644, Owner: "learner:learner"},
+	}})
+	if err != nil {
+		t.Fatalf("PushFiles: %v", err)
+	}
+
+	if len(fake.calls) != 2 {
+		t.Fatalf("PushFiles ran %d docker invocation(s), want 2 (cp, then apply): %v", len(fake.calls), fake.calls)
+	}
+	applyArgv := fake.calls[1]
+	script := applyArgv[len(applyArgv)-1]
+
+	wantOrder := []string{
+		"chmod 0755 '/home/learner/contract' &&",
+		"chmod 0755 '/home/learner/contract/a' &&",
+		"chmod 0755 '/home/learner/contract/a/b' &&",
+		"chmod 644 '/home/learner/contract/a/b/c.txt' &&",
+		"chown 'learner:learner' '/home/learner/contract/a/b/c.txt' &&",
+	}
+	lastIdx := -1
+	for _, want := range wantOrder {
+		idx := strings.Index(script, want)
+		if idx < 0 {
+			t.Fatalf("apply script %q does not contain %q", script, want)
+		}
+		if idx < lastIdx {
+			t.Fatalf("apply script %q has %q before an earlier required step", script, want)
+		}
+		lastIdx = idx
+	}
+	if strings.Contains(script, "chmod 0755 '/home/learner' ") || strings.Contains(script, "chmod 0755 '/home/learner' &&") {
+		t.Errorf("apply script %q touches sandboxRoot itself, which PushFiles did not create and must not chmod", script)
+	}
 }
 
 // TestPushFilesRefusesBadOwner asserts that PushFiles refuses a

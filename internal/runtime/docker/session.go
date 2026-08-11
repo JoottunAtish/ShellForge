@@ -311,6 +311,7 @@ func (s *dockerSession) PushFiles(ctx context.Context, m runtime.FileManifest) e
 		mode  fs.FileMode
 	}
 	toApply := make([]pending, 0, len(m.Files))
+	dirSet := make(map[string]bool)
 
 	for _, f := range m.Files {
 		if f.Path == "" {
@@ -337,6 +338,9 @@ func (s *dockerSession) PushFiles(ctx context.Context, m runtime.FileManifest) e
 			return fmt.Errorf("docker: stage %s: %w", f.Path, err)
 		}
 		toApply = append(toApply, pending{path: clean, owner: f.Owner, mode: f.Mode})
+		for dir := path.Dir(clean); dir != sandboxRoot && dir != "/" && dir != "."; dir = path.Dir(dir) {
+			dirSet[dir] = true
+		}
 	}
 
 	src := stage + string(filepath.Separator) + "."
@@ -348,7 +352,25 @@ func (s *dockerSession) PushFiles(ctx context.Context, m runtime.FileManifest) e
 		return fmt.Errorf("docker cp (push) exited %d: %s", code, stderr)
 	}
 
+	// docker cp preserves the uid of whoever ran it on the host, an
+	// account with no meaning inside the container. On a real Linux host
+	// that is not learner and not root, so every directory PushFiles just
+	// created needs to become traversable before anything below can be
+	// verified or run: without this, `stat` and any Exec against a pushed
+	// file fails for the ordinary session user even though root, with
+	// CAP_DAC_OVERRIDE, can still reach the file directly. This does not
+	// apply to sandboxRoot itself or above: PushFiles never creates those,
+	// and it must not touch permissions it did not set.
+	dirs := make([]string, 0, len(dirSet))
+	for d := range dirSet {
+		dirs = append(dirs, d)
+	}
+	sort.Strings(dirs)
+
 	var script strings.Builder
+	for _, d := range dirs {
+		fmt.Fprintf(&script, "chmod 0755 %s && ", shQuote(d))
+	}
 	for _, p := range toApply {
 		fmt.Fprintf(&script, "chmod %o %s && ", p.mode.Perm(), shQuote(p.path))
 		if p.owner != "" {

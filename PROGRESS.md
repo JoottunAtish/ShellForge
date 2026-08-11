@@ -494,6 +494,16 @@ is imported yet.
   up on the Windows Docker Desktop box this ticket was developed on:
   Windows has no POSIX uid for `docker cp` to preserve, so the copied
   files defaulted to root there and root already owned everything.
+  A third round on the same CI runner found that fixing root's own access
+  was not sufficient: root (with `CAP_DAC_OVERRIDE`) could chmod and chown
+  the pushed files, but the *directories* PushFiles' staging had created
+  stayed at their host-preserved uid and `0750`, so the session user,
+  `learner`, could not even traverse into them afterward: `stat` came
+  back empty and a pushed script that should run reported exit 126, "bad
+  interpreter", for a directory permission reason that had nothing to do
+  with its shebang. PushFiles now also chmods every ancestor directory it
+  created, up to but not including `sandboxRoot`, to `0755`, before
+  applying each file's own mode and owner.
 - **A cancelled `Exec` left the sandbox-side process running**, found by
   running the contract suite live, not by any unit test, and it turned out
   to need two attempts. `exec.CommandContext` cancels by sending the local
