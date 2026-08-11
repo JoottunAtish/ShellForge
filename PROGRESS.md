@@ -36,6 +36,7 @@ formally cut.
 | Label taxonomy | Defined in `.github/labels.yml`, applied by `./scripts/sync-labels.sh` |
 | Issue templates | Four forms, including a self-contained implementation ticket |
 | MCP servers | `.mcp.json` auto-connects jCodemunch and jDocmunch |
+| `internal/platform` (paths) | Tested. Every function in `paths.go` has at least one test. `DataDir` rejects a relative `XDG_DATA_HOME` instead of silently returning a relative path. The Windows `CacheDir`/`DataDir` collision (#40) is fixed: `CacheDir` nests a `cache` element below `DataDir`, so a cache clear cannot delete progress or the WSL disk image. |
 
 **There is no release and nothing to install.**
 
@@ -344,23 +345,21 @@ code outside a test.
 
 ---
 
-### Day 1, 2026-08-11: contract debt and the Windows path collision
+### Day 1, 2026-08-11: contract debt and the Windows path collision fixed
 
 Issue #42, the consolidation of six tracking issues (#22, #23, #32, #38, #40,
 #41). Decisions settled, one code fix, no new behaviour beyond `paths.go`.
 
-- **Windows `CacheDir` and `DataDir` no longer collide.** Both built on
-  `%LocalAppData%`, so before this they were the identical directory, and a
-  cache clear would have deleted the progress database and the WSL `.vhdx`.
-  `CacheDir` now nests a `cache` element one level below `DataDir`, which was
-  what its own doc comment already claimed. The resolution logic is factored
-  into `windowsCacheDir` and `windowsDataDir` so the collision is guarded by a
-  test that runs on Linux CI, not only behind a Windows build. New
-  `internal/platform/paths_test.go` asserts the three roots are distinct on
-  every platform, that `DatabasePath` never sits under `CacheDir`, and that
-  `LogDir` does. `DataDir` now also refuses a relative `XDG_DATA_HOME` rather
-  than resolving relative to the working directory, matching `os.UserConfigDir`
-  and `os.UserCacheDir` (PR #39 decision 2, which never actually landed here).
+- **Windows `CacheDir` and `DataDir` no longer collide (#40 fixed).** PR #39
+  pinned this collision with `TestWindowsDataDirCollidesWithCacheDir`; this
+  change removes that test and fixes the defect. `CacheDir` now nests a `cache`
+  element one level below `DataDir`, so a cache clear can no longer reach the
+  progress database or the WSL `.vhdx`. The resolution is factored into
+  `windowsCacheDir` and `windowsDataDir` so it is guarded by a test that runs on
+  Linux CI, not only behind a Windows build; `TestConfigCacheDataDirsAreDistinct`
+  no longer skips on Windows, and a new test asserts `DatabasePath` never sits
+  under `CacheDir`. The relative `XDG_DATA_HOME` rejection PR #39 added is
+  preserved through the merge, still routed through `ux.Fail`.
 - **The interface-binding runtime decisions moved into doc comments**:
   `ImageSpec.Reference` empty means the backend default (F4), `Session.Exec`
   states the cancellation and missing-binary contract (decisions 8 and 12), and
@@ -380,6 +379,67 @@ Issue #42, the consolidation of six tracking issues (#22, #23, #32, #38, #40,
   by this environment (a 403 on any non-designated push), so it awaits a
   maintainer; the tip SHA is recorded here so it stays recoverable.
 - The four PR ratifications (#21, #31, #37, #39) are recorded on issue #42.
+
+### Day 1, 2026-08-11: test internal/platform/paths.go
+
+Issue #13. Test only, plus a small real fix the tests found. No new dependency.
+
+- `internal/platform/paths_test.go` covers all six exported functions:
+  `ConfigDir`, `CacheDir`, `DataDir`, `LogDir`, `DatabasePath`, `EnsureDir`.
+  Same package as `paths.go`, matching the style of `internal/platform/ux`.
+  Every test points `HOME` and both sets of Windows and XDG variables at a
+  fresh `t.TempDir` root via `t.Setenv`, so no test can write to a real user
+  directory and the suite runs the same on a CI box with no `HOME` set.
+- Seven of the nine tests were green on arrival and are regression pins, not
+  red-first drivers, one skips off Windows, and one is genuinely red. The one
+  genuine red test found a real bug: `DataDir`
+  hand-rolled its `XDG_DATA_HOME` branch and never checked
+  `filepath.IsAbs`, so a relative value such as `XDG_DATA_HOME=relative/data`
+  produced a relative `DataDir`, silently, with no error. `ConfigDir` and
+  `CacheDir` already refuse the equivalent case, because they delegate to
+  `os.UserConfigDir` and `os.UserCacheDir`, which both error on a relative
+  XDG value. **`DataDir` now does the same: a relative `XDG_DATA_HOME` is a
+  reported error, not a fallback and not a silently accepted relative path.**
+  This is a behaviour change worth naming here explicitly, so it reads as an
+  intentional fix rather than a surprise the next time someone sets
+  `XDG_DATA_HOME` by hand and hits an error that did not exist before.
+- The ticket also predicted a bug in the empty-string case
+  (`XDG_DATA_HOME=""`). There is not one: `os.Getenv` already returns `""`
+  for an unset variable, and the existing guard is `xdg != ""`, so unset and
+  empty already took the same fallback path before this change. Kept as a
+  regression pin against a future refactor to `os.LookupEnv`, which would
+  reintroduce exactly that bug.
+- Resolved one contract ambiguity in the ticket's own acceptance criteria,
+  flagged by an outside contributor's comment on the issue and never
+  answered there: `LogDir` keeps `logs` as its final path element rather
+  than `shellforge`, and is tested by containment under `CacheDir`
+  (`CacheDir()/logs`), not by the literal "ends in shellforge" wording that
+  applies to `ConfigDir`, `CacheDir`, and `DataDir`.
+- Corrected a stale doc comment while in the file: `CacheDir`'s comment
+  claimed Windows resolves to `%LocalAppData%\shellforge\cache`; the code
+  has always returned `%LocalAppData%\shellforge`. The comment now matches
+  the code.
+- Found and pinned, not fixed, because fixing it relocates a directory and
+  is out of this ticket's scope: on Windows, `DataDir` and `CacheDir`
+  resolve to the identical path, so the progress database currently lives
+  inside what the rest of the codebase calls the cache directory. A future
+  "clear the cache" operation written against `CacheDir` would delete the
+  learner's progress along with it. Pinned by
+  `TestWindowsDataDirCollidesWithCacheDir`, skipped on non-Windows. Tracked as
+  issue #40, to be resolved before the Day 6 uninstall and cache-clearing
+  work lands. Issue #41 tracks ratifying this ticket's four contract
+  decisions (the relative `XDG_DATA_HOME` error, the `LogDir` containment
+  reading, the empty-string non-bug, and this Windows collision).
+- The relative `XDG_DATA_HOME` error now goes through
+  `internal/platform/ux.Fail`, with an empty `DocAnchor` so
+  `docs/05-troubleshooting.md` needs no new heading. `paths.go` had no
+  callers yet and none of its six pre-existing error paths went through
+  `ux.Fail` either, but a bare `fmt.Errorf` here meant `ux.Render` would tell
+  a learner with a one-line misconfiguration that this was our bug rather
+  than theirs, which non-negotiable number 6 in `CLAUDE.md` rules out.
+- `govulncheck`, `gosec`, and `python3 -m pytest scripts/tests -q` are not
+  installed in this environment and were not run locally. CI runs all
+  three and is authoritative.
 
 ---
 
