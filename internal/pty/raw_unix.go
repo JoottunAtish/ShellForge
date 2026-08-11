@@ -25,7 +25,7 @@ func startResizeWatcher(m *Mux) (stop func()) {
 			case <-ch:
 				cols, rows, err := m.getSize(m.fd)
 				if err == nil {
-					_ = m.resize(uint16(rows), uint16(cols))
+					_ = m.resize(clampToUint16(rows), clampToUint16(cols))
 				}
 			case <-done:
 				return

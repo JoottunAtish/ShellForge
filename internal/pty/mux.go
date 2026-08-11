@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"os"
 	"os/signal"
 	"sync"
@@ -174,7 +175,7 @@ func (m *Mux) Run(ctx context.Context) error {
 	}()
 
 	if cols, rows, err := m.getSize(fd); err == nil {
-		_ = m.resize(uint16(rows), uint16(cols))
+		_ = m.resize(clampToUint16(rows), clampToUint16(cols))
 	}
 
 	stopSig := m.watchTerminatingSignals(fd, oldState, &m.restoreOnce)
@@ -278,6 +279,23 @@ func (m *Mux) Events() <-chan CommandEvent {
 // learner's shell over.
 func (m *Mux) resize(rows, cols uint16) error {
 	return m.pty.Resize(rows, cols)
+}
+
+// clampToUint16 bounds n to the range of a uint16.
+//
+// term.GetSize returns cols and rows as int; runtime.PTY.Resize takes
+// uint16. A terminal size from an OS syscall is never remotely close to
+// either bound in practice, but a bare uint16(n) conversion is exactly the
+// kind of silent wraparound gosec's G115 exists to catch, so this makes the
+// bound explicit rather than suppressing the finding.
+func clampToUint16(n int) uint16 {
+	if n < 0 {
+		return 0
+	}
+	if n > math.MaxUint16 {
+		return math.MaxUint16
+	}
+	return uint16(n)
 }
 
 // onOSCEvent is the OSC parser's onEvent callback for this Mux. The
