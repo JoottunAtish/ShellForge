@@ -15,6 +15,7 @@ the code is right and the document is stale. For what actually exists today, rea
 | [SEVEN-DAY-PLAN.md](SEVEN-DAY-PLAN.md) | Day by day execution with demoable exit criteria, the Day 3 go/no-go gate on WSL, and the cut ladder. |
 | [DOCUMENTATION-PLAN.md](DOCUMENTATION-PLAN.md) | What each user-facing document must contain and the standard it is held to. |
 | [SESSION-PROMPTS.md](SESSION-PROMPTS.md) | Ready to paste prompts, one per build session, for driving the implementation. |
+| [DAY-2-TICKETS.md](DAY-2-TICKETS.md) | How Day 2, the content engine and verification, was broken into fourteen tickets, with the sizing, the ordering, and the two findings that changed the scope. Superseded by the issues once they are filed. |
 
 ## The decisions that shape everything else
 
