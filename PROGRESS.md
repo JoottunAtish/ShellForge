@@ -32,6 +32,7 @@ formally cut.
 | Link checker | Done, and verified to catch a broken relative link |
 | Merge gate check | Done. `scripts/check-ci-gates.py` asserts no CI job can fail without blocking a merge |
 | Action pinning gate | Done, and verified to fail on a deliberate tag pin. Covered by `scripts/tests/test_check_ci_gates.py` |
+| Allowlist regexp gate | Done, and verified to fail on the two removed spellings plus a case-order variant, and to stop reporting clean when the scan cannot run at all. Covered by `scripts/tests/test_check_allowlist_regexp.py`. It matches those specific spellings, not every string a regexp engine would treat as equivalent. |
 | Label taxonomy | Defined in `.github/labels.yml`, applied by `./scripts/sync-labels.sh` |
 | Issue templates | Four forms, including a self-contained implementation ticket |
 | MCP servers | `.mcp.json` auto-connects jCodemunch and jDocmunch |
@@ -155,11 +156,12 @@ Issue #6. Types only, no behaviour, so nothing new runs yet.
   future type is covered automatically rather than by a hardcoded table. The
   allowlist regexp is `^[a-zA-Z0-9][a-zA-Z0-9_-]*$`, which additionally
   refuses a leading hyphen so a validated value cannot be mistaken for a flag.
-  This is stricter than the regexp still quoted in the ticket and in the
-  security skill; those need a follow-up so the three do not drift apart. The
-  destroy path that will trust `ImageSpec.Name` has not been written yet, and
-  `Destroy` is now documented as idempotent, matching `Provision`, so that
-  path can call it without checking `Status` first.
+  The security skill quoted a looser regexp when this landed; issue #19
+  reconciled the two, and `scripts/check-allowlist-regexp.sh` now fails the
+  build if the loose form reappears. The destroy path that will trust
+  `ImageSpec.Name` has not been written yet, and `Destroy` is now documented as
+  idempotent, matching `Provision`, so that path can call it without checking
+  `Status` first.
 - Sentinel error identity is now covered two ways: by position rather than by
   value in the wrapping test, so an accidental alias of one sentinel to
   another cannot hide by being skipped as `this test's own sentinel`, and by a
@@ -295,6 +297,50 @@ first goes green.
   rule cannot be fully stated without risking asset corruption (F3); and
   `ImageSpec` having no way to say "use the backend's own default reference"
   (F4).
+
+---
+
+### Day 1, 2026-08-10: the argv allowlist regexp, reconciled
+
+Issue #19. Documentation plus one new gate. No behaviour change and no new Go
+code outside a test.
+
+- `.claude/skills/security/SKILL.md` now quotes `^[a-zA-Z0-9][a-zA-Z0-9_-]*$`,
+  the same regexp the doc comments in `internal/runtime` already required, and
+  says why the first character must be alphanumeric: a value that can start
+  with a hyphen is flag-shaped, and `docker` or `wsl.exe` would read it as an
+  option once it reaches an argv vector.
+- `scripts/check-allowlist-regexp.sh` is a new Style gate. It fails if the
+  strict form goes missing from the security skill, and it fails if the loose
+  one-class form comes back, anchored and spelled out with either letter case
+  order (`a-zA-Z0-9_-` or `A-Za-z0-9_-`). Three places quoted the regexp and
+  two had drifted; a gate costs less than noticing again in a month. Wired
+  into `make lint`, `.\make.ps1 lint`, and the Style job. It does not catch
+  every rewrite that a regexp engine would treat as equivalent: a different
+  quantifier, an escaped hyphen, or the hyphen moved to a different position
+  in the class all pass this gate. It catches the two spellings this repo
+  actually had, not every spelling that could exist.
+- Review found three problems with the first version of that gate, fixed in
+  the same branch. It could report clean without having scanned anything at
+  all: a `git ls-files` failure was swallowed by `|| true`, so a broken
+  environment printed "allowlist regexp: consistent" and exited 0, having
+  scanned zero files. That is a false green on a security gate. Its needle
+  also matched the loose form as a bare substring anywhere, which flagged a
+  level briefing teaching the same character class with no anchors; it is now
+  anchored to the full caret-bracket-plus-dollar form. And its own claim of
+  coverage was wider than the truth it now states above. All three are fixed
+  and covered by `scripts/tests/test_check_allowlist_regexp.py`.
+- The drift note in `internal/runtime/apishape_test.go` is gone. It described
+  the disagreement as outstanding, and it no longer is. The constant it guards
+  is unchanged, and a new table-driven test asserts the pattern refuses `-f`,
+  `--force`, and a bare hyphen while still accepting `learner` and
+  `core-linux-basics`.
+- `SECURITY.md` and `.claude/skills/review-code/SKILL.md` still describe
+  allowlist validation without quoting a regexp, on purpose. Two more copies
+  would be two more things to drift.
+- No shared validation helper yet. There is still no caller: the sandbox
+  destroy path that will trust `ImageSpec.Name` is unwritten, and the helper
+  plus its refusal tests belong to that ticket.
 
 ---
 

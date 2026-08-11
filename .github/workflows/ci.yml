@@ -74,6 +74,13 @@ jobs:
         # a terminal that is not UTF-8 clean.
         run: ./scripts/check-punctuation.sh
 
+      - name: Allowlist regexp consistency
+        # A value that can start with a hyphen is flag-shaped: once it reaches
+        # an argv vector as a positional operand, docker or wsl.exe reads it
+        # as an option instead. The strict form in the security skill closes
+        # that off; this gate keeps a looser copy from quietly coming back.
+        run: ./scripts/check-allowlist-regexp.sh
+
       - name: No CRLF in files bound for the sandbox
         # CRLF in a .sh produces "bad interpreter: /bin/bash^M" inside Linux.
         # .gitattributes prevents it; this proves .gitattributes is working.

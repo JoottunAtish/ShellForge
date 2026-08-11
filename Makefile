@@ -22,8 +22,8 @@ LDFLAGS     := -s -w \
 CONTAINER_ENGINE := $(shell command -v docker 2>/dev/null || command -v podman 2>/dev/null || echo docker)
 
 .DEFAULT_GOAL := help
-.PHONY: help build install test race fuzz cover lint fmt vet punct links arch labels \
-        sec vuln gosec image rootfs run golden validate clean tools ci
+.PHONY: help build install test race fuzz cover lint fmt vet punct allowlist links arch \
+        labels sec vuln gosec image rootfs run golden validate clean tools ci
 
 ## help: Show this help.
 help:
@@ -72,6 +72,10 @@ vet:
 punct:
 	@bash scripts/check-punctuation.sh
 
+## allowlist: Fail if the argv identifier allowlist regexp drifts or a loose copy returns.
+allowlist:
+	@bash scripts/check-allowlist-regexp.sh
+
 ## links: Fail on broken relative links in Markdown.
 links:
 	@bash scripts/check-links.sh
@@ -88,8 +92,8 @@ gates:
 labels:
 	@bash scripts/sync-labels.sh
 
-## lint: gofmt check, go vet, punctuation gate, link check, layer test.
-lint: vet punct links arch
+## lint: gofmt check, go vet, punctuation gate, allowlist gate, link check, layer test.
+lint: vet punct allowlist links arch
 	@unformatted="$$(gofmt -s -l . )"; \
 	if [ -n "$$unformatted" ]; then \
 		echo "FAIL: these files are not gofmt -s clean:"; \
