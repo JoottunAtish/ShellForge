@@ -101,6 +101,7 @@ Approved set, and nothing else:
 | `goccy/go-yaml` | Level YAML | |
 | `fatih/color` | Output styling | Must honour `NO_COLOR`. |
 | `stretchr/testify` | Assertions | `require`, not `assert`, for anything that invalidates the rest of the test. |
+| `golang.org/x/term` | Host raw mode and window size | Go team maintained golang.org/x module; approved for #10, the standard answer for raw mode since Go has no stdlib termios API. |
 
 **Ask before adding anything else.** The answer is usually the standard library.
 
