@@ -122,7 +122,7 @@ func TestDataDirRejectsRelativeXDG(t *testing.T) {
 
 // TestWindowsDataDirDistinctFromCacheDirLive runs the real functions and is the
 // Windows-guarded companion to TestWindowsCacheDirIsDistinctFromDataDir: it
-// proves the wiring, not just the helper, on the platform that actually
+// proves the wiring, not only the helper, on the platform that actually
 // collided.
 func TestWindowsDataDirDistinctFromCacheDirLive(t *testing.T) {
 	if runtime.GOOS != "windows" {
