@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -287,32 +286,97 @@ func shQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }
 
+// pushEntry is one validated FileEntry, ready to become a tar entry and a
+// line of the chmod/chown script.
+type pushEntry struct {
+	path    string
+	content []byte
+	owner   string
+	mode    fs.FileMode
+}
+
+// buildPushTar builds the tar that `docker cp - <name>:/` extracts at the
+// container root, and reports the directories it creates.
+//
+// It emits an entry for every file and for every ancestor directory
+// strictly below sandboxRoot, and deliberately emits nothing at or above
+// sandboxRoot. That omission is the whole point of building the archive by
+// hand rather than staging a mirrored tree on the host and copying it:
+// `docker cp` overwrites the ownership and mode of directories that
+// already exist, so a staged tree containing home/ and home/learner/
+// silently reassigns /home and /home/learner to whatever uid and mode the
+// host staging had. On a Linux host that is the uid of whoever ran the
+// process, which owns nothing inside the container, and the sandbox user
+// is then locked out of its own home directory. Verified directly: a copy
+// of such a tree turned /home from learner:learner 0755 into 1001:1001
+// 0750, after which the learner user could not stat anything beneath it.
+//
+// Every entry is written with uid and gid 0 so the result does not depend
+// on who ran the process. That makes this path behave identically on a
+// Linux host and on Docker Desktop for Windows, which has no POSIX
+// ownership to preserve and silently substitutes root and 0755. That
+// difference is exactly why the staged-tree version passed on Windows and
+// failed on Linux CI.
+func buildPushTar(entries []pushEntry) ([]byte, []string, error) {
+	dirSet := make(map[string]bool)
+	for _, e := range entries {
+		for dir := path.Dir(e.path); strings.HasPrefix(dir, sandboxRoot+"/"); dir = path.Dir(dir) {
+			dirSet[dir] = true
+		}
+	}
+	dirs := make([]string, 0, len(dirSet))
+	for d := range dirSet {
+		dirs = append(dirs, d)
+	}
+	// Lexicographic order puts a parent before its children, because a
+	// parent path is a prefix of every path below it.
+	sort.Strings(dirs)
+
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for _, d := range dirs {
+		if err := tw.WriteHeader(&tar.Header{
+			Name:     strings.TrimPrefix(d, "/") + "/",
+			Typeflag: tar.TypeDir,
+			Mode:     0o755,
+		}); err != nil {
+			return nil, nil, fmt.Errorf("docker: build the push archive: %w", err)
+		}
+	}
+	// Entries stay in manifest order so that two entries at the same path
+	// resolve the way FileManifest documents: the later one wins.
+	for _, e := range entries {
+		if err := tw.WriteHeader(&tar.Header{
+			Name:     strings.TrimPrefix(e.path, "/"),
+			Typeflag: tar.TypeReg,
+			Mode:     int64(e.mode.Perm()),
+			Size:     int64(len(e.content)),
+		}); err != nil {
+			return nil, nil, fmt.Errorf("docker: build the push archive: %w", err)
+		}
+		if _, err := tw.Write(e.content); err != nil {
+			return nil, nil, fmt.Errorf("docker: build the push archive: %w", err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		return nil, nil, fmt.Errorf("docker: build the push archive: %w", err)
+	}
+	return buf.Bytes(), dirs, nil
+}
+
 // PushFiles materializes every entry in m inside the container.
 //
-// It stages every file into one host temp directory, mirroring each
-// entry's absolute sandbox path so a single `docker cp` of the staging
-// root onto the container's root places every file correctly, then applies
-// mode and owner with one follow-up Exec running as root: `docker cp` does
-// not preserve them usefully across platforms.
+// It builds one tar in memory and streams it to `docker cp - <name>:/`,
+// then applies owner with one follow-up Exec running as root. Nothing is
+// staged on the host filesystem, so there is no temp directory to leak on
+// an error path and no host ownership to leak into the sandbox. See
+// buildPushTar for why the archive is built by hand.
 func (s *dockerSession) PushFiles(ctx context.Context, m runtime.FileManifest) error {
 	if len(m.Files) == 0 {
 		return nil
 	}
 
-	stage, err := os.MkdirTemp("", "shellforge-docker-push-*")
-	if err != nil {
-		return fmt.Errorf("docker: create staging directory: %w", err)
-	}
-	defer os.RemoveAll(stage)
-
-	type pending struct {
-		path  string
-		owner string
-		mode  fs.FileMode
-	}
-	toApply := make([]pending, 0, len(m.Files))
-	dirSet := make(map[string]bool)
-
+	entries := make([]pushEntry, 0, len(m.Files))
 	for _, f := range m.Files {
 		if f.Path == "" {
 			return errors.New("docker: PushFiles: a FileEntry has an empty Path")
@@ -323,28 +387,20 @@ func (s *dockerSession) PushFiles(ctx context.Context, m runtime.FileManifest) e
 		if f.Owner != "" && !ownerPattern.MatchString(f.Owner) {
 			return fmt.Errorf("docker: owner %q does not match %s", f.Owner, ownerPattern.String())
 		}
-		clean := path.Clean(f.Path)
-
-		// The permissions here are host-side staging only, on a directory
-		// os.MkdirTemp created under the current user's own temp dir. The
-		// mode a level actually sees inside the sandbox comes from
-		// FileEntry.Mode, applied by the chmod step below after `docker
-		// cp`, not from these bits.
-		dest := filepath.Join(stage, filepath.FromSlash(clean))
-		if err := os.MkdirAll(filepath.Dir(dest), 0o750); err != nil {
-			return fmt.Errorf("docker: stage %s: %w", f.Path, err)
-		}
-		if err := os.WriteFile(dest, stripCR(f.Content), 0o600); err != nil {
-			return fmt.Errorf("docker: stage %s: %w", f.Path, err)
-		}
-		toApply = append(toApply, pending{path: clean, owner: f.Owner, mode: f.Mode})
-		for dir := path.Dir(clean); dir != sandboxRoot && dir != "/" && dir != "."; dir = path.Dir(dir) {
-			dirSet[dir] = true
-		}
+		entries = append(entries, pushEntry{
+			path:    path.Clean(f.Path),
+			content: stripCR(f.Content),
+			owner:   f.Owner,
+			mode:    f.Mode,
+		})
 	}
 
-	src := stage + string(filepath.Separator) + "."
-	_, stderr, code, err := s.rt.run.run(ctx, []string{"docker", "cp", src, s.rt.name + ":/"}, nil)
+	archive, dirs, err := buildPushTar(entries)
+	if err != nil {
+		return err
+	}
+
+	_, stderr, code, err := s.rt.run.run(ctx, []string{"docker", "cp", "-", s.rt.name + ":/"}, archive)
 	if err != nil {
 		return fmt.Errorf("docker cp (push): %w", err)
 	}
@@ -352,29 +408,18 @@ func (s *dockerSession) PushFiles(ctx context.Context, m runtime.FileManifest) e
 		return fmt.Errorf("docker cp (push) exited %d: %s", code, stderr)
 	}
 
-	// docker cp preserves the uid of whoever ran it on the host, an
-	// account with no meaning inside the container. On a real Linux host
-	// that is not learner and not root, so every directory PushFiles just
-	// created needs to become traversable before anything below can be
-	// verified or run: without this, `stat` and any Exec against a pushed
-	// file fails for the ordinary session user even though root, with
-	// CAP_DAC_OVERRIDE, can still reach the file directly. This does not
-	// apply to sandboxRoot itself or above: PushFiles never creates those,
-	// and it must not touch permissions it did not set.
-	dirs := make([]string, 0, len(dirSet))
-	for d := range dirSet {
-		dirs = append(dirs, d)
-	}
-	sort.Strings(dirs)
-
+	// The tar already carries each file's mode, so the chmod below is
+	// belt and braces rather than the mechanism. The chown is not: the
+	// interface hands us an owner by name, and only the sandbox can
+	// resolve a name to a uid, so it has to happen here.
 	var script strings.Builder
 	for _, d := range dirs {
 		fmt.Fprintf(&script, "chmod 0755 %s && ", shQuote(d))
 	}
-	for _, p := range toApply {
-		fmt.Fprintf(&script, "chmod %o %s && ", p.mode.Perm(), shQuote(p.path))
-		if p.owner != "" {
-			fmt.Fprintf(&script, "chown %s %s && ", shQuote(p.owner), shQuote(p.path))
+	for _, e := range entries {
+		fmt.Fprintf(&script, "chmod %o %s && ", e.mode.Perm(), shQuote(e.path))
+		if e.owner != "" {
+			fmt.Fprintf(&script, "chown %s %s && ", shQuote(e.owner), shQuote(e.path))
 		}
 	}
 	script.WriteString("true")

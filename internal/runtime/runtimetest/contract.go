@@ -615,12 +615,18 @@ func TestPushFilesStripsCarriageReturns(t *testing.T, f Factory) {
 // name here is a compile-time literal today, so nothing can escape yet, but
 // a future case name containing "/" or ".." must fail loudly instead of
 // silently producing a path outside contractRoot.
+//
+// A hyphen is accepted because this function already emits one: it is what
+// a space is rewritten to just below. Refusing it on input while producing
+// it on output made the "utf-8 multibyte" case in TestPullFileRoundTrips
+// fail on its own name, for every backend, before that case could assert
+// anything about the backend at all.
 func sanitizeName(t *testing.T, name string) string {
 	t.Helper()
 	for _, r := range name {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
-		case r == ' ' || r == ',' || r == '\'':
+		case r == ' ' || r == ',' || r == '\'' || r == '-':
 		default:
 			t.Fatalf("sanitizeName: table case name %q contains unexpected character %q; refusing to turn it into a path rather than adjusting it", name, r)
 		}

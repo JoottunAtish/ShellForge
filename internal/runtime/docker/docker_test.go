@@ -1,9 +1,11 @@
 package docker
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 
@@ -174,7 +176,7 @@ func TestProvisionArgvConstruction(t *testing.T) {
 		{"docker", "image", "inspect", "--", "shellforge-sandbox"},
 		{"docker", "build", "-f", containerfile, "-t", "shellforge-sandbox", "--", buildContext},
 		{"docker", "inspect", "--format", `{{.State.Running}}|{{index .Config.Labels "shellforge.sandbox"}}`, "--", "shellforge-sandbox"},
-		{"docker", "run", "-d", "--name", "shellforge-sandbox", "--label", "shellforge.sandbox=1", "--network", "none", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "FOWNER", "--cap-add", "DAC_OVERRIDE", "--security-opt", "no-new-privileges", "--", "shellforge-sandbox", "sleep", "infinity"},
+		{"docker", "run", "-d", "--name", "shellforge-sandbox", "--label", "shellforge.sandbox=1", "--network", "none", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "FOWNER", "--security-opt", "no-new-privileges", "--", "shellforge-sandbox", "sleep", "infinity"},
 	}
 	assertArgvSequence(t, "Provision", fake.calls, want)
 }
@@ -293,11 +295,12 @@ func TestPullFileRefusesPathOutsideSandbox(t *testing.T) {
 	}
 }
 
-// TestPushFilesCleansUpStagingOnFailure asserts that a PushFiles failure
-// (the docker cp itself failing) leaves no staging directory behind. It
-// captures the staging path by inspecting the argv the fake runner
-// recorded, since PushFiles does not expose it.
-func TestPushFilesCleansUpStagingOnFailure(t *testing.T) {
+// TestPushFilesStagesNothingOnTheHost asserts that PushFiles streams a tar
+// on stdin rather than naming a host path, and that a failure therefore
+// has no staging directory to leak. The ticket's test plan asks for a
+// cleanup test; this is the stronger form of it, since there is nothing to
+// clean up.
+func TestPushFilesStagesNothingOnTheHost(t *testing.T) {
 	fake := &fakeRunner{results: []fakeResult{{code: 1, stderr: []byte("boom")}}}
 	rt := &dockerRuntime{name: "shellforge-sandbox", image: "shellforge-sandbox", run: fake}
 	sess := &dockerSession{rt: rt}
@@ -309,21 +312,125 @@ func TestPushFilesCleansUpStagingOnFailure(t *testing.T) {
 		t.Fatal("PushFiles with a failing docker cp = nil error, want the failure surfaced")
 	}
 	if len(fake.calls) != 1 {
-		t.Fatalf("PushFiles ran %d docker invocation(s), want exactly 1 (the failing cp)", len(fake.calls))
+		t.Fatalf("PushFiles ran %d docker invocation(s), want exactly 1 (the failing cp): %v", len(fake.calls), fake.calls)
+	}
+	want := []string{"docker", "cp", "-", "shellforge-sandbox:/"}
+	if !equalArgv(fake.calls[0], want) {
+		t.Errorf("push argv = %v, want %v (a tar on stdin, never a host path)", fake.calls[0], want)
+	}
+}
+
+// TestBuildPushTarOmitsSandboxRootAndAbove is the regression pin for the
+// defect that broke this backend on Linux CI three times: a push archive
+// that contains home/ or home/learner/ makes `docker cp` reassign those
+// existing directories to the archive's ownership and mode, which locks
+// the learner user out of its own home directory. Verified live at the
+// time: /home went from learner:learner 0755 to 1001:1001 0750.
+func TestBuildPushTarOmitsSandboxRootAndAbove(t *testing.T) {
+	archive, dirs, err := buildPushTar([]pushEntry{
+		{path: "/home/learner/contract/a/b/c.txt", content: []byte("hi"), mode: 0o644},
+		{path: "/home/learner/top.txt", content: []byte("hi"), mode: 0o600},
+	})
+	if err != nil {
+		t.Fatalf("buildPushTar: %v", err)
 	}
 
-	stagingArg := fake.calls[0][2]
-	stagingDir := stagingArg[:len(stagingArg)-2] // strip the trailing separator and "."
-	assertPathAbsent(t, stagingDir)
+	forbidden := map[string]bool{"home/": true, "home/learner/": true, "./": true, "/": true}
+	var names []string
+	tr := tar.NewReader(bytes.NewReader(archive))
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("reading the push archive: %v", err)
+		}
+		names = append(names, hdr.Name)
+		if forbidden[hdr.Name] {
+			t.Errorf("push archive contains %q; copying it would reassign an existing directory the sandbox user depends on", hdr.Name)
+		}
+		if hdr.Uid != 0 || hdr.Gid != 0 {
+			t.Errorf("push archive entry %q has uid/gid %d/%d, want 0/0 so the result does not depend on who ran the process", hdr.Name, hdr.Uid, hdr.Gid)
+		}
+	}
+
+	wantNames := []string{
+		"home/learner/contract/",
+		"home/learner/contract/a/",
+		"home/learner/contract/a/b/",
+		"home/learner/contract/a/b/c.txt",
+		"home/learner/top.txt",
+	}
+	if len(names) != len(wantNames) {
+		t.Fatalf("push archive entries = %v, want exactly %v", names, wantNames)
+	}
+	for i := range wantNames {
+		if names[i] != wantNames[i] {
+			t.Errorf("push archive entry %d = %q, want %q (parents must precede their children)", i, names[i], wantNames[i])
+		}
+	}
+
+	wantDirs := []string{"/home/learner/contract", "/home/learner/contract/a", "/home/learner/contract/a/b"}
+	if len(dirs) != len(wantDirs) {
+		t.Fatalf("reported dirs = %v, want %v", dirs, wantDirs)
+	}
+	for i := range wantDirs {
+		if dirs[i] != wantDirs[i] {
+			t.Errorf("reported dir %d = %q, want %q", i, dirs[i], wantDirs[i])
+		}
+	}
+}
+
+// TestBuildPushTarLaterEntryWins pins the FileManifest rule that entries
+// are applied in order, which for a tar means the later entry at a given
+// path must appear after the earlier one so extraction overwrites it.
+func TestBuildPushTarLaterEntryWins(t *testing.T) {
+	p := "/home/learner/contract/dup.txt"
+	archive, _, err := buildPushTar([]pushEntry{
+		{path: p, content: []byte("first\n"), mode: 0o644},
+		{path: p, content: []byte("second\n"), mode: 0o644},
+	})
+	if err != nil {
+		t.Fatalf("buildPushTar: %v", err)
+	}
+
+	var contents []string
+	tr := tar.NewReader(bytes.NewReader(archive))
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("reading the push archive: %v", err)
+		}
+		if hdr.Typeflag != tar.TypeReg {
+			continue
+		}
+		body, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatalf("reading a push archive entry: %v", err)
+		}
+		contents = append(contents, string(body))
+	}
+
+	want := []string{"first\n", "second\n"}
+	if len(contents) != len(want) {
+		t.Fatalf("push archive file entries = %q, want %q", contents, want)
+	}
+	for i := range want {
+		if contents[i] != want[i] {
+			t.Errorf("push archive file entry %d = %q, want %q", i, contents[i], want[i])
+		}
+	}
 }
 
 // TestPushFilesChmodsAncestorDirectories asserts that the follow-up Exec
 // PushFiles runs as root chmods every ancestor directory it created, up to
 // but not including sandboxRoot, before it chmods and chowns the file
-// itself. This is what lets the session user, not just root, actually
-// reach a pushed file: docker cp preserves the uid of whoever ran it on
-// the host, an account that owns none of these directories inside the
-// container.
+// itself, so the session user can traverse down to a pushed file rather
+// than only root being able to reach it.
 func TestPushFilesChmodsAncestorDirectories(t *testing.T) {
 	fake := &fakeRunner{results: []fakeResult{{code: 0}, {code: 0}}}
 	rt := &dockerRuntime{name: "shellforge-sandbox", image: "shellforge-sandbox", run: fake}

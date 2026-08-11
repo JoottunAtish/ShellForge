@@ -202,27 +202,23 @@ func (rt *dockerRuntime) ensureContainerRunning(ctx context.Context, image strin
 			"--label", sandboxLabel + "=1",
 			"--network", "none",
 			"--cap-drop", "ALL",
-			// PushFiles must be able to hand a file to "learner" after
-			// staging it as root, and every one of these three is needed
-			// once every capability is dropped. This is exactly the
-			// security skill's "drop all capabilities, add back only what
-			// a level provably needs": PushFiles needs all three for
-			// every level, not a specific one, which is as provable as
-			// this gets.
+			// PushFiles hands a file to "learner" after writing it as
+			// root, and chown needs CAP_CHOWN once every capability is
+			// dropped. FOWNER covers the chmod of a file a previous push
+			// already handed away. This is the security skill's "drop all
+			// capabilities, add back only what a level provably needs",
+			// applied to a need every level has rather than a specific
+			// one, which is as provable as this gets.
 			//
-			// CHOWN and FOWNER alone are not enough: `docker cp` preserves
-			// the uid of whoever ran it, which on a real Linux host is an
-			// arbitrary host account, not root and not learner. Without
-			// DAC_OVERRIDE, root cannot even stat a path it does not own
-			// once ordinary Unix permission bits apply, so the follow-up
-			// chmod/chown in PushFiles fails to reach the file at all.
-			// This surfaced only on CI's Linux runner: on a Windows
-			// Docker Desktop host, docker cp has no real uid to preserve
-			// and defaults to root, so root already owned everything and
-			// this gap never showed up locally.
+			// DAC_OVERRIDE is deliberately NOT here. An earlier revision
+			// needed it because the staged-tree push left the copied
+			// files owned by an arbitrary host uid that root did not own.
+			// buildPushTar writes every entry as uid 0 instead, so root
+			// owns what it is about to chmod and chown, and the
+			// capability that would let it override permissions
+			// altogether is not required.
 			"--cap-add", "CHOWN",
 			"--cap-add", "FOWNER",
-			"--cap-add", "DAC_OVERRIDE",
 			"--security-opt", "no-new-privileges",
 			"--", image, "sleep", "infinity",
 		}, nil)

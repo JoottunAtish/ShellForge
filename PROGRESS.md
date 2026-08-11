@@ -486,24 +486,42 @@ is imported yet.
   `CAP_CHOWN` and `CAP_FOWNER` specifically, which is the security skill's
   own rule for this ("drop all capabilities, add back only what a level
   provably needs") applied to a need every level has, not a specific one.
-  A second, related gap surfaced only on CI's Linux runner, not locally:
-  `docker cp` preserves the uid of whoever ran it, an arbitrary real
-  account on a Linux host, so root inside the container did not own the
-  files it had just copied in and needed `CAP_DAC_OVERRIDE` too, to
-  traverse and modify a path regardless of who owns it. This never showed
-  up on the Windows Docker Desktop box this ticket was developed on:
-  Windows has no POSIX uid for `docker cp` to preserve, so the copied
-  files defaulted to root there and root already owned everything.
-  A third round on the same CI runner found that fixing root's own access
-  was not sufficient: root (with `CAP_DAC_OVERRIDE`) could chmod and chown
-  the pushed files, but the *directories* PushFiles' staging had created
-  stayed at their host-preserved uid and `0750`, so the session user,
-  `learner`, could not even traverse into them afterward: `stat` came
-  back empty and a pushed script that should run reported exit 126, "bad
-  interpreter", for a directory permission reason that had nothing to do
-  with its shebang. PushFiles now also chmods every ancestor directory it
-  created, up to but not including `sandboxRoot`, to `0755`, before
-  applying each file's own mode and owner.
+- **`PushFiles` staged a mirrored tree on the host and copied it, and that
+  design was wrong.** It cost three red CI rounds and three wrong guesses
+  before the mechanism was measured rather than theorised, which is the
+  real lesson worth recording here. `docker cp` does not only add the
+  files in the archive: it also **reassigns the ownership and mode of
+  directories that already exist**. Staging `/home/learner/<path>` under
+  `os.MkdirTemp` produced an archive containing `home/` and
+  `home/learner/`, so copying it silently rewrote `/home` and
+  `/home/learner` to the host uid and the staging mode. Measured directly
+  against a live container: `/home` went from `learner:learner 0755` to
+  `1001:1001 0750`, after which the `learner` user could not traverse into
+  its own home directory. Everything downstream followed from that:
+  `stat` returned empty, and a pushed script reported exit 126, which
+  reads as a CRLF shebang failure and was nothing of the kind. The
+  intermediate guesses (add `CAP_DAC_OVERRIDE`; then chmod the created
+  directories) each fixed a real symptom and left the cause in place.
+  **`PushFiles` now builds the tar itself with `archive/tar` and streams
+  it to `docker cp - <name>:/`.** It emits entries only at and below the
+  level it actually creates, never at or above `sandboxRoot`, and writes
+  every entry as uid 0. Nothing is staged on the host, so there is no
+  temp directory to leak on an error path, and no host identity can reach
+  the sandbox at all. `CAP_DAC_OVERRIDE` was removed again as unnecessary
+  once root owns what it chmods. The security skill's "prefer the
+  standard library over a subprocess" points the same way, and `PullFile`
+  already read a tar with the same package.
+- **Why none of this reproduced locally, which is the part to remember.**
+  Docker Desktop for Windows has no POSIX ownership to preserve, so its
+  `docker cp` substitutes root and `0755` for everything. That is
+  permissive in exactly the way that hid the bug: root-owned `0755`
+  directories stay traversable, so the clobbering was invisible. A real
+  Linux host sends its own uid and the real staging mode instead. Worse,
+  the `0755` to `0750` tightening made for `gosec` G301 is what turned a
+  latent clobber into a hard lockout, so a security fix and a
+  platform-specific blind spot combined into a failure neither would have
+  caused alone. Building the archive in-process removes the divergence:
+  the bytes the daemon receives are now identical on both platforms.
 - **A cancelled `Exec` left the sandbox-side process running**, found by
   running the contract suite live, not by any unit test, and it turned out
   to need two attempts. `exec.CommandContext` cancels by sending the local
@@ -549,23 +567,33 @@ is imported yet.
   knows which command the user ran; only the Docker-specific environment
   failures (binary missing, daemon down, permission denied) are wrapped
   here, because nothing above this package could discover those.
-- Gates run locally on Windows: `gofmt -s -w .`, `go vet ./...`,
-  `go test ./...` (green except the one documented pre-existing contract
-  fixture bug), `go test -race ./...` (green, same exclusion),
-  `go test ./internal/archtest/...`, `./scripts/check-punctuation.sh`,
-  `./scripts/check-allowlist-regexp.sh`, `./scripts/check-links.sh`. Not run
-  locally: `python3 scripts/check-ci-gates.py` and
+- **One fix outside this ticket's declared file list**, called out because
+  the ticket did not authorise it: `sanitizeName` in
+  `internal/runtime/runtimetest/contract.go` refused a hyphen while
+  rewriting spaces *into* hyphens, so the `utf-8 multibyte` case of
+  `TestPullFileRoundTrips` failed on its own table case name before it
+  could assert anything about any backend. It was unrunnable for every
+  possible implementation, not just this one. CLAUDE.md allows changing an
+  assertion that is provably wrong, and this one is; the alternative was
+  leaving CI permanently red on a defect in the fixture rather than in the
+  code under test. Needs ratifying with the contract suite's author.
+- Gates run locally on Windows, all green with no exclusions:
+  `gofmt -s -w .`, `go vet ./...`, `go test ./...`,
+  `go test -race ./...`, `go test ./internal/archtest/...`,
+  `./scripts/check-punctuation.sh`, `./scripts/check-allowlist-regexp.sh`,
+  `./scripts/check-links.sh`, and `go mod tidy` leaving `go.mod`
+  unchanged. The full contract suite ran live against Docker Desktop's
+  Linux engine, not skipped. Not run locally:
+  `python3 scripts/check-ci-gates.py` and
   `python3 -m pytest scripts/tests -q` (no `python3` in this environment),
-  `govulncheck ./...` (not installed). CI's `gosec` job did run and found
-  four real issues on the first push: two `G204` subprocess findings
-  (justified with `#nosec` comments naming exactly why `argv` is safe: the
-  binary path is fixed by `exec.LookPath` in `New`, the vector is built from
-  allowlisted identifiers), and two permission findings, `os.MkdirAll` at
-  `0o755` and `os.WriteFile` at `0o644` for the host-side `PushFiles`
-  staging directory, tightened to `0o750` and `0o600` since the mode a
-  level actually sees is applied inside the container afterward, not by
-  these bits. All four fixed in this branch; CI is authoritative that they
-  stay fixed.
+  `govulncheck ./...` (not installed). CI is authoritative for those three.
+- CI's `gosec` job found four real issues on the first push, all fixed:
+  two `G204` subprocess findings, justified with `#nosec` comments naming
+  exactly why the argv is safe (the binary path is fixed by
+  `exec.LookPath` in `New`, the vector is built from allowlisted
+  identifiers), and two file-permission findings on the host-side staging
+  `PushFiles` no longer does at all, since the in-memory tar removed that
+  code path entirely.
 
 ---
 
