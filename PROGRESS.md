@@ -32,6 +32,7 @@ formally cut.
 | Link checker | Done, and verified to catch a broken relative link |
 | Merge gate check | Done. `scripts/check-ci-gates.py` asserts no CI job can fail without blocking a merge |
 | Action pinning gate | Done, and verified to fail on a deliberate tag pin. Covered by `scripts/tests/test_check_ci_gates.py` |
+| Allowlist regexp gate | Done, and verified to fail on the two removed spellings plus a case-order variant, and to stop reporting clean when the scan cannot run at all. Covered by `scripts/tests/test_check_allowlist_regexp.py`. It matches those specific spellings, not every string a regexp engine would treat as equivalent. |
 | Label taxonomy | Defined in `.github/labels.yml`, applied by `./scripts/sync-labels.sh` |
 | Issue templates | Four forms, including a self-contained implementation ticket |
 | MCP servers | `.mcp.json` auto-connects jCodemunch and jDocmunch |
@@ -310,10 +311,25 @@ code outside a test.
   with a hyphen is flag-shaped, and `docker` or `wsl.exe` would read it as an
   option once it reaches an argv vector.
 - `scripts/check-allowlist-regexp.sh` is a new Style gate. It fails if the
-  loose one-class form appears anywhere in the tracked tree, and it fails if
-  the strict form goes missing from the security skill. Three places quoted
-  the regexp and two had drifted; a gate costs less than noticing again in a
-  month. Wired into `make lint`, `.\make.ps1 lint`, and the Style job.
+  strict form goes missing from the security skill, and it fails if the loose
+  one-class form comes back, anchored and spelled out with either letter case
+  order (`a-zA-Z0-9_-` or `A-Za-z0-9_-`). Three places quoted the regexp and
+  two had drifted; a gate costs less than noticing again in a month. Wired
+  into `make lint`, `.\make.ps1 lint`, and the Style job. It does not catch
+  every rewrite that a regexp engine would treat as equivalent: a different
+  quantifier, an escaped hyphen, or the hyphen moved to a different position
+  in the class all pass this gate. It catches the two spellings this repo
+  actually had, not every spelling that could exist.
+- Review found three problems with the first version of that gate, fixed in
+  the same branch. It could report clean without having scanned anything at
+  all: a `git ls-files` failure was swallowed by `|| true`, so a broken
+  environment printed "allowlist regexp: consistent" and exited 0, having
+  scanned zero files. That is a false green on a security gate. Its needle
+  also matched the loose form as a bare substring anywhere, which flagged a
+  level briefing teaching the same character class with no anchors; it is now
+  anchored to the full caret-bracket-plus-dollar form. And its own claim of
+  coverage was wider than the truth it now states above. All three are fixed
+  and covered by `scripts/tests/test_check_allowlist_regexp.py`.
 - The drift note in `internal/runtime/apishape_test.go` is gone. It described
   the disagreement as outstanding, and it no longer is. The constant it guards
   is unchanged, and a new table-driven test asserts the pattern refuses `-f`,
