@@ -36,6 +36,7 @@ formally cut.
 | Label taxonomy | Defined in `.github/labels.yml`, applied by `./scripts/sync-labels.sh` |
 | Issue templates | Four forms, including a self-contained implementation ticket |
 | MCP servers | `.mcp.json` auto-connects jCodemunch and jDocmunch |
+| `internal/platform` (paths) | Tested. All six functions in `paths.go` covered. `DataDir` now rejects a relative `XDG_DATA_HOME` instead of silently returning a relative path. |
 
 **There is no release and nothing to install.**
 
@@ -343,6 +344,62 @@ code outside a test.
   plus its refusal tests belong to that ticket.
 
 ---
+
+### Day 1, 2026-08-11: test internal/platform/paths.go
+
+Issue #13. Test only, plus a small real fix the tests found. No new dependency.
+
+- `internal/platform/paths_test.go` covers all six exported functions:
+  `ConfigDir`, `CacheDir`, `DataDir`, `LogDir`, `DatabasePath`, `EnsureDir`.
+  Same package as `paths.go`, matching the style of `internal/platform/ux`.
+  Every test points `HOME` and both sets of Windows and XDG variables at a
+  fresh `t.TempDir` root via `t.Setenv`, so no test can write to a real user
+  directory and the suite runs the same on a CI box with no `HOME` set.
+- Eight of the nine tests were green on arrival and are regression pins, not
+  red-first drivers. The one genuine red test found a real bug: `DataDir`
+  hand-rolled its `XDG_DATA_HOME` branch and never checked
+  `filepath.IsAbs`, so a relative value such as `XDG_DATA_HOME=relative/data`
+  produced a relative `DataDir`, silently, with no error. `ConfigDir` and
+  `CacheDir` already refuse the equivalent case, because they delegate to
+  `os.UserConfigDir` and `os.UserCacheDir`, which both error on a relative
+  XDG value. **`DataDir` now does the same: a relative `XDG_DATA_HOME` is a
+  reported error, not a fallback and not a silently accepted relative path.**
+  This is a behaviour change worth naming here explicitly, so it reads as an
+  intentional fix rather than a surprise the next time someone sets
+  `XDG_DATA_HOME` by hand and hits an error that did not exist before.
+- The ticket also predicted a bug in the empty-string case
+  (`XDG_DATA_HOME=""`). There is not one: `os.Getenv` already returns `""`
+  for an unset variable, and the existing guard is `xdg != ""`, so unset and
+  empty already took the same fallback path before this change. Kept as a
+  regression pin against a future refactor to `os.LookupEnv`, which would
+  reintroduce exactly that bug.
+- Resolved one contract ambiguity in the ticket's own acceptance criteria,
+  flagged by an outside contributor's comment on the issue and never
+  answered there: `LogDir` keeps `logs` as its final path element rather
+  than `shellforge`, and is tested by containment under `CacheDir`
+  (`CacheDir()/logs`), not by the literal "ends in shellforge" wording that
+  applies to `ConfigDir`, `CacheDir`, and `DataDir`.
+- Corrected a stale doc comment while in the file: `CacheDir`'s comment
+  claimed Windows resolves to `%LocalAppData%\shellforge\cache`; the code
+  has always returned `%LocalAppData%\shellforge`. The comment now matches
+  the code.
+- Found and pinned, not fixed, because fixing it relocates a directory and
+  is out of this ticket's scope: on Windows, `DataDir` and `CacheDir`
+  resolve to the identical path, so the progress database currently lives
+  inside what the rest of the codebase calls the cache directory. A future
+  "clear the cache" operation written against `CacheDir` would delete the
+  learner's progress along with it. Pinned by
+  `TestWindowsDataDirMatchesCacheDir`, skipped on non-Windows. Needs a
+  follow-up issue before the Day 6 uninstall and cache-clearing work lands.
+- No `ux.Fail` added on the new error path. `paths.go` has no callers yet
+  and none of its five pre-existing error paths went through `ux.Fail`
+  either; wrapping only the new one would make the file inconsistent with
+  itself, and the eventual caller is better placed to say what the user was
+  trying to do. No new `DocAnchor`, so `docs/05-troubleshooting.md` is
+  unchanged.
+- `govulncheck`, `gosec`, and `python3 -m pytest scripts/tests -q` are not
+  installed in this environment and were not run locally. CI runs all
+  three and is authoritative.
 
 ## Day 1: the spike
 

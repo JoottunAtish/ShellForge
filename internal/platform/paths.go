@@ -10,6 +10,7 @@
 package platform
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -33,7 +34,7 @@ func ConfigDir() (string, error) {
 // CacheDir returns the directory holding downloaded artifacts and logs.
 //
 //	Linux, macOS: $XDG_CACHE_HOME/shellforge, else ~/.cache/shellforge
-//	Windows:      %LocalAppData%\shellforge\cache
+//	Windows:      %LocalAppData%\shellforge
 func CacheDir() (string, error) {
 	base, err := os.UserCacheDir()
 	if err != nil {
@@ -51,6 +52,10 @@ func CacheDir() (string, error) {
 // The standard library has no UserDataDir, so this is resolved by hand. On
 // Windows os.UserCacheDir already returns %LocalAppData%, which is the correct
 // base for application data, so the two differ only by a trailing element.
+//
+// A relative XDG_DATA_HOME is an error, matching os.UserConfigDir and
+// os.UserCacheDir, which both refuse a relative value for their own XDG
+// variables.
 func DataDir() (string, error) {
 	if runtime.GOOS == "windows" {
 		base, err := os.UserCacheDir()
@@ -60,6 +65,9 @@ func DataDir() (string, error) {
 		return filepath.Join(base, appDir), nil
 	}
 	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
+		if !filepath.IsAbs(xdg) {
+			return "", fmt.Errorf("resolve data directory: $XDG_DATA_HOME is relative: %q", xdg)
+		}
 		return filepath.Join(xdg, appDir), nil
 	}
 	home, err := os.UserHomeDir()
