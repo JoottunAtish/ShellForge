@@ -28,6 +28,12 @@ type Caps struct {
 }
 
 // Status is a snapshot of what a backend currently holds.
+//
+// Status carries no sandbox identity on purpose. A destroy path must not ask
+// "is this sandbox mine" by reading a name off Status; it derives its target
+// from a compile-time constant instead. Adding a Name field is a real option,
+// but it lands only with the destroy path and its refusal tests, never before.
+// See the destructive-safety skill.
 type Status struct {
 	// Provisioned reports that the sandbox exists.
 	Provisioned bool

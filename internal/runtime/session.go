@@ -37,7 +37,11 @@ type Session interface {
 	// bash inside the sandbox.
 	//
 	// A non-zero exit status is reported in ExecResult.ExitCode, not as an
-	// error. The error return means argv could not be run at all.
+	// error. The error return means argv could not be run at all. A context
+	// cancelled before or during the call returns context.Canceled. Whether a
+	// binary missing from the sandbox surfaces as that error or as a
+	// backend-defined non-zero ExitCode is deliberately not pinned by this
+	// contract, so a check must not depend on a particular value for it.
 	Exec(ctx context.Context, argv []string, opts ExecOpts) (ExecResult, error)
 
 	// Attach starts an interactive process on a pseudo terminal and

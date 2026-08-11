@@ -22,6 +22,10 @@ type ImageSpec struct {
 
 	// Reference is the pinned digest for a container image, or the rootfs
 	// URL for a WSL distribution.
+	//
+	// An empty Reference means the backend's own default image or rootfs, not
+	// an error. Both backends agree on that, so a caller that wants the default
+	// leaves this empty rather than naming a version.
 	Reference string
 
 	// SHA256 is the expected hex digest of a downloaded artifact. It is
