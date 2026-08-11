@@ -39,21 +39,34 @@ STRICT_SKILL_TEXT = (
 
 SKILL_PATH = ".claude/skills/security/SKILL.md"
 
+# The gate scans every tracked file, and this file is one of them, so the loose
+# forms are assembled here rather than written out. A literal copy in this
+# source would fail the very gate these tests exercise, and the gate would be
+# right to fail it: it cannot tell a fixture from a rule somebody is about to
+# trust. The bytes written into each fixture on disk are still the real thing,
+# so detection is tested against the genuine article.
+#
+# Do not "simplify" these back into literals. The first version of this file did
+# exactly that, passed locally because an untracked file is invisible to
+# `git ls-files`, and turned the gate red the moment it was committed.
+LOOSE = "^[" + "a-zA-Z" + "0-9_-" + "]" + "+$"
+LOOSE_CASE_ORDER_VARIANT = "^[" + "A-Za-z" + "0-9_-" + "]" + "+$"
+
 # The exact three copies of the loose form that issue #19 removed, recovered
 # with `git show main:<path> | sed -n <lines>p`. If the anchored needle misses
 # any one of these, the anchoring is wrong.
 REMOVED_COPY_SKILL_MD = (
     "  user names go through a strict allowlist regexp\n"
-    "  (`^[a-zA-Z0-9_-]+$` for identifiers) before reaching an argv. **Reject, do\n"
+    f"  (`{LOOSE}` for identifiers) before reaching an argv. **Reject, do\n"
     "  not sanitize.**\n"
 )
 REMOVED_COPY_APISHAPE_1 = (
     "// injection, a different failure from shell injection, and the plain\n"
-    "// ^[a-zA-Z0-9_-]+$ form does not close it.\n"
+    f"// {LOOSE} form does not close it.\n"
 )
 REMOVED_COPY_APISHAPE_2 = (
     "// This diverges from the string currently quoted in the ticket and in the\n"
-    "// security skill, both of which still show ^[a-zA-Z0-9_-]+$.\n"
+    f"// security skill, both of which still show {LOOSE}.\n"
 )
 
 REMOVED_COPIES = [
@@ -206,9 +219,11 @@ def test_the_character_class_trap_is_not_flagged(tmp_path: pathlib.Path) -> None
 
 
 def test_the_case_order_variant_is_caught(tmp_path: pathlib.Path) -> None:
-    # A reviewer planted `^[A-Za-z0-9_-]+$`, letters reordered, and the original
-    # needle missed it. The widened needle must catch this exact spelling.
-    repo = make_repo(tmp_path, files={"fixture.txt": "^[A-Za-z0-9_-]+$\n"})
+    # A reviewer planted the same class with the letter ranges reordered, and
+    # the original needle missed it. The widened needle must catch that exact
+    # spelling too. See LOOSE_CASE_ORDER_VARIANT above for why it is assembled
+    # rather than written out.
+    repo = make_repo(tmp_path, files={"fixture.txt": LOOSE_CASE_ORDER_VARIANT + "\n"})
     result = run_gate(repo)
     assert result.returncode == 1, result.stderr
     assert "fixture.txt" in result.stderr
