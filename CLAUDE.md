@@ -129,7 +129,7 @@ internal/archtest/                  layer dependency enforcement
 packs/core-linux-basics/            pack.yaml, levels/, assets/
 images/                             Containerfile, wsl.conf, rc/, bin/
 docs/                               user docs; docs/design/ holds the design record
-scripts/                            check-punctuation.sh, check-links.sh, sync-labels.sh
+scripts/                            check-punctuation.sh, check-allowlist-regexp.sh, check-links.sh, sync-labels.sh
 .claude/skills/                     the detailed rules, loaded on demand
 .github/workflows/                  ci.yml
 ```
@@ -153,7 +153,7 @@ make build           # go build -o bin/shellforge ./cmd/shellforge
 make test            # go test ./...
 make race            # go test -race ./...
 make fuzz            # fuzz the OSC parser for 60s
-make lint            # gofmt + vet + punctuation + links + layer test
+make lint            # gofmt + vet + punctuation + allowlist regexp + links + layer test
 make sec             # govulncheck + gosec
 make image           # build the sandbox image
 make rootfs          # export the WSL rootfs tarball

@@ -75,6 +75,12 @@ jobs:
         run: ./scripts/check-punctuation.sh
 
       - name: Allowlist regexp consistency
+        # A value that can start with a hyphen is flag-shaped: docker and
+        # wsl.exe read it as an option once it reaches an argv, not as the
+        # value it was meant to be. The security skill is what a session
+        # loads before writing the sandbox destroy path, and it had drifted
+        # from the code that enforces this rule. This fails if the loose
+        # form comes back or if the skill stops quoting the strict one.
         run: ./scripts/check-allowlist-regexp.sh
 
       - name: No CRLF in files bound for the sandbox

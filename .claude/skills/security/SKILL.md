@@ -55,7 +55,13 @@ highest-risk code in the project.
   vector as a positional operand, `docker` or `wsl.exe` reads it as an option
   rather than as a value, so a name like `-f` or `--force` becomes an argument
   injection. That is a different failure from shell injection, and passing an
-  argv vector instead of a command string does not stop it.
+  argv vector instead of a command string does not stop it. Passing `--` as
+  the end-of-options terminator before the value is the other half of this
+  defence. For a destructive target the allowlist is necessary but not
+  sufficient: the value must also be compared against a compile-time
+  constant rather than trusted outright, which is what the
+  `destructive-safety` skill requires and what the doc comment on
+  `ImageSpec.Name` already states.
 - **Prefer the standard library over a subprocess.** If `os`, `io/fs`, or
   `archive/tar` can do it, do not spawn a process.
 - `Session.Exec` takes `argv []string`, not a command string. That is a security

@@ -32,6 +32,7 @@ formally cut.
 | Link checker | Done, and verified to catch a broken relative link |
 | Merge gate check | Done. `scripts/check-ci-gates.py` asserts no CI job can fail without blocking a merge |
 | Action pinning gate | Done, and verified to fail on a deliberate tag pin. Covered by `scripts/tests/test_check_ci_gates.py` |
+| Allowlist regexp gate | Done, and verified to fail on a deliberate loose spelling. It is a heuristic over regexp literals in text, not a regexp equivalence checker: it catches an anchored single-class identifier pattern admitting a leading hyphen in the common spellings (either case order, hyphen leading, trailing, or backslash-escaped trailing), and it does not catch a semantically equivalent class written another way, for example a shorthand class or a pattern assembled at runtime from parts. Covered by `scripts/tests/test_check_allowlist_regexp.py` |
 | Label taxonomy | Defined in `.github/labels.yml`, applied by `./scripts/sync-labels.sh` |
 | Issue templates | Four forms, including a self-contained implementation ticket |
 | MCP servers | `.mcp.json` auto-connects jCodemunch and jDocmunch |
@@ -309,11 +310,26 @@ code outside a test.
   says why the first character must be alphanumeric: a value that can start
   with a hyphen is flag-shaped, and `docker` or `wsl.exe` would read it as an
   option once it reaches an argv vector.
-- `scripts/check-allowlist-regexp.sh` is a new Style gate. It fails if the
-  loose one-class form appears anywhere in the tracked tree, and it fails if
-  the strict form goes missing from the security skill. Three places quoted
-  the regexp and two had drifted; a gate costs less than noticing again in a
-  month. Wired into `make lint`, `.\make.ps1 lint`, and the Style job.
+- `scripts/check-allowlist-regexp.sh` is a new Style gate. It fails if an
+  anchored single-class identifier pattern admitting a leading hyphen appears
+  anywhere in the tracked tree, in the common spellings (either case order,
+  hyphen leading, trailing, or backslash-escaped trailing), and it fails if
+  the strict form goes missing from the security skill. It is a heuristic
+  over regexp literals in text, not a regexp equivalence checker: a
+  semantically identical class written another way, for example a shorthand
+  class or a pattern assembled at runtime from parts, is out of its reach by
+  construction. Three places quoted the regexp and two had drifted; a gate
+  costs less than noticing again in a month. Wired into `make lint`,
+  `.\make.ps1 lint`, and the Style job.
+- A follow-up pass tightened the gate further after three reviewers found
+  that the original bare needle both missed four semantically identical
+  spellings and matched an unanchored character class in ordinary prose (the
+  false positive a future level teaching character classes would have hit).
+  The needle is now anchored to the `^[CLASS]QUANTIFIER$` shape and widened
+  to the spellings above, the scan distinguishes a real hit from a scan that
+  never ran (`git ls-files` or `grep` failing now exits 2, not a false
+  green), and `scripts/tests/test_check_allowlist_regexp.py` covers all of
+  it, including that the strict form and unanchored prose are never flagged.
 - The drift note in `internal/runtime/apishape_test.go` is gone. It described
   the disagreement as outstanding, and it no longer is. The constant it guards
   is unchanged, and a new table-driven test asserts the pattern refuses `-f`,
