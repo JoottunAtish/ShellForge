@@ -136,6 +136,21 @@ unchanged and still needs a decision.
 
 ## 6. The ticket set
 
+Filed against milestone **Day 2: Content engine and verification**.
+
+| | Issue | Title |
+|---|---|---|
+| A | [#48](https://github.com/JoottunAtish/ShellForge/issues/48) | cli: create `cmd/shellforge` with cobra, and add the module's first dependencies |
+| B | [#53](https://github.com/JoottunAtish/ShellForge/issues/53) | content: pack loading, the validator, and `author validate` |
+| C | [#49](https://github.com/JoottunAtish/ShellForge/issues/49) | verify: the check registry and all thirteen check types |
+| D | [#52](https://github.com/JoottunAtish/ShellForge/issues/52) | verify: composition nodes, the check engine, and result assembly |
+| E | [#50](https://github.com/JoottunAtish/ShellForge/issues/50) | content: transactional setup and teardown runner |
+| F | [#51](https://github.com/JoottunAtish/ShellForge/issues/51) | store: SQLite schema and migrations, plus the command journal |
+| G | [#54](https://github.com/JoottunAtish/ShellForge/issues/54) | content: write levels `nav-01` to `files-04` as real YAML |
+| H | [#55](https://github.com/JoottunAtish/ShellForge/issues/55) | cli: wire `run <level-id>` end to end, from YAML to a checked level |
+
+Issue #12 is closed as superseded by #48.
+
 ```
 A  cli+deps  the binary and the module's first dependencies      [blocks everything]
    |
