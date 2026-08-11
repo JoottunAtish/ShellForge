@@ -5,7 +5,7 @@ push, get CI green, and add a line here. No silent carry-over. If an exit criter
 is unchecked the next morning, it either gets done before new work or it gets
 formally cut.
 
-**Current state: Day 0 complete. Day 1 in progress: the runtime interface and the streaming OSC parser exist. No PTY multiplexer, and no backend behind the runtime interface yet.**
+**Current state: Day 0 complete. Day 1 in progress: the runtime interface, the streaming OSC parser, and the Docker backend exist. No PTY multiplexer, and `WslRuntime` is not started.**
 
 ---
 
@@ -23,7 +23,7 @@ formally cut.
 | Sandbox image | `Containerfile` written, not yet built |
 | Shell instrumentation | `instrument.bash` written, not yet exercised |
 | Content pack | `pack.yaml` with six acts declared. Zero levels written. |
-| Runtimes | `Runtime` and `Session` interfaces plus their value types and sentinel errors are defined in `internal/runtime`, and the reusable contract suite is defined in `internal/runtime/runtimetest`. No backend implemented, so the suite has not yet run against a real sandbox. |
+| Runtimes | `Runtime` and `Session` interfaces plus their value types and sentinel errors are defined in `internal/runtime`, the reusable contract suite is in `internal/runtime/runtimetest`, and `internal/runtime/docker` implements both by shelling out to the `docker` CLI. The contract suite is green against it on Windows with Docker Desktop's Linux engine, except one subtest documented below. `WslRuntime` is not started. |
 | PTY multiplexer and OSC parser | Parser done: streaming OSC 133 and OSC 7 state machine, fuzzed, with a recorded vim session passing through byte-identical. Multiplexer not started. |
 | Verification engine | Not started |
 | Progress database | Not started |
@@ -440,6 +440,98 @@ Issue #13. Test only, plus a small real fix the tests found. No new dependency.
 - `govulncheck`, `gosec`, and `python3 -m pytest scripts/tests -q` are not
   installed in this environment and were not run locally. CI runs all
   three and is authoritative.
+
+### Day 1, 2026-08-11: DockerRuntime, via the docker CLI
+
+Issue #9. First backend behind `internal/runtime`. Adds `github.com/creack/pty`
+as a dependency, the first one this module has taken; `golang.org/x/term` and
+`spf13/cobra` also landed in `go.mod` for #10 and #12 to pick up, but neither
+is imported yet.
+
+- `internal/runtime/docker` implements `Runtime` and `Session` entirely by
+  shelling out to `docker` with `exec.CommandContext` and an argv vector.
+  There is no `sh -c` anywhere in the package; a table test asserts the exact
+  argv for `Provision`, `Destroy`, `Exec`, and `PullFile`.
+- `New(name, image string)` allowlist-validates both before either can reach
+  an argv, rejecting rather than sanitizing. `name` (the container identity)
+  uses the strict identifier regexp already established for this codebase,
+  `^[a-zA-Z0-9][a-zA-Z0-9_-]*$`. `image` needs its own, wider pattern,
+  `^[a-zA-Z0-9][a-zA-Z0-9/_.:@-]*$`, because a real image reference needs
+  `/`, `.`, `:`, and `@` for a registry host, a tag, and a digest; the first
+  character stays restricted to alphanumeric, which is the property that
+  actually defeats argument injection. **Contract decision, not ratified
+  yet:** the ticket's own acceptance criterion named
+  `^[a-zA-Z0-9_.:-]+$` for both name and image, which is a single character
+  class ending in a literal hyphen. That shape is exactly what
+  `scripts/check-allowlist-regexp.sh` exists to catch for identifiers: it
+  admits a leading hyphen and reproduces the argument-injection flaw the
+  strict two-class form was written to close. Using it verbatim would have
+  shipped that flaw. Needs a follow-up issue to reconcile the ticket text.
+- **Provision creates and starts the container, not just the image.**
+  The ticket's own mapping table shows `docker run` under `StartSession`, but
+  `runtime.Runtime.Provision`'s doc comment and
+  `TestStatusReportsProvisioned` both require `Status` to report `Running`
+  true immediately after `Provision`, with no separate start step. Followed
+  the interface and the contract suite, per CLAUDE.md's rule that the code is
+  authoritative over ticket prose when the two disagree. `StartSession` now
+  only checks that promise held; it runs nothing.
+- `ImageSpec.Name` is the authority for which image `Provision` builds,
+  falling back to the image `New` was constructed with when empty. This is
+  what lets the contract suite provision `shellforge-contracttest` as both
+  the container name and the image tag without colliding with a production
+  image.
+- **`--cap-drop ALL` also drops `CAP_CHOWN` from root**, discovered by
+  running the contract suite live: `PushFiles`' owner-application step
+  failed with "Operation not permitted" on every case. Fixed by adding back
+  `CAP_CHOWN` and `CAP_FOWNER` specifically, which is the security skill's
+  own rule for this ("drop all capabilities, add back only what a level
+  provably needs") applied to a need every level has, not a specific one.
+- **A cancelled `Exec` left the sandbox-side process running**, also found
+  by running the contract suite live, not by unit tests. `exec.CommandContext`
+  cancels by sending the local `docker` client SIGKILL, which it cannot
+  catch, so `docker exec`'s own `--sig-proxy` (default true, non-tty) never
+  gets a chance to forward anything into the container. Sending SIGTERM
+  instead, via `cmd.Cancel`, lets the client proxy it in on Linux and macOS.
+  Confirmed why this cannot be verified on this Windows dev box: a two-line
+  repro shows `os.Process.Signal(syscall.SIGTERM)` returns "not supported by
+  windows" for a plain child process, so `TestDockerContract/ExecHonoursContextCancellation/cancel_aborts`
+  fails here specifically and is expected to pass on CI's `ubuntu-latest`
+  job, where `docker exec` runs natively rather than through Docker
+  Desktop's Windows-to-Linux-VM bridge.
+- `PushFiles` stages every file into one host temp directory under
+  `os.MkdirTemp`, mirroring each entry's absolute sandbox path, so one
+  `docker cp` of the staging root onto the container's `/` places everything
+  correctly, then applies mode and owner with one follow-up `Exec` running
+  as root. `FileEntry.Owner` is not independently allowlisted by the
+  interface's own doc comments but reaches an in-sandbox shell script this
+  code assembles, so it is validated here (`user` or `user:group`) before
+  that happens, and every value is also single-quoted as a second,
+  independent layer.
+- `PullFile` reads the tar stream `docker cp <name>:<path> -` writes to
+  stdout with `archive/tar`. Nothing here shells out to `tar`.
+- **Found, not fixed, out of this ticket's scope:** the shared contract
+  suite's `TestPullFileRoundTrips/utf-8_multibyte` subtest fails against
+  this backend, and would fail against any backend: its own table case name
+  contains a hyphen, and `runtimetest`'s `sanitizeName` helper refuses a
+  hyphen. This is a bug in `internal/runtime/runtimetest/contract.go`, which
+  this ticket's file list does not include. Needs a follow-up issue.
+- `docker-not-found`, `docker-daemon-down`, and `docker-permission-denied`
+  already had headings in `docs/05-troubleshooting.md` from Day 0; no new
+  anchor needed. `sandbox-missing` also already existed and is not
+  re-wrapped here: `StartSession` returns a plain wrapped
+  `runtime.ErrSandboxMissing`, matching `internal/runtime/errors.go`'s own
+  documented pattern of leaving the `ux.Fail` conversion to the caller that
+  knows which command the user ran; only the Docker-specific environment
+  failures (binary missing, daemon down, permission denied) are wrapped
+  here, because nothing above this package could discover those.
+- Gates run locally on Windows: `gofmt -s -w .`, `go vet ./...`,
+  `go test ./...` (green except the one documented Windows-only subtest),
+  `go test -race ./...` (green, run with that subtest excluded),
+  `go test ./internal/archtest/...`, `./scripts/check-punctuation.sh`,
+  `./scripts/check-allowlist-regexp.sh`, `./scripts/check-links.sh`. Not run:
+  `python3 scripts/check-ci-gates.py` and `python3 -m pytest scripts/tests -q`
+  (no `python3` in this environment), `govulncheck ./...` and `gosec ./...`
+  (neither installed). CI is authoritative for all four.
 
 ---
 
