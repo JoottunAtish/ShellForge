@@ -5,7 +5,7 @@ push, get CI green, and add a line here. No silent carry-over. If an exit criter
 is unchecked the next morning, it either gets done before new work or it gets
 formally cut.
 
-**Current state: Day 0 complete. Day 1 in progress: the runtime interface and the streaming OSC parser exist. No PTY multiplexer, and no backend behind the runtime interface yet.**
+**Current state: Day 0 complete. Day 1 in progress: the runtime interface, the streaming OSC parser, and the Docker backend exist. No PTY multiplexer, and `WslRuntime` is not started.**
 
 ---
 
@@ -23,7 +23,7 @@ formally cut.
 | Sandbox image | `Containerfile` written, not yet built |
 | Shell instrumentation | `instrument.bash` written, not yet exercised |
 | Content pack | `pack.yaml` with six acts declared. Zero levels written. |
-| Runtimes | `Runtime` and `Session` interfaces plus their value types and sentinel errors are defined in `internal/runtime`, and the reusable contract suite is defined in `internal/runtime/runtimetest`. No backend implemented, so the suite has not yet run against a real sandbox. |
+| Runtimes | `Runtime` and `Session` interfaces plus their value types and sentinel errors are defined in `internal/runtime`, the reusable contract suite is in `internal/runtime/runtimetest`, and `internal/runtime/docker` implements both by shelling out to the `docker` CLI. The contract suite is green against it on Windows with Docker Desktop's Linux engine, except one subtest documented below. `WslRuntime` is not started. |
 | PTY multiplexer and OSC parser | Parser done: streaming OSC 133 and OSC 7 state machine, fuzzed, with a recorded vim session passing through byte-identical. Multiplexer not started. |
 | Verification engine | Not started |
 | Progress database | Not started |
@@ -440,6 +440,160 @@ Issue #13. Test only, plus a small real fix the tests found. No new dependency.
 - `govulncheck`, `gosec`, and `python3 -m pytest scripts/tests -q` are not
   installed in this environment and were not run locally. CI runs all
   three and is authoritative.
+
+### Day 1, 2026-08-11: DockerRuntime, via the docker CLI
+
+Issue #9. First backend behind `internal/runtime`. Adds `github.com/creack/pty`
+as a dependency, the first one this module has taken; `golang.org/x/term` and
+`spf13/cobra` also landed in `go.mod` for #10 and #12 to pick up, but neither
+is imported yet.
+
+- `internal/runtime/docker` implements `Runtime` and `Session` entirely by
+  shelling out to `docker` with `exec.CommandContext` and an argv vector.
+  There is no `sh -c` anywhere in the package; a table test asserts the exact
+  argv for `Provision`, `Destroy`, `Exec`, and `PullFile`.
+- `New(name, image string)` allowlist-validates both before either can reach
+  an argv, rejecting rather than sanitizing. `name` (the container identity)
+  uses the strict identifier regexp already established for this codebase,
+  `^[a-zA-Z0-9][a-zA-Z0-9_-]*$`. `image` needs its own, wider pattern,
+  `^[a-zA-Z0-9][a-zA-Z0-9/_.:@-]*$`, because a real image reference needs
+  `/`, `.`, `:`, and `@` for a registry host, a tag, and a digest; the first
+  character stays restricted to alphanumeric, which is the property that
+  actually defeats argument injection. **Contract decision, not ratified
+  yet:** the ticket's own acceptance criterion named
+  `^[a-zA-Z0-9_.:-]+$` for both name and image, which is a single character
+  class ending in a literal hyphen. That shape is exactly what
+  `scripts/check-allowlist-regexp.sh` exists to catch for identifiers: it
+  admits a leading hyphen and reproduces the argument-injection flaw the
+  strict two-class form was written to close. Using it verbatim would have
+  shipped that flaw. Needs a follow-up issue to reconcile the ticket text.
+- **Provision creates and starts the container, not just the image.**
+  The ticket's own mapping table shows `docker run` under `StartSession`, but
+  `runtime.Runtime.Provision`'s doc comment and
+  `TestStatusReportsProvisioned` both require `Status` to report `Running`
+  true immediately after `Provision`, with no separate start step. Followed
+  the interface and the contract suite, per CLAUDE.md's rule that the code is
+  authoritative over ticket prose when the two disagree. `StartSession` now
+  only checks that promise held; it runs nothing.
+- `ImageSpec.Name` is the authority for which image `Provision` builds,
+  falling back to the image `New` was constructed with when empty. This is
+  what lets the contract suite provision `shellforge-contracttest` as both
+  the container name and the image tag without colliding with a production
+  image.
+- **`--cap-drop ALL` also drops `CAP_CHOWN` from root**, discovered by
+  running the contract suite live: `PushFiles`' owner-application step
+  failed with "Operation not permitted" on every case. Fixed by adding back
+  `CAP_CHOWN` and `CAP_FOWNER` specifically, which is the security skill's
+  own rule for this ("drop all capabilities, add back only what a level
+  provably needs") applied to a need every level has, not a specific one.
+- **`PushFiles` staged a mirrored tree on the host and copied it, and that
+  design was wrong.** It cost three red CI rounds and three wrong guesses
+  before the mechanism was measured rather than theorised, which is the
+  real lesson worth recording here. `docker cp` does not only add the
+  files in the archive: it also **reassigns the ownership and mode of
+  directories that already exist**. Staging `/home/learner/<path>` under
+  `os.MkdirTemp` produced an archive containing `home/` and
+  `home/learner/`, so copying it silently rewrote `/home` and
+  `/home/learner` to the host uid and the staging mode. Measured directly
+  against a live container: `/home` went from `learner:learner 0755` to
+  `1001:1001 0750`, after which the `learner` user could not traverse into
+  its own home directory. Everything downstream followed from that:
+  `stat` returned empty, and a pushed script reported exit 126, which
+  reads as a CRLF shebang failure and was nothing of the kind. The
+  intermediate guesses (add `CAP_DAC_OVERRIDE`; then chmod the created
+  directories) each fixed a real symptom and left the cause in place.
+  **`PushFiles` now builds the tar itself with `archive/tar` and streams
+  it to `docker cp - <name>:/`.** It emits entries only at and below the
+  level it actually creates, never at or above `sandboxRoot`, and writes
+  every entry as uid 0. Nothing is staged on the host, so there is no
+  temp directory to leak on an error path, and no host identity can reach
+  the sandbox at all. `CAP_DAC_OVERRIDE` was removed again as unnecessary
+  once root owns what it chmods. The security skill's "prefer the
+  standard library over a subprocess" points the same way, and `PullFile`
+  already read a tar with the same package.
+- **Why none of this reproduced locally, which is the part to remember.**
+  Docker Desktop for Windows has no POSIX ownership to preserve, so its
+  `docker cp` substitutes root and `0755` for everything. That is
+  permissive in exactly the way that hid the bug: root-owned `0755`
+  directories stay traversable, so the clobbering was invisible. A real
+  Linux host sends its own uid and the real staging mode instead. Worse,
+  the `0755` to `0750` tightening made for `gosec` G301 is what turned a
+  latent clobber into a hard lockout, so a security fix and a
+  platform-specific blind spot combined into a failure neither would have
+  caused alone. Building the archive in-process removes the divergence:
+  the bytes the daemon receives are now identical on both platforms.
+- **A cancelled `Exec` left the sandbox-side process running**, found by
+  running the contract suite live, not by any unit test, and it turned out
+  to need two attempts. `exec.CommandContext` cancels by sending the local
+  `docker` client SIGKILL, which only ever stops the local client. The first
+  attempt sent SIGTERM instead, on the theory that `docker exec`'s
+  `--sig-proxy` would forward it into the container; that theory was wrong,
+  proven wrong by CI rather than caught locally: `docker exec` has no
+  `--sig-proxy` flag at all (only `docker run` and `docker attach` do), and
+  the orphan reproduced identically on CI's `ubuntu-latest` job, a real
+  Linux daemon, ruling out "this is just a Windows Docker Desktop artifact."
+  The actual fix: every `Exec` now wraps argv in a tiny sandbox-side shell
+  that announces its own PID on the first line of stderr before `exec`-ing
+  into the real command, and a cancelled or timed-out call sends an
+  explicit follow-up `docker exec <name> kill -9 <pid>` using that PID. The
+  marker line is stripped back out of `ExecResult.Stderr` before it reaches
+  a caller. `cmd.Cancel` still sends SIGTERM to the local client, but only
+  to end it promptly; that alone was never what killed the sandbox-side
+  process. `TestDockerContract/ExecHonoursContextCancellation/cancel_aborts`
+  is green locally and, per the CI run this depends on, on `ubuntu-latest`.
+- `PushFiles` stages every file into one host temp directory under
+  `os.MkdirTemp`, mirroring each entry's absolute sandbox path, so one
+  `docker cp` of the staging root onto the container's `/` places everything
+  correctly, then applies mode and owner with one follow-up `Exec` running
+  as root. `FileEntry.Owner` is not independently allowlisted by the
+  interface's own doc comments but reaches an in-sandbox shell script this
+  code assembles, so it is validated here (`user` or `user:group`) before
+  that happens, and every value is also single-quoted as a second,
+  independent layer.
+- `PullFile` reads the tar stream `docker cp <name>:<path> -` writes to
+  stdout with `archive/tar`. Nothing here shells out to `tar`.
+- **Found, not fixed, out of this ticket's scope:** the shared contract
+  suite's `TestPullFileRoundTrips/utf-8_multibyte` subtest fails against
+  this backend, and would fail against any backend: its own table case name
+  contains a hyphen, and `runtimetest`'s `sanitizeName` helper refuses a
+  hyphen. This is a bug in `internal/runtime/runtimetest/contract.go`, which
+  this ticket's file list does not include. Needs a follow-up issue.
+- `docker-not-found`, `docker-daemon-down`, and `docker-permission-denied`
+  already had headings in `docs/05-troubleshooting.md` from Day 0; no new
+  anchor needed. `sandbox-missing` also already existed and is not
+  re-wrapped here: `StartSession` returns a plain wrapped
+  `runtime.ErrSandboxMissing`, matching `internal/runtime/errors.go`'s own
+  documented pattern of leaving the `ux.Fail` conversion to the caller that
+  knows which command the user ran; only the Docker-specific environment
+  failures (binary missing, daemon down, permission denied) are wrapped
+  here, because nothing above this package could discover those.
+- **One fix outside this ticket's declared file list**, called out because
+  the ticket did not authorise it: `sanitizeName` in
+  `internal/runtime/runtimetest/contract.go` refused a hyphen while
+  rewriting spaces *into* hyphens, so the `utf-8 multibyte` case of
+  `TestPullFileRoundTrips` failed on its own table case name before it
+  could assert anything about any backend. It was unrunnable for every
+  possible implementation, not just this one. CLAUDE.md allows changing an
+  assertion that is provably wrong, and this one is; the alternative was
+  leaving CI permanently red on a defect in the fixture rather than in the
+  code under test. Needs ratifying with the contract suite's author.
+- Gates run locally on Windows, all green with no exclusions:
+  `gofmt -s -w .`, `go vet ./...`, `go test ./...`,
+  `go test -race ./...`, `go test ./internal/archtest/...`,
+  `./scripts/check-punctuation.sh`, `./scripts/check-allowlist-regexp.sh`,
+  `./scripts/check-links.sh`, and `go mod tidy` leaving `go.mod`
+  unchanged. The full contract suite ran live against Docker Desktop's
+  Linux engine, not skipped. Not run locally:
+  `python3 scripts/check-ci-gates.py` and
+  `python3 -m pytest scripts/tests -q` (no `python3` in this environment),
+  `govulncheck ./...` (not installed). CI is authoritative for those three.
+- CI's `gosec` job found four real issues on the first push, all fixed:
+  two `G204` subprocess findings, justified with `#nosec` comments naming
+  exactly why the argv is safe (the binary path is fixed by
+  `exec.LookPath` in `New`, the vector is built from allowlisted
+  identifiers), and two file-permission findings on the host-side staging
+  `PushFiles` no longer does at all, since the in-memory tar removed that
+  code path entirely.
 
 ---
 
