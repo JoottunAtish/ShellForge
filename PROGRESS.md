@@ -36,7 +36,7 @@ formally cut.
 | Label taxonomy | Defined in `.github/labels.yml`, applied by `./scripts/sync-labels.sh` |
 | Issue templates | Four forms, including a self-contained implementation ticket |
 | MCP servers | `.mcp.json` auto-connects jCodemunch and jDocmunch |
-| `internal/platform` (paths) | Tested. All six functions in `paths.go` covered. `DataDir` now rejects a relative `XDG_DATA_HOME` instead of silently returning a relative path. |
+| `internal/platform` (paths) | Tested. Every function in `paths.go` has at least one test, 70 percent of statements. Error paths other than the relative `XDG_DATA_HOME` case are not yet pinned. `DataDir` now rejects a relative `XDG_DATA_HOME` instead of silently returning a relative path. |
 
 **There is no release and nothing to install.**
 
@@ -355,8 +355,9 @@ Issue #13. Test only, plus a small real fix the tests found. No new dependency.
   Every test points `HOME` and both sets of Windows and XDG variables at a
   fresh `t.TempDir` root via `t.Setenv`, so no test can write to a real user
   directory and the suite runs the same on a CI box with no `HOME` set.
-- Eight of the nine tests were green on arrival and are regression pins, not
-  red-first drivers. The one genuine red test found a real bug: `DataDir`
+- Seven of the nine tests were green on arrival and are regression pins, not
+  red-first drivers, one skips off Windows, and one is genuinely red. The one
+  genuine red test found a real bug: `DataDir`
   hand-rolled its `XDG_DATA_HOME` branch and never checked
   `filepath.IsAbs`, so a relative value such as `XDG_DATA_HOME=relative/data`
   produced a relative `DataDir`, silently, with no error. `ConfigDir` and
@@ -389,17 +390,23 @@ Issue #13. Test only, plus a small real fix the tests found. No new dependency.
   inside what the rest of the codebase calls the cache directory. A future
   "clear the cache" operation written against `CacheDir` would delete the
   learner's progress along with it. Pinned by
-  `TestWindowsDataDirMatchesCacheDir`, skipped on non-Windows. Needs a
-  follow-up issue before the Day 6 uninstall and cache-clearing work lands.
-- No `ux.Fail` added on the new error path. `paths.go` has no callers yet
-  and none of its five pre-existing error paths went through `ux.Fail`
-  either; wrapping only the new one would make the file inconsistent with
-  itself, and the eventual caller is better placed to say what the user was
-  trying to do. No new `DocAnchor`, so `docs/05-troubleshooting.md` is
-  unchanged.
+  `TestWindowsDataDirCollidesWithCacheDir`, skipped on non-Windows. Tracked as
+  issue #40, to be resolved before the Day 6 uninstall and cache-clearing
+  work lands. Issue #41 tracks ratifying this ticket's four contract
+  decisions (the relative `XDG_DATA_HOME` error, the `LogDir` containment
+  reading, the empty-string non-bug, and this Windows collision).
+- The relative `XDG_DATA_HOME` error now goes through
+  `internal/platform/ux.Fail`, with an empty `DocAnchor` so
+  `docs/05-troubleshooting.md` needs no new heading. `paths.go` had no
+  callers yet and none of its six pre-existing error paths went through
+  `ux.Fail` either, but a bare `fmt.Errorf` here meant `ux.Render` would tell
+  a learner with a one-line misconfiguration that this was our bug rather
+  than theirs, which non-negotiable number 6 in `CLAUDE.md` rules out.
 - `govulncheck`, `gosec`, and `python3 -m pytest scripts/tests -q` are not
   installed in this environment and were not run locally. CI runs all
   three and is authoritative.
+
+---
 
 ## Day 1: the spike
 

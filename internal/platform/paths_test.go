@@ -1,20 +1,28 @@
 package platform
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/JoottunAtish/ShellForge/internal/platform/ux"
 )
 
-// sandboxPaths names every base directory a sandboxEnv points at, so a test
-// can assert containment against the exact base it configured instead of
-// reconstructing filepath.Join calls that would only agree with themselves.
+// sandboxPaths names every base directory a sandboxEnv points at: one field
+// per environment variable it sets, plus root itself. A test asserts
+// containment against the exact base it configured instead of reconstructing
+// filepath.Join calls that would only agree with themselves.
 type sandboxPaths struct {
 	root         string
 	home         string
-	localAppData string
+	appData      string // Windows %AppData%, the base ConfigDir uses there.
+	localAppData string // Windows %LocalAppData%, the base CacheDir and DataDir both use there.
+	configBase   string // XDG_CONFIG_HOME, the base ConfigDir uses on non-Windows.
+	cacheBase    string // XDG_CACHE_HOME, the base CacheDir uses on non-Windows.
+	dataBase     string // XDG_DATA_HOME, the base DataDir uses on non-Windows.
 }
 
 // sandboxEnv points every environment variable the platform package reads at
@@ -31,6 +39,11 @@ type sandboxPaths struct {
 //     reads HOME, so both must be set for every result to land under the
 //     same root regardless of GOOS.
 //
+// It does not set USERPROFILE, which is what os.UserHomeDir reads on
+// Windows. That is harmless only while DataDir's Windows branch returns
+// before ever reaching the home fallback; a Windows fallback path added
+// later would need USERPROFILE set here too.
+//
 // t.Setenv forbids t.Parallel on any test that calls this, which is correct:
 // these functions read process environment.
 func sandboxEnv(t *testing.T) sandboxPaths {
@@ -39,13 +52,17 @@ func sandboxEnv(t *testing.T) sandboxPaths {
 	p := sandboxPaths{
 		root:         root,
 		home:         root,
+		appData:      filepath.Join(root, "roaming"),
 		localAppData: filepath.Join(root, "local"),
+		configBase:   filepath.Join(root, "config"),
+		cacheBase:    filepath.Join(root, "cache"),
+		dataBase:     filepath.Join(root, "data"),
 	}
 	t.Setenv("HOME", p.home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
-	t.Setenv("XDG_CACHE_HOME", filepath.Join(root, "cache"))
-	t.Setenv("XDG_DATA_HOME", filepath.Join(root, "data"))
-	t.Setenv("AppData", filepath.Join(root, "roaming"))
+	t.Setenv("XDG_CONFIG_HOME", p.configBase)
+	t.Setenv("XDG_CACHE_HOME", p.cacheBase)
+	t.Setenv("XDG_DATA_HOME", p.dataBase)
+	t.Setenv("AppData", p.appData)
 	t.Setenv("LocalAppData", p.localAppData)
 	return p
 }
@@ -80,10 +97,42 @@ func TestDirectoryFunctionsReturnAbsoluteAppPaths(t *testing.T) {
 	tests := []struct {
 		name string
 		fn   func() (string, error)
+		// base picks the exact directory this function must resolve under,
+		// for the current GOOS. A selector function rather than a hardcoded
+		// field, because ConfigDir's Windows base (AppData) differs from
+		// CacheDir's and DataDir's (LocalAppData).
+		base func(sandboxPaths) string
 	}{
-		{"ConfigDir", ConfigDir},
-		{"CacheDir", CacheDir},
-		{"DataDir", DataDir},
+		{
+			name: "ConfigDir",
+			fn:   ConfigDir,
+			base: func(p sandboxPaths) string {
+				if runtime.GOOS == "windows" {
+					return p.appData
+				}
+				return p.configBase
+			},
+		},
+		{
+			name: "CacheDir",
+			fn:   CacheDir,
+			base: func(p sandboxPaths) string {
+				if runtime.GOOS == "windows" {
+					return p.localAppData
+				}
+				return p.cacheBase
+			},
+		},
+		{
+			name: "DataDir",
+			fn:   DataDir,
+			base: func(p sandboxPaths) string {
+				if runtime.GOOS == "windows" {
+					return p.localAppData
+				}
+				return p.dataBase
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -103,8 +152,43 @@ func TestDirectoryFunctionsReturnAbsoluteAppPaths(t *testing.T) {
 			if base := filepath.Base(got); base != "shellforge" {
 				t.Errorf("filepath.Base(%s()) = %q, want %q", tt.name, base, "shellforge")
 			}
-			assertUnder(t, env.root, got)
+			assertUnder(t, tt.base(env), got)
 		})
+	}
+}
+
+// TestConfigCacheDataDirsAreDistinct asserts ConfigDir, CacheDir, and DataDir
+// return three different paths. Guarded to non-Windows: on Windows CacheDir
+// and DataDir collide by design defect, tracked as issue #40 and pinned
+// separately by TestWindowsDataDirCollidesWithCacheDir, so this test would
+// fail there for a reason it is not testing.
+func TestConfigCacheDataDirsAreDistinct(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("CacheDir and DataDir collide on Windows; see issue #40 and TestWindowsDataDirCollidesWithCacheDir")
+	}
+	sandboxEnv(t)
+
+	config, err := ConfigDir()
+	if err != nil {
+		t.Fatalf("ConfigDir() error = %v, want nil", err)
+	}
+	cache, err := CacheDir()
+	if err != nil {
+		t.Fatalf("CacheDir() error = %v, want nil", err)
+	}
+	data, err := DataDir()
+	if err != nil {
+		t.Fatalf("DataDir() error = %v, want nil", err)
+	}
+
+	if config == cache {
+		t.Errorf("ConfigDir() = %q, CacheDir() = %q, want distinct paths", config, cache)
+	}
+	if config == data {
+		t.Errorf("ConfigDir() = %q, DataDir() = %q, want distinct paths", config, data)
+	}
+	if cache == data {
+		t.Errorf("CacheDir() = %q, DataDir() = %q, want distinct paths", cache, data)
 	}
 }
 
@@ -181,15 +265,21 @@ func TestDataDirHonoursXDGDataHome(t *testing.T) {
 		return
 	}
 
-	assertUnder(t, xdg, got)
-	if base := filepath.Base(got); base != "shellforge" {
-		t.Errorf("filepath.Base(DataDir()) = %q, want %q", base, "shellforge")
+	// Exact equality, not mere containment: a DataDir that inserted an extra
+	// path element under XDG_DATA_HOME, for example
+	// filepath.Join(xdg, "sub", "shellforge"), would still pass a
+	// containment check against xdg and still end in "shellforge", so
+	// neither catches that regression on its own.
+	if want := filepath.Join(xdg, "shellforge"); got != want {
+		t.Errorf("DataDir() = %q, want %q", got, want)
 	}
 }
 
 // TestDataDirFallsBackToHome covers the non-Windows fallback branch: when
-// XDG_DATA_HOME is unset or empty, DataDir must resolve under the home
-// directory instead of returning an empty or relative path.
+// XDG_DATA_HOME is unset or empty, DataDir must resolve under
+// $HOME/.local/share, the exact location documented on DataDir itself and
+// depended on by the future uninstall work, not merely somewhere under the
+// home directory.
 //
 // The empty case is not the bug the ticket predicted: os.Getenv returns ""
 // for a variable that was never set, and DataDir's guard is `xdg != ""`, so
@@ -226,6 +316,13 @@ func TestDataDirFallsBackToHome(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// sandboxEnv is called here, inside the leaf subtest, not
+			// hoisted to the parent. That is what makes the "unset" case's
+			// os.Unsetenv below airtight: t.Setenv's cleanup for this
+			// subtest's own XDG_DATA_HOME registration runs before the next
+			// sibling subtest starts. Hoisting sandboxEnv to the parent
+			// would let the Unsetenv leak into the "empty" subtest, and
+			// nothing here would go red to catch it.
 			env := sandboxEnv(t)
 			tt.setup(t)
 
@@ -236,7 +333,8 @@ func TestDataDirFallsBackToHome(t *testing.T) {
 			if !filepath.IsAbs(got) {
 				t.Errorf("DataDir() = %q, want an absolute path", got)
 			}
-			assertUnder(t, env.home, got)
+			wantBase := filepath.Join(env.home, ".local", "share")
+			assertUnder(t, wantBase, got)
 			if base := filepath.Base(got); base != "shellforge" {
 				t.Errorf("filepath.Base(DataDir()) = %q, want %q", base, "shellforge")
 			}
@@ -265,7 +363,7 @@ func TestDataDirRejectsRelativeXDGDataHome(t *testing.T) {
 	}{
 		{"bare relative", "relative/data"},
 		{"dot relative", "./relative/data"},
-		{"parent traversal", "../data"},
+		{"dot dot relative", "../data"},
 	}
 
 	for _, tt := range tests {
@@ -279,6 +377,13 @@ func TestDataDirRejectsRelativeXDGDataHome(t *testing.T) {
 			}
 			if got != "" {
 				t.Errorf("DataDir() with XDG_DATA_HOME = %q: got path = %q, want empty", tt.xdg, got)
+			}
+			var ue *ux.Error
+			if !errors.As(err, &ue) {
+				t.Fatalf("DataDir() with XDG_DATA_HOME = %q: error is not a *ux.Error, got %T", tt.xdg, err)
+			}
+			if ue.Remediation == "" {
+				t.Errorf("DataDir() with XDG_DATA_HOME = %q: ux.Error.Remediation is empty, want a next command", tt.xdg)
 			}
 		})
 	}
@@ -340,7 +445,7 @@ func TestEnsureDirUsesRestrictivePermissions(t *testing.T) {
 	}
 
 	if runtime.GOOS == "windows" {
-		return
+		t.Skip("POSIX permission bits are not meaningful on Windows; NTFS ACLs are out of scope for issue #13. The creation assertion above still ran.")
 	}
 
 	for _, p := range []string{dir, filepath.Join(root, "a", "b")} {
@@ -354,22 +459,24 @@ func TestEnsureDirUsesRestrictivePermissions(t *testing.T) {
 	}
 }
 
-// TestWindowsDataDirMatchesCacheDir characterises a defect rather than a
-// desired contract: on Windows, DataDir and CacheDir resolve to the
-// identical directory, because both are filepath.Join(os.UserCacheDir(),
-// "shellforge") and os.UserCacheDir on Windows returns %LocalAppData%. That
-// means the progress database at DataDir()/progress.db lives inside what the
-// rest of the codebase calls the cache directory, so the first "clear the
-// cache" operation written against CacheDir would delete the learner's
-// progress along with it.
+// TestWindowsDataDirCollidesWithCacheDir pins a defect, tracked as issue #40,
+// rather than a desired contract: on Windows, DataDir and CacheDir resolve to
+// the identical directory, because both are
+// filepath.Join(os.UserCacheDir(), "shellforge") and os.UserCacheDir on
+// Windows returns %LocalAppData%. The blast radius is larger than a single
+// pair of functions: %LocalAppData%\shellforge is where CacheDir, DataDir,
+// and progress.db all live, and per docs/design/ARCHITECTURE.md it is also
+// where the WSL distribution backing store is imported, at
+// %LocalAppData%\shellforge\wsl. A cache-clearing operation written against
+// CacheDir on Windows today would delete the learner's progress database and
+// a multi-gigabyte .vhdx along with whatever it meant to clear.
 //
 // This is pinned rather than fixed here: separating the two directories adds
 // a path element to CacheDir on Windows, which relocates a directory, and
-// this ticket's own scope excludes relocating anything. See the follow-up
-// filed against the Day 6 uninstall work. Fixing the collision requires
-// deleting this test deliberately, which is the point of writing it this
-// way instead of leaving the collision undocumented.
-func TestWindowsDataDirMatchesCacheDir(t *testing.T) {
+// this ticket's own scope excludes relocating anything. See issue #40.
+// Fixing the collision means this test should start failing. When it does,
+// delete it: it pins a known defect, not desired behaviour.
+func TestWindowsDataDirCollidesWithCacheDir(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("this pins a Windows-only path collision between DataDir and CacheDir")
 	}
@@ -384,6 +491,6 @@ func TestWindowsDataDirMatchesCacheDir(t *testing.T) {
 		t.Fatalf("DataDir() error = %v, want nil", err)
 	}
 	if cache != data {
-		t.Errorf("CacheDir() = %q, DataDir() = %q, want identical on Windows", cache, data)
+		t.Errorf("CacheDir() = %q and DataDir() = %q now differ on Windows. If issue #40 has been fixed, delete this test: it pins a known defect and does not describe desired behaviour.", cache, data)
 	}
 }

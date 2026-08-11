@@ -14,6 +14,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+
+	"github.com/JoottunAtish/ShellForge/internal/platform/ux"
 )
 
 // appDir is the per-user subdirectory name used under every base directory.
@@ -50,12 +52,17 @@ func CacheDir() (string, error) {
 //	Windows:      %LocalAppData%\shellforge
 //
 // The standard library has no UserDataDir, so this is resolved by hand. On
-// Windows os.UserCacheDir already returns %LocalAppData%, which is the correct
-// base for application data, so the two differ only by a trailing element.
+// Windows os.UserCacheDir already returns %LocalAppData%, which is also the
+// correct base for application data, so DataDir and CacheDir resolve to the
+// identical directory there. That is a known defect tracked by issue #40: do
+// not write a cache-clearing operation against CacheDir on Windows until the
+// two are separated.
 //
 // A relative XDG_DATA_HOME is an error, matching os.UserConfigDir and
 // os.UserCacheDir, which both refuse a relative value for their own XDG
-// variables.
+// variables. The check is absoluteness only. It does not resolve symlinks and
+// it does not reject a ".." segment, because filepath.Join cleans those, so
+// XDG_DATA_HOME=/home/user/../../etc yields /etc/shellforge with no error.
 func DataDir() (string, error) {
 	if runtime.GOOS == "windows" {
 		base, err := os.UserCacheDir()
@@ -66,7 +73,12 @@ func DataDir() (string, error) {
 	}
 	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
 		if !filepath.IsAbs(xdg) {
-			return "", fmt.Errorf("resolve data directory: $XDG_DATA_HOME is relative: %q", xdg)
+			return "", ux.Fail(
+				"resolve the data directory",
+				fmt.Errorf("$XDG_DATA_HOME is relative: %q", xdg),
+				"Set XDG_DATA_HOME to an absolute path, or unset it to use ~/.local/share.",
+				"",
+			)
 		}
 		return filepath.Join(xdg, appDir), nil
 	}
