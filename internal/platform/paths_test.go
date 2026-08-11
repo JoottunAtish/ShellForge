@@ -86,13 +86,30 @@ func assertUnder(t *testing.T, parent, child string) {
 	}
 }
 
+// isUnder reports whether child is strictly inside parent, without failing the
+// test. It is the predicate form of assertUnder, for the safety assertion that
+// a path must NOT be contained.
+func isUnder(t *testing.T, parent, child string) bool {
+	t.Helper()
+	rel, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 // TestDirectoryFunctionsReturnAbsoluteAppPaths covers ConfigDir, CacheDir,
 // and DataDir together: each must return a non-empty absolute path ending in
 // the shellforge application directory, contained under the environment root
 // the test configured.
 //
 // LogDir is deliberately not in this table. Its final element is "logs", not
-// "shellforge", by design: see TestLogDirIsUnderCacheDir.
+// "shellforge", by design: see TestLogDirIsUnderCacheDir. CacheDir on Windows
+// resolves under, not directly to, its base for the same reason, so it is
+// asserted with containment rather than an exact base match.
 func TestDirectoryFunctionsReturnAbsoluteAppPaths(t *testing.T) {
 	tests := []struct {
 		name string
@@ -102,6 +119,8 @@ func TestDirectoryFunctionsReturnAbsoluteAppPaths(t *testing.T) {
 		// field, because ConfigDir's Windows base (AppData) differs from
 		// CacheDir's and DataDir's (LocalAppData).
 		base func(sandboxPaths) string
+		// wantBase is the final path element the function must end in.
+		wantBase string
 	}{
 		{
 			name: "ConfigDir",
@@ -112,6 +131,7 @@ func TestDirectoryFunctionsReturnAbsoluteAppPaths(t *testing.T) {
 				}
 				return p.configBase
 			},
+			wantBase: "shellforge",
 		},
 		{
 			name: "CacheDir",
@@ -122,6 +142,9 @@ func TestDirectoryFunctionsReturnAbsoluteAppPaths(t *testing.T) {
 				}
 				return p.cacheBase
 			},
+			// On Windows CacheDir ends in "cache", nested under
+			// %LocalAppData%\shellforge; elsewhere it ends in "shellforge".
+			wantBase: "",
 		},
 		{
 			name: "DataDir",
@@ -132,6 +155,7 @@ func TestDirectoryFunctionsReturnAbsoluteAppPaths(t *testing.T) {
 				}
 				return p.dataBase
 			},
+			wantBase: "shellforge",
 		},
 	}
 
@@ -149,8 +173,10 @@ func TestDirectoryFunctionsReturnAbsoluteAppPaths(t *testing.T) {
 			if !filepath.IsAbs(got) {
 				t.Errorf("%s() = %q, want an absolute path", tt.name, got)
 			}
-			if base := filepath.Base(got); base != "shellforge" {
-				t.Errorf("filepath.Base(%s()) = %q, want %q", tt.name, base, "shellforge")
+			if tt.wantBase != "" {
+				if base := filepath.Base(got); base != tt.wantBase {
+					t.Errorf("filepath.Base(%s()) = %q, want %q", tt.name, base, tt.wantBase)
+				}
 			}
 			assertUnder(t, tt.base(env), got)
 		})
@@ -158,14 +184,13 @@ func TestDirectoryFunctionsReturnAbsoluteAppPaths(t *testing.T) {
 }
 
 // TestConfigCacheDataDirsAreDistinct asserts ConfigDir, CacheDir, and DataDir
-// return three different paths. Guarded to non-Windows: on Windows CacheDir
-// and DataDir collide by design defect, tracked as issue #40 and pinned
-// separately by TestWindowsDataDirCollidesWithCacheDir, so this test would
-// fail there for a reason it is not testing.
+// return three different paths on every platform. On Windows CacheDir nests a
+// cache element below DataDir so the two no longer collide (issue #40, fixed).
+// The resolution is also guarded on Linux CI by
+// TestWindowsCacheDirIsDistinctFromDataDir, which exercises the Windows helpers
+// directly, because this test only runs the Windows branch when GOOS is
+// windows.
 func TestConfigCacheDataDirsAreDistinct(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("CacheDir and DataDir collide on Windows; see issue #40 and TestWindowsDataDirCollidesWithCacheDir")
-	}
 	sandboxEnv(t)
 
 	config, err := ConfigDir()
@@ -190,6 +215,22 @@ func TestConfigCacheDataDirsAreDistinct(t *testing.T) {
 	if cache == data {
 		t.Errorf("CacheDir() = %q, DataDir() = %q, want distinct paths", cache, data)
 	}
+}
+
+// TestWindowsCacheDirIsDistinctFromDataDir exercises the Windows resolution on
+// every platform, not only behind a Windows build, so the fix for issue #40 is
+// guarded in Linux CI. windowsCacheDir must nest below windowsDataDir: clearing
+// the cache then cannot reach the progress database or the WSL store that live
+// in the data directory.
+func TestWindowsCacheDirIsDistinctFromDataDir(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "LocalAppData")
+	cache := windowsCacheDir(base)
+	data := windowsDataDir(base)
+
+	if cache == data {
+		t.Fatalf("windowsCacheDir and windowsDataDir are identical: %q", cache)
+	}
+	assertUnder(t, data, cache)
 }
 
 // TestLogDirIsUnderCacheDir pins the contract raised against this ticket: the
@@ -241,6 +282,27 @@ func TestDatabasePathIsUnderDataDir(t *testing.T) {
 	assertUnder(t, data, db)
 	if base := filepath.Base(db); base != "progress.db" {
 		t.Errorf("filepath.Base(DatabasePath()) = %q, want %q", base, "progress.db")
+	}
+}
+
+// TestDatabasePathIsNotUnderCacheDir is the safety property in one assertion:
+// a cache clear written against CacheDir must not be able to delete the
+// progress database. It is the reason issue #40 mattered, and it holds on
+// Windows only because CacheDir now nests below DataDir rather than equalling
+// it.
+func TestDatabasePathIsNotUnderCacheDir(t *testing.T) {
+	sandboxEnv(t)
+
+	cache, err := CacheDir()
+	if err != nil {
+		t.Fatalf("CacheDir() error = %v, want nil", err)
+	}
+	db, err := DatabasePath()
+	if err != nil {
+		t.Fatalf("DatabasePath() error = %v, want nil", err)
+	}
+	if isUnder(t, cache, db) {
+		t.Errorf("DatabasePath() = %q sits under CacheDir() = %q; a cache clear would delete progress", db, cache)
 	}
 }
 
@@ -456,41 +518,5 @@ func TestEnsureDirUsesRestrictivePermissions(t *testing.T) {
 		if perm := info.Mode().Perm(); perm != 0o700 {
 			t.Errorf("os.Stat(%q).Mode().Perm() = %#o, want %#o", p, perm, 0o700)
 		}
-	}
-}
-
-// TestWindowsDataDirCollidesWithCacheDir pins a defect, tracked as issue #40,
-// rather than a desired contract: on Windows, DataDir and CacheDir resolve to
-// the identical directory, because both are
-// filepath.Join(os.UserCacheDir(), "shellforge") and os.UserCacheDir on
-// Windows returns %LocalAppData%. The blast radius is larger than a single
-// pair of functions: %LocalAppData%\shellforge is where CacheDir, DataDir,
-// and progress.db all live, and per docs/design/ARCHITECTURE.md it is also
-// where the WSL distribution backing store is imported, at
-// %LocalAppData%\shellforge\wsl. A cache-clearing operation written against
-// CacheDir on Windows today would delete the learner's progress database and
-// a multi-gigabyte .vhdx along with whatever it meant to clear.
-//
-// This is pinned rather than fixed here: separating the two directories adds
-// a path element to CacheDir on Windows, which relocates a directory, and
-// this ticket's own scope excludes relocating anything. See issue #40.
-// Fixing the collision means this test should start failing. When it does,
-// delete it: it pins a known defect, not desired behaviour.
-func TestWindowsDataDirCollidesWithCacheDir(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("this pins a Windows-only path collision between DataDir and CacheDir")
-	}
-	sandboxEnv(t)
-
-	cache, err := CacheDir()
-	if err != nil {
-		t.Fatalf("CacheDir() error = %v, want nil", err)
-	}
-	data, err := DataDir()
-	if err != nil {
-		t.Fatalf("DataDir() error = %v, want nil", err)
-	}
-	if cache != data {
-		t.Errorf("CacheDir() = %q and DataDir() = %q now differ on Windows. If issue #40 has been fixed, delete this test: it pins a known defect and does not describe desired behaviour.", cache, data)
 	}
 }

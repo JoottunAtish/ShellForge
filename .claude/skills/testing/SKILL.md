@@ -131,6 +131,17 @@ worse than no link, because the learner follows it and lands nowhere.
   remediation is non-empty, not that it reads a particular way, or every copy edit
   breaks the suite.
 
+## A gate that scans `git ls-files` has a blind spot
+
+Any gate that enumerates files with `git ls-files`, and the allowlist regexp gate
+is one, sees only tracked files. A file you have written but not yet `git add`ed is
+invisible to it. So verifying such a gate before you commit can pass while the
+post-commit run goes red, because the commit is the moment your new file becomes
+visible to the scan. This is exactly how the allowlist gate flagged its own test
+fixtures only after they were committed, and not before. When you verify a gate
+that scans tracked files, stage the files first, or run the gate against the
+committed tree rather than the working copy.
+
 ## Running
 
 ```bash

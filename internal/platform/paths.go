@@ -36,11 +36,14 @@ func ConfigDir() (string, error) {
 // CacheDir returns the directory holding downloaded artifacts and logs.
 //
 //	Linux, macOS: $XDG_CACHE_HOME/shellforge, else ~/.cache/shellforge
-//	Windows:      %LocalAppData%\shellforge
+//	Windows:      %LocalAppData%\shellforge\cache
 func CacheDir() (string, error) {
 	base, err := os.UserCacheDir()
 	if err != nil {
 		return "", err
+	}
+	if runtime.GOOS == "windows" {
+		return windowsCacheDir(base), nil
 	}
 	return filepath.Join(base, appDir), nil
 }
@@ -52,11 +55,11 @@ func CacheDir() (string, error) {
 //	Windows:      %LocalAppData%\shellforge
 //
 // The standard library has no UserDataDir, so this is resolved by hand. On
-// Windows os.UserCacheDir already returns %LocalAppData%, which is also the
-// correct base for application data, so DataDir and CacheDir resolve to the
-// identical directory there. That is a known defect tracked by issue #40: do
-// not write a cache-clearing operation against CacheDir on Windows until the
-// two are separated.
+// Windows os.UserCacheDir returns %LocalAppData%, the correct base for
+// application data; CacheDir nests a cache element beneath this directory so
+// the two never resolve to the same path. They must not: DataDir holds the
+// progress database and the WSL backing store, and a cache wipe that landed on
+// DataDir would destroy both.
 //
 // A relative XDG_DATA_HOME is an error, matching os.UserConfigDir and
 // os.UserCacheDir, which both refuse a relative value for their own XDG
@@ -69,7 +72,7 @@ func DataDir() (string, error) {
 		if err != nil {
 			return "", err
 		}
-		return filepath.Join(base, appDir), nil
+		return windowsDataDir(base), nil
 	}
 	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
 		if !filepath.IsAbs(xdg) {
@@ -87,6 +90,20 @@ func DataDir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(home, ".local", "share", appDir), nil
+}
+
+// windowsCacheDir and windowsDataDir both build on %LocalAppData%, the base
+// os.UserCacheDir returns on Windows. They must never resolve to the same
+// directory: DataDir holds the progress database and the WSL backing store, so
+// a cache clear that targeted DataDir would delete a learner's progress and a
+// multi-gigabyte .vhdx. CacheDir is nested one level below DataDir, which keeps
+// the dangerous direction safe: clearing the cache cannot reach up into data.
+func windowsCacheDir(localAppData string) string {
+	return filepath.Join(localAppData, appDir, "cache")
+}
+
+func windowsDataDir(localAppData string) string {
+	return filepath.Join(localAppData, appDir)
 }
 
 // LogDir returns the directory holding rotated debug logs.
