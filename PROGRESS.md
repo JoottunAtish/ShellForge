@@ -486,6 +486,14 @@ is imported yet.
   `CAP_CHOWN` and `CAP_FOWNER` specifically, which is the security skill's
   own rule for this ("drop all capabilities, add back only what a level
   provably needs") applied to a need every level has, not a specific one.
+  A second, related gap surfaced only on CI's Linux runner, not locally:
+  `docker cp` preserves the uid of whoever ran it, an arbitrary real
+  account on a Linux host, so root inside the container did not own the
+  files it had just copied in and needed `CAP_DAC_OVERRIDE` too, to
+  traverse and modify a path regardless of who owns it. This never showed
+  up on the Windows Docker Desktop box this ticket was developed on:
+  Windows has no POSIX uid for `docker cp` to preserve, so the copied
+  files defaulted to root there and root already owned everything.
 - **A cancelled `Exec` left the sandbox-side process running**, found by
   running the contract suite live, not by any unit test, and it turned out
   to need two attempts. `exec.CommandContext` cancels by sending the local

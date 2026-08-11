@@ -183,7 +183,7 @@ func (rt *dockerRuntime) ensureImage(ctx context.Context, image string) error {
 		return rt.classifyFailure(ctx, "build the sandbox image", runErr, stderr)
 	}
 	if code != 0 {
-		return rt.classifyFailure(ctx, "build the sandbox image", fmt.Errorf("docker build exited %d: %s", code, firstLine(stdout, stderr)), stderr)
+		return rt.classifyFailure(ctx, "build the sandbox image", fmt.Errorf("docker build exited %d: %s", code, summarizeFailure(stdout, stderr)), stderr)
 	}
 	return nil
 }
@@ -203,14 +203,26 @@ func (rt *dockerRuntime) ensureContainerRunning(ctx context.Context, image strin
 			"--network", "none",
 			"--cap-drop", "ALL",
 			// PushFiles must be able to hand a file to "learner" after
-			// staging it as root, and chown needs CAP_CHOWN even for root
+			// staging it as root, and every one of these three is needed
 			// once every capability is dropped. This is exactly the
 			// security skill's "drop all capabilities, add back only what
-			// a level provably needs": PushFiles needs these two for
+			// a level provably needs": PushFiles needs all three for
 			// every level, not a specific one, which is as provable as
 			// this gets.
+			//
+			// CHOWN and FOWNER alone are not enough: `docker cp` preserves
+			// the uid of whoever ran it, which on a real Linux host is an
+			// arbitrary host account, not root and not learner. Without
+			// DAC_OVERRIDE, root cannot even stat a path it does not own
+			// once ordinary Unix permission bits apply, so the follow-up
+			// chmod/chown in PushFiles fails to reach the file at all.
+			// This surfaced only on CI's Linux runner: on a Windows
+			// Docker Desktop host, docker cp has no real uid to preserve
+			// and defaults to root, so root already owned everything and
+			// this gap never showed up locally.
 			"--cap-add", "CHOWN",
 			"--cap-add", "FOWNER",
+			"--cap-add", "DAC_OVERRIDE",
 			"--security-opt", "no-new-privileges",
 			"--", image, "sleep", "infinity",
 		}, nil)
@@ -365,11 +377,32 @@ func (rt *dockerRuntime) classifyFailure(ctx context.Context, op string, err err
 	return fmt.Errorf("%s: %w", op, err)
 }
 
-func firstLine(streams ...[]byte) string {
-	for _, s := range streams {
-		if line := bytes.SplitN(bytes.TrimSpace(s), []byte("\n"), 2)[0]; len(line) > 0 {
+// lastLine returns the last non-empty line of b, trimmed.
+func lastLine(b []byte) string {
+	lines := bytes.Split(bytes.TrimSpace(b), []byte("\n"))
+	for i := len(lines) - 1; i >= 0; i-- {
+		if line := bytes.TrimSpace(lines[i]); len(line) > 0 {
 			return string(line)
 		}
 	}
 	return ""
+}
+
+// summarizeFailure reports the last line of both stdout and stderr,
+// labelled, rather than guessing which stream `docker build` chose for its
+// fatal error: BuildKit writes it to stdout, the classic builder to
+// stderr, and either way it is the last line, not the first. An earlier
+// version of this took only the first non-empty line across the two
+// streams, which reliably surfaced the "Sending build context..." progress
+// banner instead of the actual failure.
+func summarizeFailure(stdout, stderr []byte) string {
+	out, errLine := lastLine(stdout), lastLine(stderr)
+	switch {
+	case out != "" && errLine != "":
+		return fmt.Sprintf("stdout: %s | stderr: %s", out, errLine)
+	case errLine != "":
+		return errLine
+	default:
+		return out
+	}
 }
