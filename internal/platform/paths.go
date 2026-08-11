@@ -39,6 +39,9 @@ func CacheDir() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if runtime.GOOS == "windows" {
+		return windowsCacheDir(base), nil
+	}
 	return filepath.Join(base, appDir), nil
 }
 
@@ -49,15 +52,18 @@ func CacheDir() (string, error) {
 //	Windows:      %LocalAppData%\shellforge
 //
 // The standard library has no UserDataDir, so this is resolved by hand. On
-// Windows os.UserCacheDir already returns %LocalAppData%, which is the correct
-// base for application data, so the two differ only by a trailing element.
+// Windows os.UserCacheDir returns %LocalAppData%, the correct base for
+// application data; CacheDir adds a cache element beneath this directory so the
+// two never resolve to the same path. They must not: DataDir holds the progress
+// database and the WSL backing store, and a cache wipe that landed on DataDir
+// would destroy both.
 func DataDir() (string, error) {
 	if runtime.GOOS == "windows" {
 		base, err := os.UserCacheDir()
 		if err != nil {
 			return "", err
 		}
-		return filepath.Join(base, appDir), nil
+		return windowsDataDir(base), nil
 	}
 	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
 		return filepath.Join(xdg, appDir), nil
@@ -67,6 +73,20 @@ func DataDir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(home, ".local", "share", appDir), nil
+}
+
+// windowsCacheDir and windowsDataDir both build on %LocalAppData%, the base
+// os.UserCacheDir returns on Windows. They must never resolve to the same
+// directory: DataDir holds the progress database and the WSL backing store, so
+// a cache clear that targeted DataDir would delete a learner's progress and a
+// multi-gigabyte .vhdx. CacheDir is nested one level below DataDir, which keeps
+// the dangerous direction safe: clearing the cache cannot reach up into data.
+func windowsCacheDir(localAppData string) string {
+	return filepath.Join(localAppData, appDir, "cache")
+}
+
+func windowsDataDir(localAppData string) string {
+	return filepath.Join(localAppData, appDir)
 }
 
 // LogDir returns the directory holding rotated debug logs.

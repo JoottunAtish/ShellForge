@@ -32,7 +32,7 @@ formally cut.
 | Link checker | Done, and verified to catch a broken relative link |
 | Merge gate check | Done. `scripts/check-ci-gates.py` asserts no CI job can fail without blocking a merge |
 | Action pinning gate | Done, and verified to fail on a deliberate tag pin. Covered by `scripts/tests/test_check_ci_gates.py` |
-| Allowlist regexp gate | Done, and verified to fail on the two removed spellings plus a case-order variant, and to stop reporting clean when the scan cannot run at all. Covered by `scripts/tests/test_check_allowlist_regexp.py`. It matches those specific spellings, not every string a regexp engine would treat as equivalent. |
+| Allowlist regexp gate | Done. After the #42 harvest it catches the anchored single-class form with a leading, trailing, or backslash-escaped hyphen under the `+`, `*`, and `{n,m}` quantifiers, in either case order, and reads git and grep exit status directly so a scan that could not run fails loudly rather than reporting clean. Covered by `scripts/tests/test_check_allowlist_regexp.py`. It still matches spellings, not every string a regexp engine would treat as equivalent. |
 | Label taxonomy | Defined in `.github/labels.yml`, applied by `./scripts/sync-labels.sh` |
 | Issue templates | Four forms, including a self-contained implementation ticket |
 | MCP servers | `.mcp.json` auto-connects jCodemunch and jDocmunch |
@@ -341,6 +341,39 @@ code outside a test.
 - No shared validation helper yet. There is still no caller: the sandbox
   destroy path that will trust `ImageSpec.Name` is unwritten, and the helper
   plus its refusal tests belong to that ticket.
+
+---
+
+### Day 1, 2026-08-11: contract debt and the Windows path collision
+
+Issue #42, the consolidation of six tracking issues (#22, #23, #32, #38, #40,
+#41). Decisions settled, one code fix, no new behaviour beyond `paths.go`.
+
+- **Windows `CacheDir` and `DataDir` no longer collide.** Both built on
+  `%LocalAppData%`, so before this they were the identical directory, and a
+  cache clear would have deleted the progress database and the WSL `.vhdx`.
+  `CacheDir` now nests a `cache` element one level below `DataDir`, which was
+  what its own doc comment already claimed. The resolution logic is factored
+  into `windowsCacheDir` and `windowsDataDir` so the collision is guarded by a
+  test that runs on Linux CI, not only behind a Windows build. New
+  `internal/platform/paths_test.go` asserts the three roots are distinct on
+  every platform, that `DatabasePath` never sits under `CacheDir`, and that
+  `LogDir` does.
+- **The journal trust rule is now written down** in `internal/journal/doc.go`,
+  `internal/verify/doc.go`, and the `component-traps` skill: journal contents
+  are learner-influenced and never evidence for scoring, a learner can forge a
+  byte-identical OSC 133 marker, checks decide from real state via
+  `Session.Exec`, and the efficiency bonus is deliberately gameable. The
+  `PROMPT_COMMAND` snapshot files stay legitimate check inputs.
+- **The `git ls-files` blind spot is recorded** in the `testing` skill: a gate
+  that scans tracked files cannot see an un-added file, so a pre-commit check
+  passes and the post-commit run goes red.
+- **The allowlist gate was harvested from the orphaned `chore/issue-19`
+  (`9edea39`).** Its broader needle and its direct git/grep exit-status handling
+  replaced the narrower merged version. Deleting that remote branch is blocked
+  by this environment (a 403 on any non-designated push), so it awaits a
+  maintainer; the tip SHA is recorded here so it stays recoverable.
+- The four PR ratifications (#21, #31, #37, #39) are recorded on issue #42.
 
 ---
 

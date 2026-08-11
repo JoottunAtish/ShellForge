@@ -104,6 +104,13 @@ already-diagnosed trap.
   This is the subtle one; get it wrong and the level is unsolvable.
 - **Never short-circuit.** Every check runs so the objective checklist is complete,
   even though only the first failing required check has its `on_fail` displayed.
+- **Never trust the journal for scoring.** A learner can print a byte-identical
+  OSC 133 marker by hand, so the journal's exit code and cwd prove nothing about
+  what ran. Decide pass or fail from real state via `Session.Exec`, never by
+  reading the journal. The `PROMPT_COMMAND` snapshot files are a different source
+  and stay legitimate. The efficiency bonus reads the journal and is knowingly
+  gameable: par is a nicety, not a gate, and forging a lower command count cheats
+  only the forger.
 - **Checks never mutate.** The purity test hashes the filesystem across a double
   run.
 - **Unknown check type is a load-time validation error**, never a runtime surprise.
