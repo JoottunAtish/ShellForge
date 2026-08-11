@@ -714,6 +714,87 @@ Go has no stdlib termios API.
   `./scripts/check-links.sh` (not re-run this session, nothing this ticket
   touched should affect either). CI is authoritative for all of those.
 
+### Day 1 follow-ups, 2026-08-11: PTY multiplexer review fixes
+
+An independent review of PR #59 found two real defects before merge and
+one real CI-only failure unrelated to either. All three fixed here, plus
+two smaller findings from the same pass.
+
+- **Only the goroutine waiting on `runtime.PTY.Wait` had panic recovery.
+  A panic in either copy goroutine, stdin to sandbox or sandbox output
+  through the parser, was unrecoverable and would have crashed the whole
+  process with the host terminal still in raw mode**, exactly what
+  `doc.go` and this ticket's acceptance criteria say must never happen.
+  All three of `Run`'s worker goroutines now go through one `runRecovered`
+  helper, which captures a panic as data and hands it back on a channel;
+  `Run`'s own select re-panics with it from its own goroutine, so the top
+  level deferred restore still runs first. `TestRun_RestoresTerminal` grew
+  `panic_in_stdin_copy_goroutine` and `panic_in_output_copy_goroutine` to
+  pin this.
+- **The SIGINT/SIGTERM safety net called `os.Exit(1)` directly, from a
+  goroutine independent of `Run`'s own select.** That skipped `Run`'s
+  entire exit path: no `drain`, no `Events()` close, no return to the
+  caller, which never got a chance to close the `runtime.Session` or
+  container the PTY was attached to before the process died. `Mux` is L2
+  and does not own the process lifetime; ending it was never this
+  package's decision to make. The watcher now forwards the caught signal
+  to `m.signalled`, a channel `Run`'s select already watches alongside
+  `ctx.Done` and the three worker outcomes, so a caught signal unwinds
+  through the ordinary exit path and `Run` returns an error wrapping the
+  new `ErrSignalled`. `reraise` and `defaultReraise` are gone.
+  `TestMux_HandlesTerminatingSignal` now drives this through `m.signalled`
+  directly rather than a removed `handleTerminatingSignal` method, for the
+  same reason it never raised a real signal before: unsafe against the
+  test process, and `syscall.SIGTERM` has nothing to raise on Windows
+  regardless.
+- **A bug introduced while fixing the first finding above, caught by the
+  suite itself, not by review**: `runRecovered`'s channel was single-send
+  and never closed, but `drain` deliberately reads from the output copy
+  goroutine's channel a second time on every branch except its own, to
+  wait for that goroutine to actually finish. That second read blocked
+  forever once the one buffered value was already gone, hanging
+  `error_from_copy_goroutine` and the new `panic_in_output_copy_goroutine`
+  test for the whole 5 second timeout. Fixed by closing the channel
+  immediately after the single send; a receive after that returns at once
+  instead of blocking, which is all `drain` needs.
+- Two smaller findings from the same review, both fixed: `emit`'s drop
+  warning now ends `\r\n`, not a bare `\n`, since the latter does not
+  carriage-return on a host terminal `Run` has put into raw mode and would
+  render as a corrupted staircase line if the buffer ever actually filled;
+  and `New` now prefers whichever of `in` or `out` is an actual terminal,
+  via `term.IsTerminal`, before falling back to whichever merely exposes a
+  file descriptor, so a redirected non-terminal `in` alongside a real
+  terminal `out` no longer fails outright over the side that was never
+  going anywhere anyway. `TestNew_NeitherInNorOutExposesFd` closes the one
+  path in `New` that had no test at all.
+- **Real CI failure, unrelated to this ticket's own code**:
+  `Test (windows-latest)` failed three times in a row, on fresh runners,
+  all twelve `TestDockerContract` subtests reporting the identical
+  `docker build exited 1: ... no matching manifest for
+  windows(10.0.26100)/amd64`. `main`'s last green run had passed the same
+  suite on `windows-latest` about an hour earlier at 3.2 seconds, which is
+  this suite's own skip time, not a real run; the hosted runner's Docker
+  daemon evidently started answering `docker version` in
+  Windows-container mode sometime in between, which can pull nothing
+  Linux-only. `internal/runtime/docker/contract_test.go`'s daemon probe
+  now asks `docker version --format {{.Server.Os}}` and skips unless the
+  answer is `linux`, rather than only checking that the daemon answers at
+  all. Verified this changes nothing about coverage that mattered:
+  `Test (ubuntu-latest)` still runs the full suite for real, in about 30
+  seconds. `Test (windows-latest)` now skips cleanly in about 3 seconds,
+  matching its behaviour before the runner image changed, instead of
+  failing loudly for a reason no change to this package could fix.
+  **This leaves hosted Windows CI with no real coverage of
+  `internal/runtime/docker` at all**, which is not a regression from this
+  fix but was not visible before it either; tracked as issue #60 rather
+  than left implicit behind a quiet green check.
+- Gates re-run locally after all of the above, all green:
+  `gofmt -s -w .`, `go vet ./...`, `go build ./...`, `go test ./...`,
+  `go test -race ./...` (the `internal/pty` suite specifically run five
+  times in a row with no flakes), `go test ./internal/archtest/...`,
+  `./scripts/check-punctuation.sh`, and a local `gosec -quiet
+  -exclude-dir=docs ./...` (installed fresh this session), clean.
+
 ---
 
 ## Day 1: the spike

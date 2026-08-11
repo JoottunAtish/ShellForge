@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -150,6 +151,21 @@ func (f *fakePTY) feedOutput(t *testing.T, s string) {
 	}
 }
 
+// panicReader is an io.Reader whose Read always panics with v. Used to prove
+// a panic inside the stdin copy goroutine is caught and re-raised from
+// Run's own goroutine, with the terminal restored first, rather than
+// crashing the process with the terminal still raw.
+type panicReader struct{ v any }
+
+func (p panicReader) Read([]byte) (int, error) { panic(p.v) }
+
+// panicWriter is an io.Writer whose Write always panics with v. Same
+// purpose as panicReader, for the output copy goroutine, which writes
+// through the OSC parser into Mux's out.
+type panicWriter struct{ v any }
+
+func (p panicWriter) Write([]byte) (int, error) { panic(p.v) }
+
 // --- safeBuffer: a mutex guarded byte buffer used as Mux's out. ------------
 
 type safeBuffer struct {
@@ -178,7 +194,7 @@ func (b *safeBuffer) Len() int {
 
 // --- shared test wiring ------------------------------------------------
 
-// newTestMux returns a Mux wired to a fakePTY, with the four injectable
+// newTestMux returns a Mux wired to a fakePTY, with the three injectable
 // terminal func fields already overridden to safe no-op defaults good
 // enough for most tests, and the fd resolution error New would otherwise
 // produce, since neither the pipe reader nor the safeBuffer is an *os.File,
@@ -393,14 +409,101 @@ func TestRun_RestoresTerminal(t *testing.T) {
 			t.Errorf("restore called with %p, want the state makeRaw returned (%p)", rec.restoreArg, state)
 		}
 	})
+
+	t.Run("panic_in_stdin_copy_goroutine", func(t *testing.T) {
+		p, mux, _, _ := newTestMux(t)
+		rec := &restoreRecorder{}
+		state := wireRecorder(mux, rec)
+		mux.in = panicReader{v: "stdin boom"}
+		_ = p
+
+		gotPanic := runAndCatchPanic(t, mux, context.Background())
+		if gotPanic != "stdin boom" {
+			t.Errorf("panic value = %v, want %q", gotPanic, "stdin boom")
+		}
+
+		rec.mu.Lock()
+		defer rec.mu.Unlock()
+		if rec.restoreN != 1 {
+			t.Errorf("restore called %d times, want 1", rec.restoreN)
+		}
+		if rec.restoreArg != state {
+			t.Errorf("restore called with %p, want the state makeRaw returned (%p)", rec.restoreArg, state)
+		}
+	})
+
+	t.Run("panic_in_output_copy_goroutine", func(t *testing.T) {
+		p, mux, _, _ := newTestMux(t)
+		rec := &restoreRecorder{}
+		state := wireRecorder(mux, rec)
+		mux.out = panicWriter{v: "output boom"}
+
+		panicCh := make(chan any, 1)
+		go func() {
+			defer func() { panicCh <- recover() }()
+			_ = mux.Run(context.Background())
+		}()
+
+		// feedOutput blocks on the pipe's matching Read, which only happens
+		// once Run's setup has started the output copy goroutine, so this
+		// needs no separate synchronization of its own.
+		p.feedOutput(t, "hello")
+
+		var gotPanic any
+		select {
+		case gotPanic = <-panicCh:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Run did not panic within 5s")
+		}
+		if gotPanic != "output boom" {
+			t.Errorf("panic value = %v, want %q", gotPanic, "output boom")
+		}
+
+		rec.mu.Lock()
+		defer rec.mu.Unlock()
+		if rec.restoreN != 1 {
+			t.Errorf("restore called %d times, want 1", rec.restoreN)
+		}
+		if rec.restoreArg != state {
+			t.Errorf("restore called with %p, want the state makeRaw returned (%p)", rec.restoreArg, state)
+		}
+	})
 }
 
-// --- 2: the terminating signal safety net, exercised directly -----------
+// runAndCatchPanic runs mux.Run(ctx) and returns the value of any panic
+// that escapes it, or nil if Run returned normally. Used by the panic
+// coverage subtests above where the panicking goroutine is not the test's
+// own, so time.After is needed to fail cleanly rather than hang forever if
+// the panic is somehow lost.
+func runAndCatchPanic(t *testing.T, mux *Mux, ctx context.Context) any {
+	t.Helper()
+	panicCh := make(chan any, 1)
+	go func() {
+		defer func() { panicCh <- recover() }()
+		_ = mux.Run(ctx)
+	}()
+	select {
+	case v := <-panicCh:
+		return v
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not panic within 5s")
+		return nil
+	}
+}
 
+// --- 2: the terminating signal safety net, exercised via the seam -------
+//
+// A real SIGINT or SIGTERM is not raised here: it is unsafe to raise
+// against the test process itself, and syscall.SIGTERM has nothing to
+// raise on Windows. Writing directly to mux.signalled, the same channel
+// watchTerminatingSignals forwards a caught OS signal onto, proves Run's
+// own response is correct without depending on OS signal delivery, which
+// is confirmed correct by inspection of watchTerminatingSignals' few lines
+// of registration code instead.
 func TestMux_HandlesTerminatingSignal(t *testing.T) {
 	tests := []struct {
 		name string
-		sig  syscall.Signal
+		sig  os.Signal
 	}{
 		{"SIGINT", syscall.SIGINT},
 		{"SIGTERM", syscall.SIGTERM},
@@ -408,26 +511,53 @@ func TestMux_HandlesTerminatingSignal(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, mux, _, _ := newTestMux(t)
+			p, mux, _, _ := newTestMux(t)
+			rec := &restoreRecorder{}
+			state := wireRecorder(mux, rec)
+			_ = p
 
-			var restoreN int
-			mux.restore = func(int, *term.State) error {
-				restoreN++
-				return nil
+			done := runAsync(mux, context.Background())
+			mux.signalled <- tt.sig
+
+			err := <-done
+			if !errors.Is(err, ErrSignalled) {
+				t.Errorf("Run() = %v, want an error wrapping ErrSignalled", err)
 			}
-			var gotSig os.Signal
-			mux.reraise = func(s os.Signal) { gotSig = s }
 
-			var once sync.Once
-			mux.handleTerminatingSignal(tt.sig, mux.fd, &term.State{}, &once)
-
-			if restoreN != 1 {
-				t.Errorf("restore called %d times, want 1", restoreN)
+			rec.mu.Lock()
+			defer rec.mu.Unlock()
+			if rec.restoreN != 1 {
+				t.Errorf("restore called %d times, want 1", rec.restoreN)
 			}
-			if gotSig != tt.sig {
-				t.Errorf("reraise observed %v, want %v", gotSig, tt.sig)
+			if rec.restoreArg != state {
+				t.Errorf("restore called with %p, want the state makeRaw returned (%p)", rec.restoreArg, state)
 			}
 		})
+	}
+}
+
+// --- 2b: New's host fd resolution -----------------------------------------
+
+// neitherFdNorTerminal is a plain io.ReadWriter that satisfies neither
+// fdHaver nor anything term.IsTerminal would recognize, used to drive New
+// down its failure path.
+type neitherFdNorTerminal struct{}
+
+func (neitherFdNorTerminal) Read([]byte) (int, error)    { return 0, io.EOF }
+func (neitherFdNorTerminal) Write(p []byte) (int, error) { return len(p), nil }
+
+func TestNew_NeitherInNorOutExposesFd(t *testing.T) {
+	p := newFakePTY()
+	t.Cleanup(func() { _ = p.Close() })
+
+	mux := New(p, neitherFdNorTerminal{}, neitherFdNorTerminal{})
+
+	err := mux.Run(context.Background())
+	if err == nil {
+		t.Fatal("Run() = nil, want an error, since neither in nor out exposes a host fd")
+	}
+	if !strings.Contains(err.Error(), "resolve host terminal") {
+		t.Errorf("Run() = %q, want it to mention resolving the host terminal", err.Error())
 	}
 }
 

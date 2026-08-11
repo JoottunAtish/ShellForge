@@ -82,78 +82,150 @@ type Mux struct {
 
 	restoreOnce sync.Once
 
-	// makeRaw, restore, getSize, and now follow the same injectable func
-	// field pattern osc.go already uses for its own clock, so a test can
-	// override host terminal behaviour without a fake terminal type. See
-	// New for their production defaults. now is not read by anything in
-	// this file today; it is here for the same reason Raw is documented as
-	// always empty above, a future correlation step is expected to want a
-	// controllable clock on this type too.
+	// makeRaw, restore, and getSize follow the same injectable func field
+	// pattern osc.go already uses for its own clock, so a test can override
+	// host terminal behaviour without a fake terminal type. See New for
+	// their production defaults.
 	makeRaw func(fd int) (*term.State, error)
 	restore func(fd int, state *term.State) error
 	getSize func(fd int) (cols, rows int, err error)
-	now     func() time.Time
 
-	// reraise re-delivers a caught terminating signal once this process's
-	// own handling of it is done. See watchTerminatingSignals.
-	reraise func(os.Signal)
+	// signalled carries a caught external terminating signal from the
+	// watcher goroutine to Run's own select, so Run unwinds through its
+	// ordinary exit path rather than the process dying underneath it. See
+	// watchTerminatingSignals and ErrSignalled.
+	signalled chan os.Signal
 }
+
+// ErrSignalled reports that Run stopped because this process received an
+// external terminating signal, rather than because the sandboxed shell
+// exited on its own.
+//
+// Run restores the host terminal, closes the sandbox PTY handle, waits for
+// its own goroutines, and closes Events before returning an error wrapping
+// this, so a caller can close the runtime.Session it owns and then decide
+// how to end the process. Mux deliberately does not call os.Exit itself: at
+// L2 it does not own the process lifetime, and exiting from in here would
+// strand whatever container or distribution the caller opened. Callers that
+// want the conventional signal exit status should re-raise after their own
+// cleanup has run.
+var ErrSignalled = errors.New("terminated by signal")
 
 // New returns a Mux that drives p: forwarding in to the sandbox, and
 // forwarding p's output, with this project's OSC markers stripped, to out.
 //
-// New resolves the host terminal file descriptor immediately, preferring
-// in and falling back to out, by checking each against fdHaver. If neither
-// satisfies it, New does not fail: it records the problem, and Run returns
-// it, wrapped, the moment Run is called, rather than New panicking before a
-// caller has any chance to handle the error.
+// New resolves the host terminal file descriptor immediately. It prefers
+// whichever of in or out is an fdHaver AND a real terminal, checked with
+// term.IsTerminal, so a session with a redirected, non-terminal in (a
+// script piping input into an otherwise interactive shell) still resolves
+// out's real terminal rather than failing outright over the one side that
+// happens not to be a tty. If neither is a real terminal, it falls back to
+// whichever is at least an fdHaver, preferring in, matching this package's
+// original, simpler rule. If neither satisfies fdHaver at all, New does
+// not fail: it records the problem, and Run returns it, wrapped, the
+// moment Run is called, rather than New panicking before a caller has any
+// chance to handle the error.
 func New(p runtime.PTY, in io.Reader, out io.Writer) *Mux {
 	m := &Mux{
-		pty:     p,
-		in:      in,
-		out:     out,
-		events:  make(chan CommandEvent, eventBufferSize),
-		makeRaw: term.MakeRaw,
-		restore: term.Restore,
-		getSize: term.GetSize,
-		now:     time.Now,
-		reraise: defaultReraise,
+		pty:       p,
+		in:        in,
+		out:       out,
+		events:    make(chan CommandEvent, eventBufferSize),
+		makeRaw:   term.MakeRaw,
+		restore:   term.Restore,
+		getSize:   term.GetSize,
+		signalled: make(chan os.Signal, 1),
 	}
 
-	if f, ok := in.(fdHaver); ok {
-		m.fd = int(f.Fd())
-		return m
+	inFd, inHasFd := fdOf(in)
+	outFd, outHasFd := fdOf(out)
+
+	switch {
+	case inHasFd && term.IsTerminal(inFd):
+		m.fd = inFd
+	case outHasFd && term.IsTerminal(outFd):
+		m.fd = outFd
+	case inHasFd:
+		m.fd = inFd
+	case outHasFd:
+		m.fd = outFd
+	default:
+		m.fdErr = errors.New("neither in nor out exposes a host file descriptor (Fd() uintptr); raw mode needs one")
 	}
-	if f, ok := out.(fdHaver); ok {
-		m.fd = int(f.Fd())
-		return m
-	}
-	m.fdErr = errors.New("neither in nor out exposes a host file descriptor (Fd() uintptr); raw mode needs one")
 	return m
 }
 
-// waitOutcome carries the result of one call to runtime.PTY.Wait across a
-// channel from the goroutine that makes that call, including a recovered
-// panic value.
+// fdOf reports v's OS file descriptor and whether it has one at all, by
+// checking it against fdHaver. *os.File satisfies fdHaver, which is what
+// os.Stdin and os.Stdout both are.
+func fdOf(v any) (fd int, ok bool) {
+	f, ok := v.(fdHaver)
+	if !ok {
+		return 0, false
+	}
+	return int(f.Fd()), true
+}
+
+// outcome carries the result of one goroutine Run started, including a
+// recovered panic value, back across a channel to Run's own select.
 //
-// Wait runs in its own goroutine so Run's select can watch it alongside
-// ctx.Done and the two copy goroutines, but a panic raised in a goroutine
-// other than the one whose defer calls recover is never caught by that
-// recover. Capturing the panic here, then panicking again from inside Run's
-// own goroutine when this outcome is received, is what lets Run's top level
-// deferred restore-and-repanic catch it, so the terminal still gets
-// restored before the panic reaches Run's caller.
-type waitOutcome struct {
+// A panic raised in a goroutine other than the one whose deferred call
+// invokes recover is never caught by that recover: Go terminates the whole
+// process on an unrecovered panic in any goroutine, main or not. runRecovered
+// is what stands between Run's three worker goroutines, the stdin copy, the
+// output copy, and the wait on the sandboxed process, and that fate. Each
+// captures its own panic here and sends it back as data; Run's own select
+// then panics again from its own goroutine, which is what lets Run's top
+// level defer restore the host terminal before the panic reaches Run's
+// caller. Without this, a panic in either copy goroutine would kill the
+// process with the terminal still in raw mode, unrecoverable from outside.
+type outcome struct {
 	err      error
 	panicVal any
 }
 
+// runRecovered runs fn on its own goroutine and reports its result, or a
+// panic recovered from it, on the returned channel, then closes it.
+//
+// Closing after the one send matters: Run's select only ever consumes the
+// branch that actually fired, and drain, below, deliberately reads from
+// outDone a second time on every OTHER branch to wait for the output copy
+// goroutine to finish. A plain unclosed buffered channel would make that
+// second read block forever once its single value is gone; reading from a
+// closed channel with nothing buffered returns immediately instead, which
+// is all drain needs, since it only cares that the goroutine is done, not
+// what it returned.
+func runRecovered(fn func() error) <-chan outcome {
+	done := make(chan outcome, 1)
+	go func() {
+		out := outcome{}
+		defer func() {
+			done <- out
+			close(done)
+		}()
+		defer func() {
+			if r := recover(); r != nil {
+				out = outcome{panicVal: r}
+			}
+		}()
+		out.err = fn()
+	}()
+	return done
+}
+
 // Run drives the multiplexer until the sandboxed shell exits, ctx is
-// cancelled, or a copy direction reports an unrecoverable error, whichever
-// happens first. It puts the host terminal into raw mode for the duration
-// and restores it on every exit path, including a panic raised anywhere
-// within this call, or forwarded here from the goroutine waiting on
-// p.Wait, before that panic, or Run's own return, reaches the caller.
+// cancelled, an external SIGINT or SIGTERM arrives, or a copy direction
+// reports an unrecoverable error, whichever happens first. It puts the host
+// terminal into raw mode for the duration and restores it on every exit
+// path, including a panic raised in Run itself or in any of its three
+// worker goroutines (stdin copy, output copy, or the wait on the sandboxed
+// process), forwarded here via runRecovered before that panic, or Run's own
+// return, reaches the caller.
+//
+// A caught SIGINT or SIGTERM does not exit the process: Run restores the
+// terminal, drains its goroutines, closes Events, and returns an error
+// wrapping ErrSignalled, so a caller can close whatever runtime.Session or
+// container it owns before deciding how the process itself ends.
 //
 // Run must be called at most once per Mux.
 func (m *Mux) Run(ctx context.Context) error {
@@ -178,7 +250,7 @@ func (m *Mux) Run(ctx context.Context) error {
 		_ = m.resize(clampToUint16(rows), clampToUint16(cols))
 	}
 
-	stopSig := m.watchTerminatingSignals(fd, oldState, &m.restoreOnce)
+	stopSig := m.watchTerminatingSignals()
 	defer stopSig()
 
 	stopResize := startResizeWatcher(m)
@@ -186,27 +258,15 @@ func (m *Mux) Run(ctx context.Context) error {
 
 	oscParser := NewParser(m.out, m.onOSCEvent)
 
-	var stdinErr, outErr error
-	stdinDone := make(chan struct{})
-	outDone := make(chan struct{})
-	go func() {
-		_, stdinErr = io.Copy(m.pty, m.in)
-		close(stdinDone)
-	}()
-	go func() {
-		_, outErr = io.Copy(oscParser, m.pty)
-		close(outDone)
-	}()
-
-	waitDone := make(chan waitOutcome, 1)
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				waitDone <- waitOutcome{panicVal: r}
-			}
-		}()
-		waitDone <- waitOutcome{err: m.pty.Wait()}
-	}()
+	stdinDone := runRecovered(func() error {
+		_, err := io.Copy(m.pty, m.in)
+		return err
+	})
+	outDone := runRecovered(func() error {
+		_, err := io.Copy(oscParser, m.pty)
+		return err
+	})
+	waitDone := runRecovered(m.pty.Wait)
 
 	// drain closes the sandbox PTY handle, which unblocks whatever is
 	// blocked in a Read on it, then waits for that read side copy
@@ -223,27 +283,43 @@ func (m *Mux) Run(ctx context.Context) error {
 		<-outDone
 	}
 
+	// repanic re-raises a panic recovered on a goroutine other than this
+	// one. recover only ever catches a panic on the same goroutine as the
+	// deferred call to it, so the stdin copy, output copy, and Wait
+	// goroutines each recover their own panic and forward the value here;
+	// panicking again from Run's own goroutine is what lets Run's top
+	// level defer restore the terminal before the panic reaches Run's
+	// caller.
+	repanic := func(out outcome) {
+		if out.panicVal != nil {
+			panic(out.panicVal)
+		}
+	}
+
 	var runErr error
 	select {
 	case out := <-waitDone:
 		drain()
-		if out.panicVal != nil {
-			panic(out.panicVal)
-		}
+		repanic(out)
 		runErr = out.err
+	case out := <-stdinDone:
+		drain()
+		repanic(out)
+		if out.err != nil && !errors.Is(out.err, io.EOF) {
+			runErr = fmt.Errorf("pty: copy stdin to sandbox: %w", out.err)
+		}
+	case out := <-outDone:
+		drain()
+		repanic(out)
+		if out.err != nil && !errors.Is(out.err, io.EOF) {
+			runErr = fmt.Errorf("pty: copy sandbox output to host: %w", out.err)
+		}
+	case sig := <-m.signalled:
+		drain()
+		runErr = fmt.Errorf("pty: %w: %v", ErrSignalled, sig)
 	case <-ctx.Done():
 		drain()
 		runErr = ctx.Err()
-	case <-stdinDone:
-		drain()
-		if stdinErr != nil && !errors.Is(stdinErr, io.EOF) {
-			runErr = fmt.Errorf("pty: copy stdin to sandbox: %w", stdinErr)
-		}
-	case <-outDone:
-		drain()
-		if outErr != nil && !errors.Is(outErr, io.EOF) {
-			runErr = fmt.Errorf("pty: copy sandbox output to host: %w", outErr)
-		}
 	}
 
 	// Nothing but the read side copy goroutine above ever touches
@@ -348,7 +424,11 @@ func (m *Mux) emit(ev CommandEvent) {
 	select {
 	case m.events <- ev:
 	default:
-		log.Printf("pty: dropping command event, consumer not draining Events()")
+		// A bare \n does not carriage-return on a host terminal that Run
+		// has put into raw mode, so log.Default's default writer would
+		// render this as a staircase-corrupted line on the learner's own
+		// screen if the buffer ever actually fills. \r\n avoids that.
+		log.Print("pty: dropping command event, consumer not draining Events()\r\n")
 	}
 }
 
@@ -363,18 +443,26 @@ func (m *Mux) emit(ev CommandEvent) {
 // this process. So a genuine SIGINT or SIGTERM reaching this process while
 // it holds the terminal raw did not come from the learner typing at the
 // sandbox. It came from somewhere else entirely: a parent process, job
-// control, an operator running kill, or the host shutting down. This
-// handler exists only so that an outside signal does not leave the
-// learner's terminal stuck in raw mode; it restores, then lets the signal
-// finish doing whatever it would have done without Mux in the way.
-func (m *Mux) watchTerminatingSignals(fd int, oldState *term.State, restoreOnce *sync.Once) (stop func()) {
+// control, an operator running kill, or the host shutting down.
+//
+// This watcher does not restore the terminal or exit the process itself. It
+// only forwards the caught signal to m.signalled, which Run's own select is
+// already watching alongside ctx.Done and the two copy goroutines, so the
+// signal unwinds through Run's ordinary exit path: restore, drain, close
+// Events, return ErrSignalled. A handler that called os.Exit directly from
+// here would skip all of that and strand whatever container or session the
+// caller opened; Mux is L2 and does not own the process lifetime.
+func (m *Mux) watchTerminatingSignals() (stop func()) {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
 	done := make(chan struct{})
 	go func() {
 		select {
 		case sig := <-ch:
-			m.handleTerminatingSignal(sig, fd, oldState, restoreOnce)
+			select {
+			case m.signalled <- sig:
+			default:
+			}
 		case <-done:
 		}
 	}()
@@ -382,28 +470,4 @@ func (m *Mux) watchTerminatingSignals(fd int, oldState *term.State, restoreOnce 
 		signal.Stop(ch)
 		close(done)
 	}
-}
-
-// handleTerminatingSignal is watchTerminatingSignals' response to a caught
-// signal, factored out on its own so a test can drive it directly without
-// going through signal.Notify or sending this process a real signal.
-func (m *Mux) handleTerminatingSignal(sig os.Signal, fd int, oldState *term.State, restoreOnce *sync.Once) {
-	restoreOnce.Do(func() { _ = m.restore(fd, oldState) })
-	m.reraise(sig)
-}
-
-// defaultReraise ends this process after the terminal has already been
-// restored, so that an external SIGINT or SIGTERM, never the learner's own
-// keystroke, see watchTerminatingSignals, still ends the game rather than
-// being silently absorbed.
-//
-// A byte-for-byte re-raise, resetting the signal disposition and sending
-// the same signal to this process's own pid, is only expressible on
-// unix-like platforms; os.Exit(1) is the portable choice that is correct on
-// every platform this project targets, at the cost of the exit not being
-// attributed to the original signal number by whatever is watching this
-// process. Every test overrides Mux.reraise with a recorder, so no test
-// actually terminates the test binary.
-func defaultReraise(os.Signal) {
-	os.Exit(1)
 }
