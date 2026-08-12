@@ -49,7 +49,10 @@ highest-risk code in the project.
   binary path from config or from a level.
 - **Validate before you execute.** Distro names, container names, level IDs and
   user names go through a strict allowlist regexp
-  (`^[a-zA-Z0-9][a-zA-Z0-9_-]*$` for identifiers) before reaching an argv.
+  (`^[a-zA-Z0-9][a-zA-Z0-9_-]*$` for identifiers) before reaching an argv. Go
+  code calls `internal/platform.ValidIdentifier` rather than restating the
+  pattern; that function and the `IdentifierPattern` constant it wraps are the
+  single source of truth, in `internal/platform/identifier.go`.
   **Reject, do not sanitize.** The first character must be alphanumeric because a
   value that can start with a hyphen is flag-shaped: once it reaches an argv
   vector as a positional operand, `docker` or `wsl.exe` reads it as an option

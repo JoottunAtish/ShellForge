@@ -795,6 +795,67 @@ two smaller findings from the same pass.
   `./scripts/check-punctuation.sh`, and a local `gosec -quiet
   -exclude-dir=docs ./...` (installed fresh this session), clean.
 
+### Day 1, 2026-08-12: documentation drift reconciled, the argv allowlist consolidated
+
+Issue #43. Documentation and one new helper. No behaviour change to what the
+allowlist accepts or refuses; it is now enforced from one place instead of seven.
+
+- `docs/LEVEL-FORMAT.md` documented a level id as `[a-z0-9-]+`, which admits a
+  leading hyphen. Corrected to `[a-z0-9][a-z0-9-]*`, with a row in the
+  authoring invariants table saying why: a leading hyphen makes the id
+  flag-shaped, same reasoning as the argv allowlist.
+- Issue bodies #6 and #19, edited via the API since the punctuation and
+  allowlist gates cannot see either: #6's safety review quoted the older,
+  hyphen-anywhere form even though the implementation that closed it already
+  shipped the strict, first-character-alphanumeric form; corrected in place
+  with an edit note. #19 is legitimately about that older form, so its body
+  is left as written with a leading note marking it as historical subject,
+  not current guidance.
+- The approved dependency set had two stale pointers, both saying "listed in
+  CLAUDE.md" when the table has lived in `.claude/skills/go-style/SKILL.md`
+  since the Day 0 skill split. Fixed in `go.mod`'s header comment and in
+  `CONTRIBUTING.md`. `CLAUDE.md` itself now says explicitly, in "What NOT to
+  do", that the table lives in the `go-style` skill, so a reader does not
+  have to infer it from the skill table above.
+- **`internal/platform.ValidIdentifier`** (`internal/platform/identifier.go`)
+  is now the one Go source of truth for the argv allowlist regexp, alongside
+  an exported `IdentifierPattern` string constant for callers that want to
+  quote it in an error message. It replaces the pattern's separate copies in
+  `internal/runtime/spec.go`, `internal/runtime/session.go`,
+  `internal/runtime/docker/docker.go`, `internal/runtime/docker/session.go`,
+  and `internal/runtime/apishape_test.go`; each now names the function
+  instead of restating the regexp. `internal/platform/identifier_test.go`
+  carries the refusal table (empty, `-f`, `--force`, a bare hyphen, a leading
+  underscore, an embedded space, a shell metacharacter, a path separator,
+  `..`, a trailing newline, a non ASCII byte) and an exact-value assertion on
+  `IdentifierPattern`, so a future consolidation cannot be the loosening.
+  `scripts/check-allowlist-regexp.sh` and the security skill still quote the
+  pattern literally, because a bash gate scanning prose and a skill file the
+  gate greps have no compiler to lean on, but both now point at
+  `internal/platform.ValidIdentifier` as the canonical implementation.
+- **Contract decision, made while implementing, not merely following the
+  ticket:** the ticket named `internal/runtime/identifier.go` as the new
+  file's home, but `internal/runtime`'s own `doc.go` and
+  `apishape_test.go`'s `TestExecTakesArgvNotACommandString` require that
+  package to declare interfaces and value types only, no exported functions.
+  Adding `ValidIdentifier` there fails that test on contact. Asked; the
+  answer was `internal/platform`, which `internal/runtime` (and its `docker`
+  subpackage) is already permitted to import, so the type-only invariant
+  holds and the layer rule is untouched.
+- A grep of the tracked tree for the loose form,
+  `grep -rn 'a-zA-Z0-9_-]+' .claude/ docs/ internal/ scripts/`, returns only
+  the allowlist gate's own fixtures: the briefing snippet
+  `scripts/tests/test_check_allowlist_regexp.py` writes to prove the gate
+  does not flag unanchored prose, and the gate's own header comment
+  describing that same fixture.
+- Gates re-run locally: `gofmt -s -w .`, `go vet ./...`, `go build ./...`,
+  `go test ./...`, `go test -race ./...`, `go test ./internal/archtest/...`,
+  `./scripts/check-punctuation.sh`, `./scripts/check-links.sh`, and
+  `python3 -m pytest scripts/tests -q` (43 passed, pytest installed fresh
+  this session), all clean. `govulncheck` and `gosec` are not installed in
+  this environment and were not run locally; CI runs both and is
+  authoritative.
+
 ### Day 1 follow-ups, 2026-08-12: a token saver autonomous run profile
 
 Agent tooling only. No Go code, no test, no gate, and no level changed here

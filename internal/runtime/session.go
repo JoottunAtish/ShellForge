@@ -87,8 +87,8 @@ type PTY interface {
 // directory, with no extra environment and no timeout of its own.
 type ExecOpts struct {
 	// User is the sandbox user to run as. Empty means the session user.
-	// The caller must allowlist-validate it against
-	// ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ before it reaches an argv.
+	// The caller must allowlist-validate it with platform.ValidIdentifier
+	// before it reaches an argv.
 	User string
 
 	// WorkDir is an absolute path inside the sandbox. Empty means the
@@ -146,8 +146,8 @@ type ExecResult struct {
 // terminal.
 type AttachOpts struct {
 	// User is the sandbox user to run as. Empty means the session user.
-	// The caller must allowlist-validate it against
-	// ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ before it reaches an argv.
+	// The caller must allowlist-validate it with platform.ValidIdentifier
+	// before it reaches an argv.
 	User string
 
 	// WorkDir is an absolute path inside the sandbox. Empty means the

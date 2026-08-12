@@ -22,8 +22,11 @@ go 1.23.0
 // this line again, check whether it is a real floor raise or the same trap
 // before accepting it.
 //
-// The approved dependency set is listed in CLAUDE.md under "Go: style and
-// formatting". Ask before adding anything outside that list.
+// The approved dependency set lives in one place: the Dependencies table in
+// .claude/skills/go-style/SKILL.md. Ask before adding anything outside that
+// list. (This comment previously pointed at a "Go: style and formatting"
+// heading in CLAUDE.md that does not exist; CLAUDE.md only indexes the
+// skills now, it does not carry the table itself.)
 
 require (
 	github.com/creack/pty v1.1.24

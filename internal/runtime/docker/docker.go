@@ -17,21 +17,20 @@ import (
 	"path/filepath"
 	"regexp"
 
+	"github.com/JoottunAtish/ShellForge/internal/platform"
 	"github.com/JoottunAtish/ShellForge/internal/platform/ux"
 	"github.com/JoottunAtish/ShellForge/internal/runtime"
 )
 
-// identifierPattern is the strict allowlist for a container name or a user
-// name: exactly what the security skill quotes. The first character is
-// restricted to alphanumeric so a validated value cannot be flag-shaped.
-var identifierPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
-
-// imagePattern is the allowlist for a Docker image reference. A real image
-// reference needs '.', ':', '/', and '@' for a registry host, a tag, and a
-// digest (name@sha256:hex), which identifierPattern does not admit. The
-// first character stays restricted to alphanumeric: that is the property
-// that actually defeats argument injection, and it is preserved here even
-// though the character class is wider than identifierPattern's.
+// imagePattern is the allowlist for a Docker image reference. A container
+// name or a user name is validated with platform.ValidIdentifier instead,
+// the strict allowlist exactly what the security skill quotes, but a real
+// image reference needs '.', ':', '/', and '@' for a registry host, a tag,
+// and a digest (name@sha256:hex), which platform.ValidIdentifier does not
+// admit. The first character stays restricted to alphanumeric: that is the
+// property that actually defeats argument injection, and it is preserved
+// here even though the character class is wider than
+// platform.IdentifierPattern's.
 var imagePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9/_.:@-]*$`)
 
 // sandboxLabel marks a container as ours. Destroy refuses to remove a
@@ -96,8 +95,8 @@ var _ runtime.Runtime = (*dockerRuntime)(nil)
 // reach an argv, and New returns an error rather than sanitizing a bad
 // value.
 func New(name, image string) (runtime.Runtime, error) {
-	if !identifierPattern.MatchString(name) {
-		return nil, fmt.Errorf("docker.New: container name %q does not match %s", name, identifierPattern.String())
+	if !platform.ValidIdentifier(name) {
+		return nil, fmt.Errorf("docker.New: container name %q does not match %s", name, platform.IdentifierPattern)
 	}
 	if !imagePattern.MatchString(image) {
 		return nil, fmt.Errorf("docker.New: image %q does not match %s", image, imagePattern.String())

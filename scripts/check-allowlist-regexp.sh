@@ -9,6 +9,13 @@
 # an option instead. That is argument injection, and an argv vector on its own
 # does not stop it.
 #
+# The single Go source of truth for this pattern is
+# internal/platform.IdentifierPattern, enforced by internal/platform.ValidIdentifier
+# (internal/platform/identifier.go). This script cannot import that constant, a
+# bash gate scanning prose has no compiler to lean on, so the pattern is still
+# spelled out below and in the security skill; internal/platform/identifier_test.go
+# pins the Go copy against silent drift the way this script pins the prose copies.
+#
 # An older, looser one-class form allowed a hyphen in any position including the
 # first. Three files quoted the regexp and two had drifted to that form. Issue #19
 # removed the last copy. This script fails if the security skill stops quoting the

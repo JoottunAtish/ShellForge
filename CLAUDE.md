@@ -195,7 +195,8 @@ gofmt -s -w . && go vet ./... && go test ./... && ./scripts/check-punctuation.sh
   alternative solutions.
 - Don't parse `~/.bash_history`. The journal is the source of truth.
 - Don't let a check write to the sandbox.
-- Don't add a dependency without asking.
+- Don't add a dependency without asking. The approved set lives in exactly one
+  place: the Dependencies table in the `go-style` skill.
 - Don't commit a binary, a rootfs tarball, or a `.vhdx`.
 
 ---

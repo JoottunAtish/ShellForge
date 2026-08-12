@@ -45,7 +45,7 @@ Field key: **R** required · *O* optional.
 
 ```yaml
 # ── identity ──────────────────────────────────────────────
-id: pipe-05                    # R  unique across pack, [a-z0-9-]+
+id: pipe-05                    # R  unique across pack, [a-z0-9][a-z0-9-]*
 version: 1                     # R  bump when checks change (invalidates best scores)
 title: "The Log Sifter"        # R
 act: act3                      # R  must exist in pack.yaml
@@ -120,6 +120,7 @@ tags: [text-processing, must-know]   # O
 
 | Rule | Reason |
 |---|---|
+| `id` matches `[a-z0-9][a-z0-9-]*`, first character alphanumeric | A leading hyphen makes the id flag-shaped; see the security skill |
 | Every check has a non-empty `on_fail` | Generic failure messages are the #1 quality killer |
 | Every `objectives[].id` has a matching check `id` and vice versa | Keeps the HUD checklist honest |
 | `solution` present and non-empty | Golden tests need it |

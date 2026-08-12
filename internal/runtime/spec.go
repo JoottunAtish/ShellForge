@@ -4,11 +4,11 @@ package runtime
 type ImageSpec struct {
 	// Name is the container image name or the WSL distribution name.
 	//
-	// The caller must allowlist-validate it against
-	// ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ and reject anything else rather than
-	// sanitizing it, because this value reaches a docker or wsl.exe argv. A
-	// destroy path must not trust it: compare against a compile-time constant
-	// before removing anything. See the destructive-safety skill, item 1.
+	// The caller must allowlist-validate it with platform.ValidIdentifier
+	// and reject anything else rather than sanitizing it, because this
+	// value reaches a docker or wsl.exe argv. A destroy path must not trust
+	// it: compare against a compile-time constant before removing anything.
+	// See the destructive-safety skill, item 1.
 	//
 	// In v0.1 the caller always passes a Shellforge-owned constant here,
 	// never a value that came from a level or from user input. A destroy
@@ -44,8 +44,8 @@ type ImageSpec struct {
 // SessionSpec describes one sandbox session.
 type SessionSpec struct {
 	// User is the sandbox user to run as, normally "learner". The caller
-	// must allowlist-validate it against ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ before
-	// it reaches an argv.
+	// must allowlist-validate it with platform.ValidIdentifier before it
+	// reaches an argv.
 	User string
 
 	// WorkDir is the absolute starting directory inside the sandbox.
