@@ -95,6 +95,7 @@ function Show-Help {
         'allowlist' = 'Fail if the argv identifier allowlist regexp drifts'
         'links'    = 'Fail on broken relative links in Markdown'
         'arch'     = 'Enforce the layer dependency rule'
+        'cli'      = 'Assert the CLI entry point package is present, tracked, buildable'
         'labels'   = 'Sync GitHub labels from .github/labels.yml'
         'lint'     = 'gofmt check, vet, punctuation, allowlist, links, layer test'
         'vuln'     = 'govulncheck against dependencies and toolchain'
@@ -138,6 +139,7 @@ switch ($Target.ToLowerInvariant()) {
     'punct'     { Invoke-Bash 'scripts/check-punctuation.sh' }
     'allowlist' { Invoke-Bash 'scripts/check-allowlist-regexp.sh' }
     'links'     { Invoke-Bash 'scripts/check-links.sh' }
+    'cli'       { Invoke-Bash 'scripts/check-cli-package.sh' }
     'labels'    { Invoke-Bash 'scripts/sync-labels.sh' }
 
     'lint' {
@@ -145,6 +147,7 @@ switch ($Target.ToLowerInvariant()) {
         Invoke-Bash 'scripts/check-punctuation.sh'
         Invoke-Bash 'scripts/check-allowlist-regexp.sh'
         Invoke-Bash 'scripts/check-links.sh'
+        Invoke-Bash 'scripts/check-cli-package.sh'
         Invoke-Step 'arch' { go test ./internal/archtest/... }
         $unformatted = & gofmt -s -l .
         if ($unformatted) {
