@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"os/exec"
+	"strings"
 	"testing"
 
 	"github.com/JoottunAtish/ShellForge/internal/runtime"
@@ -26,9 +27,21 @@ func dockerContractFactory(t *testing.T) (rt runtime.Runtime, cleanup func()) {
 		t.Skip("runtimetest: docker is not on PATH")
 	}
 
-	probe := exec.CommandContext(context.Background(), "docker", "version")
-	if err := probe.Run(); err != nil {
+	// Ask the daemon which OS its containers run, not merely whether it
+	// answers. A Docker Desktop in Windows-container mode answers `docker
+	// version` perfectly well and then cannot pull debian:bookworm-slim at
+	// all, because a Linux-only base image has no Windows manifest. That is
+	// this suite being unable to run, not the sandbox being broken, so it
+	// skips for the same reason a missing daemon does. GitHub's hosted
+	// windows-latest runners are exactly this case: Docker is present and
+	// running, in Windows-container mode, with no Linux engine available.
+	probe := exec.CommandContext(context.Background(), "docker", "version", "--format", "{{.Server.Os}}")
+	out, err := probe.Output()
+	if err != nil {
 		t.Skip("runtimetest: the Docker daemon is not answering (`docker version` failed)")
+	}
+	if serverOS := strings.TrimSpace(string(out)); serverOS != "linux" {
+		t.Skipf("runtimetest: the Docker daemon runs %s containers; the sandbox image is Linux only", serverOS)
 	}
 
 	built, err := New(runtimetest.SandboxName, runtimetest.SandboxName)

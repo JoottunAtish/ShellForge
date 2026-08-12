@@ -5,7 +5,7 @@ push, get CI green, and add a line here. No silent carry-over. If an exit criter
 is unchecked the next morning, it either gets done before new work or it gets
 formally cut.
 
-**Current state: Day 0 complete. Day 1 in progress: the runtime interface, the streaming OSC parser, and the Docker backend exist. No PTY multiplexer, and `WslRuntime` is not started.**
+**Current state: Day 0 complete. Day 1 in progress: the runtime interface, the streaming OSC parser, the Docker backend, and the PTY multiplexer exist. `CommandEvent.Raw` is always empty pending #51, Windows resize watching is a Day 3 stub, and `WslRuntime` is not started.**
 
 ---
 
@@ -24,7 +24,7 @@ formally cut.
 | Shell instrumentation | `instrument.bash` written, not yet exercised |
 | Content pack | `pack.yaml` with six acts declared. Zero levels written. |
 | Runtimes | `Runtime` and `Session` interfaces plus their value types and sentinel errors are defined in `internal/runtime`, the reusable contract suite is in `internal/runtime/runtimetest`, and `internal/runtime/docker` implements both by shelling out to the `docker` CLI. The contract suite is green against it on Windows with Docker Desktop's Linux engine, except one subtest documented below. `WslRuntime` is not started. |
-| PTY multiplexer and OSC parser | Parser done: streaming OSC 133 and OSC 7 state machine, fuzzed, with a recorded vim session passing through byte-identical. Multiplexer not started. |
+| PTY multiplexer and OSC parser | Both done. Parser: streaming OSC 133 and OSC 7 state machine, fuzzed, with a recorded vim session passing through byte-identical. Multiplexer (`internal/pty/mux.go`): host stdin forwarded to the sandbox verbatim including Ctrl-C, host terminal raw mode restored across every exit path including a panic, initial resize plus SIGWINCH on unix, and CommandEvent assembly from the marker stream. `CommandEvent.Raw` is always empty pending #51. Windows resize watching is a Day 3 stub. |
 | Verification engine | Not started |
 | Progress database | Not started |
 | Documentation | Design record complete. User docs are outlines. |
@@ -594,6 +594,206 @@ is imported yet.
   identifiers), and two file-permission findings on the host-side staging
   `PushFiles` no longer does at all, since the in-memory tar removed that
   code path entirely.
+
+### Day 1, 2026-08-11: the PTY multiplexer
+
+Issue #10. `internal/pty` now has a working host-to-sandbox multiplexer, not
+just the parser Day 1 already had. First real dependency added on top of
+`creack/pty`: `golang.org/x/term`, for host raw mode and window size, since
+Go has no stdlib termios API.
+
+- `internal/pty/mux.go` declares `Mux`, `New`, `Run`, `Events`, and
+  `CommandEvent`, exactly the shape the ticket fixed in advance. `Mux` wraps
+  a `runtime.PTY`, forwards a host `io.Reader` to it byte for byte with no
+  byte, including Ctrl-C's 0x03, special-cased, and forwards the sandbox's
+  output through the existing OSC parser to a host `io.Writer`, stripping
+  only what the parser recognizes.
+- **Raw mode restoration is guarded by one `sync.Once`, reached from two
+  places**: a top level `defer` in `Run`, which also recovers and
+  re-panics after restoring so a panic never skips it, and a SIGINT and
+  SIGTERM safety net that can fire independently while `Run` is still
+  blocked. A raw terminal disables the line discipline that would
+  otherwise turn the learner's own Ctrl-C into a delivered SIGINT, so a
+  real SIGINT or SIGTERM reaching this process while raw mode is active
+  never came from the learner typing at the sandbox; the handler exists
+  only so that outside signal does not strand the terminal in raw mode.
+  `doc.go` now names this as a second risk category for this package,
+  alongside the parser's own streaming state machine risk.
+- **A panic inside the goroutine that calls `runtime.PTY.Wait` is
+  recoverable from `Run`, correctly, only because it is forwarded as data
+  first.** `recover` only ever catches a panic raised in the same
+  goroutine as the deferred call to it, and `Wait` runs in its own
+  goroutine so `Run` can select on it alongside `ctx.Done` and the two copy
+  goroutines. The goroutine's own recover captures the value and sends it
+  across a channel; `Run`'s own goroutine re-panics with that value once it
+  receives it, which is what lets `Run`'s top level defer restore the
+  terminal before the panic reaches `Run`'s caller. `TestRun_RestoresTerminal/panic_inside_run`
+  pins this.
+- **`Run` closes the sandbox PTY handle on every exit path, but never waits
+  for the stdin-forwarding goroutine, only the output copy goroutine.** The
+  stdin side blocks on a `Read` of the host's own stdin, which nothing in
+  `Run` can unblock without closing the host's stdin out from under
+  whatever else might use the terminal after this call returns, and that is
+  not this function's decision to make. The output side blocks on a `Read`
+  of `m.pty`, which `Run` owns and closes unconditionally before returning,
+  so that side is always waited for. Documented in `Run`'s own comment
+  rather than left implicit, since it is the one place this multiplexer
+  deliberately does not wait for a goroutine it started.
+- Event assembly (`PreExec` starts a pending `CommandEvent`, `CommandDone`
+  fills in the exit code and duration, `CwdReport` fills in the cwd and
+  emits) matches `instrument.bash`'s own emission order. A `CommandDone`
+  with no matching `PreExec`, or a `CwdReport` with no pending event, is
+  ignored rather than synthesized; a stale pending event, from a dropped
+  `CwdReport`, is flushed with an empty `Cwd` the moment the next `PreExec`
+  arrives rather than held forever.
+- `Events()` is a buffered channel of 64. Large enough that a normal play
+  session's burst of quick commands does not trip the drop path, small
+  enough that a consumer that has stopped draining it entirely is caught
+  within a session. A full buffer never blocks the read side copy
+  goroutine: `emit` is a non-blocking send with a `default` branch that logs
+  only the fact of a drop, never the event itself, since nothing in this
+  package logs raw PTY content at any level on the chance it holds a
+  password the learner typed into a sudo prompt.
+- `CommandEvent.Raw` is always empty. Populating it needs a
+  `runtime.Session` correlated with the journal, which `Mux` has no
+  reference to today; tracked against issue #51, not attempted here.
+- `startResizeWatcher` is real on unix (`raw_unix.go`, SIGWINCH to
+  `Resize`) and a documented no-op on Windows (`raw_windows.go`), a Day 3
+  stub: Windows has no SIGWINCH equivalent and needs ConPTY specific
+  handling, tracked as a `TODO(v0.2)`.
+- **`golang.org/x/term`'s newest tag reproduces this repository's own known
+  `go.mod` trap, one level removed.** `go get golang.org/x/term` bumped the
+  `go` directive from 1.23 to 1.25.0 again, exactly the failure mode
+  `internal/runtime/docker`'s own history warns about, except this time the
+  cause was not the tool itself: `golang.org/x/term@v0.45.0`, and the
+  `golang.org/x/sys` it requires at that version, both declare `go 1.25.0`
+  in their own `go.mod`, which forces every module that depends on them to
+  match. Pinned to `golang.org/x/term@v0.33.0` and `golang.org/x/sys@v0.34.0`
+  instead, the newest pair whose own `go.mod` still says `go 1.23.0`, which
+  keeps this module's floor where it was. `go.mod`'s own comment now records
+  which pair and why, so the next dependency bump that trips this either
+  gets the same treatment or a deliberate, reasoned floor raise, not a
+  silent one. The `go` directive ended up written as `go 1.23.0` rather
+  than the prior bare `go 1.23`; that is the toolchain's own normalization
+  of the identical floor, not a version change, confirmed by a clean
+  `go build ./...` with no `-mod=mod` override needed.
+- Added to `.claude/skills/go-style/SKILL.md`'s approved dependency table:
+  `golang.org/x/term`, for host raw mode and window size.
+- Tests: a `fakePTY` (`runtime.PTY` over an `io.Pipe` for the read side,
+  a plain recorded byte slice for the write side) and the four injectable
+  terminal func fields overridden directly, this is a white box test in
+  the same package, cover terminal restoration across a clean exit, a copy
+  error, a cancelled context, and a panic; the terminating signal handler
+  called directly; the initial resize proven ordered ahead of any forwarded
+  output; the resize method's own argument order with two easily
+  transposed values; a non-fatal resize failure; stdin forwarded verbatim
+  including Ctrl-C; markers stripped from a stream with one deliberately
+  split mid-payload; event assembly for a clean command, a non-zero exit, a
+  cwd change across commands, and a dropped `CwdReport`; `Events()` closing
+  when `Run` returns; and a full buffer proven non-blocking. One test,
+  proving the drop-capacity assertion exactly, was flaky under `-race`
+  until it stopped racing the read side copy goroutine's own processing of
+  its last written chunk against the drain loop: an `io.Pipe` `Write`
+  returning only proves the matching `Read` happened, not that the
+  goroutine has gone on to process what it read, so the fix was one more
+  round trip through the pipe after the real payload, which does prove it,
+  rather than a sleep. A second, real timing sensitivity surfaced in the
+  single command assembly test: two back-to-back `time.Now` calls landed on
+  the same tick often enough to make `Duration` flakily zero, fixed with a
+  five millisecond gap between the two markers being fed, not by loosening
+  the assertion.
+- Gates run locally, all green: `gofmt -s -w .`, `go vet ./...`,
+  `go build ./...`, cross-compiling `internal/pty` for both `windows/amd64`
+  and `linux/amd64`, `go test ./...`, `go test -race ./...` (run six times
+  in a row for `internal/pty` specifically, all green, after the flake
+  above was fixed), `go test ./internal/archtest/...`,
+  `./scripts/check-punctuation.sh`, and `go mod tidy` leaving only the
+  `golang.org/x/term` and `golang.org/x/sys` additions in `go.mod` and
+  `go.sum`. Not run locally: `govulncheck ./...` and `gosec ./...` (neither
+  installed in this environment), `./scripts/check-allowlist-regexp.sh` and
+  `./scripts/check-links.sh` (not re-run this session, nothing this ticket
+  touched should affect either). CI is authoritative for all of those.
+
+### Day 1 follow-ups, 2026-08-11: PTY multiplexer review fixes
+
+An independent review of PR #59 found two real defects before merge and
+one real CI-only failure unrelated to either. All three fixed here, plus
+two smaller findings from the same pass.
+
+- **Only the goroutine waiting on `runtime.PTY.Wait` had panic recovery.
+  A panic in either copy goroutine, stdin to sandbox or sandbox output
+  through the parser, was unrecoverable and would have crashed the whole
+  process with the host terminal still in raw mode**, exactly what
+  `doc.go` and this ticket's acceptance criteria say must never happen.
+  All three of `Run`'s worker goroutines now go through one `runRecovered`
+  helper, which captures a panic as data and hands it back on a channel;
+  `Run`'s own select re-panics with it from its own goroutine, so the top
+  level deferred restore still runs first. `TestRun_RestoresTerminal` grew
+  `panic_in_stdin_copy_goroutine` and `panic_in_output_copy_goroutine` to
+  pin this.
+- **The SIGINT/SIGTERM safety net called `os.Exit(1)` directly, from a
+  goroutine independent of `Run`'s own select.** That skipped `Run`'s
+  entire exit path: no `drain`, no `Events()` close, no return to the
+  caller, which never got a chance to close the `runtime.Session` or
+  container the PTY was attached to before the process died. `Mux` is L2
+  and does not own the process lifetime; ending it was never this
+  package's decision to make. The watcher now forwards the caught signal
+  to `m.signalled`, a channel `Run`'s select already watches alongside
+  `ctx.Done` and the three worker outcomes, so a caught signal unwinds
+  through the ordinary exit path and `Run` returns an error wrapping the
+  new `ErrSignalled`. `reraise` and `defaultReraise` are gone.
+  `TestMux_HandlesTerminatingSignal` now drives this through `m.signalled`
+  directly rather than a removed `handleTerminatingSignal` method, for the
+  same reason it never raised a real signal before: unsafe against the
+  test process, and `syscall.SIGTERM` has nothing to raise on Windows
+  regardless.
+- **A bug introduced while fixing the first finding above, caught by the
+  suite itself, not by review**: `runRecovered`'s channel was single-send
+  and never closed, but `drain` deliberately reads from the output copy
+  goroutine's channel a second time on every branch except its own, to
+  wait for that goroutine to actually finish. That second read blocked
+  forever once the one buffered value was already gone, hanging
+  `error_from_copy_goroutine` and the new `panic_in_output_copy_goroutine`
+  test for the whole 5 second timeout. Fixed by closing the channel
+  immediately after the single send; a receive after that returns at once
+  instead of blocking, which is all `drain` needs.
+- Two smaller findings from the same review, both fixed: `emit`'s drop
+  warning now ends `\r\n`, not a bare `\n`, since the latter does not
+  carriage-return on a host terminal `Run` has put into raw mode and would
+  render as a corrupted staircase line if the buffer ever actually filled;
+  and `New` now prefers whichever of `in` or `out` is an actual terminal,
+  via `term.IsTerminal`, before falling back to whichever merely exposes a
+  file descriptor, so a redirected non-terminal `in` alongside a real
+  terminal `out` no longer fails outright over the side that was never
+  going anywhere anyway. `TestNew_NeitherInNorOutExposesFd` closes the one
+  path in `New` that had no test at all.
+- **Real CI failure, unrelated to this ticket's own code**:
+  `Test (windows-latest)` failed three times in a row, on fresh runners,
+  all twelve `TestDockerContract` subtests reporting the identical
+  `docker build exited 1: ... no matching manifest for
+  windows(10.0.26100)/amd64`. `main`'s last green run had passed the same
+  suite on `windows-latest` about an hour earlier at 3.2 seconds, which is
+  this suite's own skip time, not a real run; the hosted runner's Docker
+  daemon evidently started answering `docker version` in
+  Windows-container mode sometime in between, which can pull nothing
+  Linux-only. `internal/runtime/docker/contract_test.go`'s daemon probe
+  now asks `docker version --format {{.Server.Os}}` and skips unless the
+  answer is `linux`, rather than only checking that the daemon answers at
+  all. Verified this changes nothing about coverage that mattered:
+  `Test (ubuntu-latest)` still runs the full suite for real, in about 30
+  seconds. `Test (windows-latest)` now skips cleanly in about 3 seconds,
+  matching its behaviour before the runner image changed, instead of
+  failing loudly for a reason no change to this package could fix.
+  **This leaves hosted Windows CI with no real coverage of
+  `internal/runtime/docker` at all**, which is not a regression from this
+  fix but was not visible before it either; tracked as issue #60 rather
+  than left implicit behind a quiet green check.
+- Gates re-run locally after all of the above, all green:
+  `gofmt -s -w .`, `go vet ./...`, `go build ./...`, `go test ./...`,
+  `go test -race ./...` (the `internal/pty` suite specifically run five
+  times in a row with no flakes), `go test ./internal/archtest/...`,
+  `./scripts/check-punctuation.sh`, and a local `gosec -quiet
+  -exclude-dir=docs ./...` (installed fresh this session), clean.
 
 ---
 
