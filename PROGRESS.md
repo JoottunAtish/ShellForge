@@ -856,6 +856,53 @@ allowlist accepts or refuses; it is now enforced from one place instead of seven
   this environment and were not run locally; CI runs both and is
   authoritative.
 
+### Day 1 follow-ups, 2026-08-12: a token saver autonomous run profile
+
+Agent tooling only. No Go code, no test, no gate, and no level changed here
+(#63).
+
+- **`.claude/routine/AUTO_IMPLEMENT_SAVER.md` is a second unattended run
+  profile**, alongside the existing opus-first `AUTO_IMPLEMENT.md`. It routes
+  phases 1 through 4 to sonnet and buys opus per call on six named triggers:
+  a destructive path or argv construction or pack path handling in scope; the
+  OSC parser, PTY multiplexer, or runtime process lifecycle in scope; an
+  internally inconsistent plan, once; two or more `blocking` review findings, or
+  any `blocking` finding in the safety lens; repair round 3 on the same CI job;
+  a change to a living contract. If none fires, sonnet finishes the run.
+- **The saving is specificity, not less thinking.** Reconnaissance is gathered
+  once in Phase 0b in the main session, as symbol names and signatures rather
+  than file bodies, and embedded verbatim in every sub-agent prompt, so no
+  sub-agent rediscovers the repository. On top of that: three supplementary
+  reads per sub-agent, sixty lines of failing log from the failing job only,
+  diffs rather than transcripts, widening CI poll intervals, gates chained in
+  one Bash call, and two `Workflow` calls rather than four with plan and
+  implement as one pipeline.
+- **The three review lenses survive intact**, run as three parallel
+  narrow-context sonnet agents, one lens each, deduplicated in the main session
+  by file, line, and substance, keeping the highest severity per group. Narrow
+  scope is what makes a cheaper reviewer reliable; dropping a lens would not
+  have been. The local gate chain, the NEVER list, the preservation discipline,
+  and the honest reporting rules are unchanged from the opus profile.
+- **The report gains a cost ledger** as section 11: the model that actually ran
+  each phase, every escalation with the trigger that bought it, the `Workflow`
+  call count, the repair round count, and any context budget exceeded and why.
+  Without it there is no way to tell a genuinely cheap run from one that quietly
+  escalated everything.
+- **Both profiles are now reachable from the skills table**: new
+  `auto-implement` and `auto-implement-saver` skills, each stating when to load
+  it and which sibling to load instead, plus a comparison table for choosing.
+  Each run prompt points at the other and says to read exactly one per run.
+  `CLAUDE.md` gained the two skill rows and a `.claude/routine/` line in the
+  repo layout.
+- **Not done here, deliberately**: no scheduler or cron wiring, so choosing a
+  profile stays a decision made at invocation; no tooling that computes the cost
+  ledger, which the run reports rather than measures. Neither profile has been
+  exercised end to end against a real ticket yet, so the claimed saving is a
+  design argument, not a measurement.
+- Gates run locally: `./scripts/check-punctuation.sh` and
+  `./scripts/check-links.sh`, both clean. The Go gates were not run and did not
+  apply: this change touches no Go file. CI is authoritative for the rest.
+
 ---
 
 ## Day 1: the spike
