@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	goruntime "runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -318,16 +319,8 @@ func TestInstrumentationEmitsMarkersForARealSession(t *testing.T) {
 	}
 	defer func() { _ = sandboxPTY.Close() }()
 
-	var (
-		events []pty.Event
-		mu     = make(chan struct{}, 1)
-	)
-	mu <- struct{}{}
-	parser := pty.NewParser(discard{}, func(ev pty.Event) {
-		<-mu
-		events = append(events, ev)
-		mu <- struct{}{}
-	})
+	log := &eventLog{}
+	parser := pty.NewParser(discard{}, log.add)
 
 	// Read the PTY in the background, through the parser.
 	readDone := make(chan struct{})
@@ -346,23 +339,46 @@ func TestInstrumentationEmitsMarkersForARealSession(t *testing.T) {
 		}
 	}()
 
-	// A scripted session: a command that succeeds, one that fails with a
-	// known status, a cd that changes the reported cwd, then exit.
-	script := []string{
-		"true\n",
-		"exit 7 || true\n",
-		"cd /home/learner\n",
-		"exit\n",
-	}
-	for _, line := range script {
+	send := func(line string) {
+		t.Helper()
 		if _, err := sandboxPTY.Write([]byte(line)); err != nil {
 			t.Fatalf("write %q to the sandbox pty: %v", line, err)
 		}
-		// bash has to read, run, and re-prompt between lines, and the
-		// markers this asserts are emitted by PROMPT_COMMAND after each.
-		time.Sleep(400 * time.Millisecond)
 	}
 
+	// Wait for the shell's own first prompt before typing anything, so the
+	// first command is not raced against bash still starting up.
+	log.waitFor(t, "the first prompt", func(evs []pty.Event) bool {
+		return countKind(evs, pty.CommandStart) >= 1
+	})
+
+	// A command that succeeds.
+	send("true\n")
+	log.waitFor(t, "the first command to complete", func(evs []pty.Event) bool {
+		return countKind(evs, pty.CommandDone) >= 2
+	})
+
+	// A command that fails with a known status.
+	//
+	// A SUBSHELL, deliberately. A bare `exit 7` at an interactive prompt
+	// terminates the shell rather than failing a command, and `exit 7 || true`
+	// does the same: `||` never gets its chance because exit does not return.
+	// That is exactly what the first version of this test did, and CI caught
+	// it: the shell died on line two, the remaining script went nowhere, and
+	// the failure read as "instrument.bash loses exit codes" when
+	// instrument.bash was working perfectly.
+	send("(exit 7)\n")
+	log.waitFor(t, "an exit code of 7 to be reported", func(evs []pty.Event) bool {
+		return hasExitCode(evs, 7)
+	})
+
+	// A cd, which has to move the reported working directory.
+	send("cd /home/learner\n")
+	log.waitFor(t, "the new working directory to be reported", func(evs []pty.Event) bool {
+		return hasCwd(evs, "/home/learner")
+	})
+
+	send("exit\n")
 	select {
 	case <-readDone:
 	case <-time.After(30 * time.Second):
@@ -372,10 +388,7 @@ func TestInstrumentationEmitsMarkersForARealSession(t *testing.T) {
 		t.Fatalf("Flush: %v", err)
 	}
 
-	<-mu
-	seen := append([]pty.Event(nil), events...)
-	mu <- struct{}{}
-
+	seen := log.snapshot()
 	if len(seen) == 0 {
 		t.Fatal("instrument.bash emitted no OSC markers at all. The rc file is not being sourced, " +
 			"or PS1/PS0/PROMPT_COMMAND are not set. Read the component-traps skill before debugging.")
@@ -394,50 +407,107 @@ func TestInstrumentationEmitsMarkersForARealSession(t *testing.T) {
 		}
 	}
 	t.Logf("marker stream: %s", strings.Join(kinds, " "))
+	t.Logf("exit codes: %v", exitCodes)
+	t.Logf("cwds: %v", cwds)
 
+	// All five markers have to appear. A missing PromptStart or CommandStart
+	// means the PS1 readline markers are wrong; a missing PreExec means PS0 is.
 	for _, want := range []pty.EventKind{pty.PromptStart, pty.CommandStart, pty.PreExec, pty.CommandDone, pty.CwdReport} {
-		found := false
-		for _, ev := range seen {
-			if ev.Kind == want {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if countKind(seen, want) == 0 {
 			t.Errorf("no %s marker in the stream: %s", want, strings.Join(kinds, " "))
 		}
 	}
 
-	// The exit code has to survive. If every code is 0, something in
-	// __sf_after runs before `local ec=$?` and overwrote it.
-	sawNonZero := false
-	for _, code := range exitCodes {
-		if code != 0 {
-			sawNonZero = true
-			break
-		}
-	}
-	if !sawNonZero {
-		t.Errorf("every reported exit code was 0, including for `exit 7`. "+
-			"Something in __sf_after runs before it captures $?. Codes seen: %v", exitCodes)
+	// The exit code has to survive exactly, not merely be non-zero. If every
+	// code is 0, something in __sf_after runs before `local ec=$?`.
+	if !hasExitCode(seen, 7) {
+		t.Errorf("the exit code 7 from `(exit 7)` was never reported. "+
+			"If every code is 0, something in __sf_after runs before it captures $?. Codes seen: %v", exitCodes)
 	}
 
 	// The cwd has to be reported, and the cd has to move it.
-	sawLevelRoot, sawHome := false, false
-	for _, cwd := range cwds {
-		switch cwd {
-		case level.Root:
-			sawLevelRoot = true
-		case "/home/learner":
-			sawHome = true
-		}
-	}
-	if !sawLevelRoot {
+	if !hasCwd(seen, level.Root) {
 		t.Errorf("no OSC 7 marker reported the level root %q. Cwds seen: %v", level.Root, cwds)
 	}
-	if !sawHome {
+	if !hasCwd(seen, "/home/learner") {
 		t.Errorf("the `cd /home/learner` was never reported. Cwds seen: %v", cwds)
 	}
+}
+
+// eventLog collects parser events from the PTY reader goroutine so the test
+// goroutine can wait on them.
+type eventLog struct {
+	mu     sync.Mutex
+	events []pty.Event
+}
+
+func (l *eventLog) add(ev pty.Event) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.events = append(l.events, ev)
+}
+
+func (l *eventLog) snapshot() []pty.Event {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]pty.Event(nil), l.events...)
+}
+
+// waitFor blocks until pred is satisfied by the events collected so far, or
+// fails the test.
+//
+// This replaces a fixed sleep between scripted lines. A sleep long enough to be
+// reliable on a loaded CI runner is far longer than the shell actually needs,
+// and a sleep short enough to be quick is flaky: the failure then looks like a
+// missing marker rather than a test that did not wait.
+func (l *eventLog) waitFor(t *testing.T, what string, pred func([]pty.Event) bool) {
+	t.Helper()
+
+	const (
+		timeout = 30 * time.Second
+		poll    = 10 * time.Millisecond
+	)
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if pred(l.snapshot()) {
+			return
+		}
+		time.Sleep(poll)
+	}
+
+	var kinds []string
+	for _, ev := range l.snapshot() {
+		kinds = append(kinds, ev.Kind.String())
+	}
+	t.Fatalf("timed out after %s waiting for %s.\n  marker stream so far: %s", timeout, what, strings.Join(kinds, " "))
+}
+
+func countKind(evs []pty.Event, kind pty.EventKind) int {
+	n := 0
+	for _, ev := range evs {
+		if ev.Kind == kind {
+			n++
+		}
+	}
+	return n
+}
+
+func hasExitCode(evs []pty.Event, code int) bool {
+	for _, ev := range evs {
+		if ev.Kind == pty.CommandDone && ev.ExitCode == code {
+			return true
+		}
+	}
+	return false
+}
+
+func hasCwd(evs []pty.Event, cwd string) bool {
+	for _, ev := range evs {
+		if ev.Kind == pty.CwdReport && ev.Cwd == cwd {
+			return true
+		}
+	}
+	return false
 }
 
 // discard is an io.Writer that throws everything away.
