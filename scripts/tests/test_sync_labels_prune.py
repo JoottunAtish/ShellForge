@@ -5,9 +5,8 @@
 labels so a human can confirm each is unused and delete it by hand. It must
 never delete anything itself, and this file exists to pin that down as a test
 rather than as a promise in a comment. The one assertion that matters most is
-that the fake `gh` on PATH never sees the substring "delete" in any argv it is
-called with, whether or not `--prune` happens to shell out to `gh` for a
-read-only reason.
+that `--prune` never shells out to `gh` at all: the fake `gh` on PATH never
+gets invoked, so its log file never comes into existence.
 
 Run from the repository root:
 
@@ -86,6 +85,13 @@ def test_prune_reports_five_labels_without_deleting(tmp_path: pathlib.Path) -> N
     for name in other_names:
         assert name not in result.stdout, (name, result.stdout)
 
-    if log.exists():
-        log_text = log.read_text(encoding="utf-8")
-        assert "delete" not in log_text.lower(), log_text
+    # The current --prune implementation never shells out to gh at all; it is a
+    # pure static heredoc, so this test can assert that directly rather than a
+    # guarded check that can never fire. If a future change makes --prune call
+    # gh for a read-only reason, this assertion should be replaced with one that
+    # inspects log.read_text() for the substring "delete" instead of requiring
+    # the log's absence.
+    assert not log.exists(), (
+        "sync-labels.sh --prune should not need gh at all in the current "
+        "implementation"
+    )

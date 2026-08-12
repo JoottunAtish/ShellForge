@@ -993,10 +993,17 @@ are not deleted.
   `if: failure() && matrix.os == 'ubuntu-latest'` and uploads
   `internal/pty/testdata/fuzz/FuzzParser/` with `if-no-files-found: ignore`,
   using `actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a #
-  v7.0.1`. A red fuzz run destroys its own reproducer the moment the runner
-  workspace is torn down, so without this step a crashing input found in CI
-  has to be reproduced by hand instead of downloaded and added to the seed
-  corpus. The fuzz duration and the seed corpus itself were not touched.
+  v7.0.1`. That SHA was verified by reading the compare view between the
+  `v7.0.0` and `v7.0.1` tags on github.com/actions/upload-artifact
+  (`.../compare/v7.0.0...v7.0.1`), which lists every commit between the two
+  tags; the last commit in that list, a merge commit, is the actual tip of
+  `v7.0.1`, and that commit's SHA is the one pinned here. This is stronger
+  evidence than trusting a tag reference or a search result alone, since the
+  compare view shows the real commit graph. A red fuzz run destroys its own
+  reproducer the moment the runner workspace is torn down, so without this
+  step a crashing input found in CI has to be reproduced by hand instead of
+  downloaded and added to the seed corpus. The fuzz duration and the seed
+  corpus itself were not touched.
 - **`scripts/sync-labels.sh` gained a `--prune` mode**, checked before the
   existing positional `$1` repo handling since `--prune` is a flag, not a
   repo argument. It prints the five names GitHub auto-creates on every new
@@ -1033,9 +1040,14 @@ are not deleted.
   installed, and no direct GitHub API call permitted by this environment's
   own operating rules, even though a token happens to be present in the
   environment. All five were already confirmed this session to carry zero
-  issues and zero pull requests as of 2026-08-12, so the delete itself is a
-  five-command manual step (`gh label delete <name>` per name) for whoever
-  next has `gh` access, not a research task. `.github/labels.yml` gained no
+  issues and zero pull requests as of 2026-08-12, using
+  `mcp__github__list_issues` (one call per label, filtered by that label,
+  across both open and closed state) for issue usage, and
+  `mcp__github__search_pull_requests` (one query per label, `label:<name>`)
+  for pull request usage, both returning zero results for all five labels.
+  So the delete itself is a five-command manual step (`gh label delete
+  <name>` per name) for whoever next has `gh` access, not a research task.
+  `.github/labels.yml` gained no
   header comment claiming the prune happened, because it has not happened
   yet.
 - **Issue #45 stays open.** The reporting mode and its tests, and the CI

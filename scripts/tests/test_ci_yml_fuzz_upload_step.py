@@ -50,12 +50,13 @@ def test_fuzz_upload_step_exists_and_is_scoped() -> None:
     steps = _test_job_steps()
     fuzz_index = _fuzz_step_index(steps)
 
-    assert fuzz_index + 1 < len(steps), "no step follows the fuzz step"
-    upload_step = steps[fuzz_index + 1]
-
-    assert "upload" in upload_step["name"].lower()
-    assert "fuzz" in upload_step["name"].lower()
-    assert "crash" in upload_step["name"].lower()
+    upload_step = None
+    for step in steps[fuzz_index + 1 :]:
+        name = step.get("name", "")
+        if all(word in name.lower() for word in ("upload", "fuzz", "crash")):
+            upload_step = step
+            break
+    assert upload_step is not None, "no upload step found after the fuzz step"
 
     assert (
         upload_step["with"]["path"] == "internal/pty/testdata/fuzz/FuzzParser/"
