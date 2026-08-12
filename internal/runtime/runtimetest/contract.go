@@ -295,6 +295,47 @@ func TestExecCapturesStreamsSeparately(t *testing.T, f Factory) {
 	}
 }
 
+// TestExecWritesStdin asserts that ExecOpts.Stdin actually reaches the
+// process's standard input and is then closed.
+//
+// This assertion exists because its absence hid a real defect. The docker
+// backend set standard input on the local `docker` process but never passed
+// -i, so `docker exec` connected the container process's standard input to
+// nothing: every byte of ExecOpts.Stdin was silently discarded and the process
+// saw an immediate EOF. Nothing in this suite covered the field, so the whole
+// suite passed while a documented part of the interface did not work. It
+// surfaced only when the demo level's control channel replied with zero bytes
+// and `check` printed nothing.
+//
+// Both halves matter. A backend that delivers the bytes but never closes
+// standard input passes the first check and hangs forever on the second,
+// because `cat` with no redirect reads until EOF.
+func TestExecWritesStdin(t *testing.T, f Factory) {
+	rt := newRuntime(t, f)
+	ctx := contractContext(t)
+	sess := provisionedSession(ctx, t, rt)
+
+	const payload = "shellforge-stdin-payload\n"
+
+	// cat with no argument reads standard input until EOF, so this asserts
+	// delivery and closure at once: an unclosed stdin never terminates and
+	// the assertion fails by timeout rather than by comparison.
+	res, err := sess.Exec(ctx, []string{"cat"}, runtime.ExecOpts{Stdin: []byte(payload)})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if res.TimedOut {
+		t.Fatalf("Exec: TimedOut = true, want false. Standard input was probably never closed, so cat read forever.")
+	}
+	if res.ExitCode != 0 {
+		t.Fatalf("Exec exit code: want 0, got %d (stderr: %q)", res.ExitCode, res.Stderr)
+	}
+	if !bytes.Contains(res.Stdout, []byte("shellforge-stdin-payload")) {
+		t.Errorf("ExecOpts.Stdin never reached the process: cat echoed %q, want it to contain the payload.\n"+
+			"On a docker backend this is what a missing -i on `docker exec` looks like.", res.Stdout)
+	}
+}
+
 // TestExecReportsExitCode asserts that a non-zero exit code is reported as
 // its actual value, and that a successful invocation never returns an
 // error. The err == nil assertion runs first in each case so the failure
@@ -886,6 +927,7 @@ var contract = []assertion{
 	{"ProvisionIsIdempotent", TestProvisionIsIdempotent},
 	{"StatusReportsProvisioned", TestStatusReportsProvisioned},
 	{"ExecCapturesStreamsSeparately", TestExecCapturesStreamsSeparately},
+	{"ExecWritesStdin", TestExecWritesStdin},
 	{"ExecReportsExitCode", TestExecReportsExitCode},
 	{"ExecHonoursContextCancellation", TestExecHonoursContextCancellation},
 	{"ExecRunsAsRequestedUser", TestExecRunsAsRequestedUser},

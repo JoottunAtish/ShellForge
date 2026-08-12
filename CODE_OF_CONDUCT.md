@@ -46,7 +46,7 @@ officially representing the project in public spaces.
 ## Enforcement
 
 Report abusive, harassing, or otherwise unacceptable behaviour to the maintainer at
-**atish@syntarengine.com**. All complaints will be reviewed and investigated
+**ajoottun24@gmail.com**. All complaints will be reviewed and investigated
 promptly and fairly. The maintainer is obligated to respect the privacy and security
 of the reporter of any incident.
 

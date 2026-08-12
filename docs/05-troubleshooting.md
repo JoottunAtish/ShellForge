@@ -231,6 +231,36 @@ it. If you cannot, run `shellforge --ascii` or set `NO_COLOR=1`.
 
 ---
 
+## windows-needs-wsl
+
+**You'll see:** "Could not open an interactive sandbox shell on Windows", when
+you run `shellforge run` from PowerShell or the Windows command prompt.
+
+**What it means:** The Docker backend gives you a real bash prompt by allocating
+a pseudo terminal on the host, and the library that does that has no Windows
+implementation yet. Windows gets its own sandbox backend on Day 3 of the build
+plan. Until then the game runs from inside WSL, which is a real Linux host.
+
+**Fix:**
+
+1. Open your WSL distribution.
+2. Change to the repository directory.
+3. Build and run there:
+
+```bash
+go build -o bin/shellforge ./cmd/shellforge
+./bin/shellforge run demo
+```
+
+Docker Desktop's WSL integration shares one daemon between Windows and WSL, so
+the sandbox image is not rebuilt and nothing is downloaded twice.
+
+**Still stuck?** Check that `docker version` works inside WSL. If it does not,
+turn on WSL integration for your distribution in Docker Desktop, under Settings,
+Resources, WSL integration.
+
+---
+
 ## sandbox-missing
 
 **You'll see:** `doctor` reports the sandbox is not provisioned.
