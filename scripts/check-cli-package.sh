@@ -22,7 +22,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-for tool in git grep find; do
+for tool in git grep find mktemp; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "check-cli-package: $tool not found on PATH." >&2
     echo "  Install $tool, then re-run: ./scripts/check-cli-package.sh" >&2
@@ -76,9 +76,12 @@ if [ -d cmd ]; then
   tmp_tracked="$(mktemp)"
   trap 'rm -f "$tmp_tracked"' EXIT
 
-  git ls-files -z -- 'cmd/**/*.go' >"$tmp_tracked" && ls_status=0 || ls_status=$?
+  # Two pathspecs: 'cmd/**/*.go' alone misses a .go file directly under cmd/
+  # with no subdirectory (git's ** requires at least one path component to
+  # match), so 'cmd/*.go' covers that case.
+  git ls-files -z -- 'cmd/*.go' 'cmd/**/*.go' >"$tmp_tracked" && ls_status=0 || ls_status=$?
   if [ "$ls_status" -ne 0 ]; then
-    echo "FAIL: git ls-files could not enumerate cmd/**/*.go (exit $ls_status)." >&2
+    echo "FAIL: git ls-files could not enumerate cmd/*.go and cmd/**/*.go (exit $ls_status)." >&2
     echo "      This gate reported nothing, not that the tree is clean." >&2
     exit 2
   fi
