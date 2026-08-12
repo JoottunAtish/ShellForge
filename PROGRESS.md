@@ -19,7 +19,7 @@ formally cut.
 | `go test ./...` | Green |
 | Layer dependency enforcement | Done, and verified to fail on a deliberate violation |
 | Punctuation gate | Done, and verified to fail on a deliberate violation |
-| CLI dispatcher | Every verb is registered. `version`, `help` and `run demo` work; the rest report that they are not built yet. **The whole `cmd/shellforge` package was untracked by git until #11**: `.gitignore`'s unanchored `shellforge` pattern matched the directory, so it was never committed and CI never compiled or tested it. |
+| CLI dispatcher | `cmd/shellforge` runs on `spf13/cobra` as of #48, not the hand-rolled dispatcher. Fourteen verbs registered (`doctor` `init` `play` `run` `check` `hint` `reset` `skip` `map` `stats` `sandbox` `bug-report` `author` `version`), plus `sandbox` and `author` as command groups with four stub subcommands each. `version`, `help` and `run demo` work; every other verb fails through `ux.Fail` with a remediation. **The whole `cmd/shellforge` package was untracked by git until #11**: `.gitignore`'s unanchored `shellforge` pattern matched the directory, so it was never committed and CI never compiled or tested it. |
 | `shellforge run demo` | Works on Linux. Provisions, materializes the level, prints the briefing, hands over a real instrumented bash, serves `check` over a FIFO control channel, and tears the level world down on every exit path. Refuses on a Windows host with the `windows-needs-wsl` anchor. |
 | Sandbox image | `Containerfile` written, not yet built |
 | Shell instrumentation | `instrument.bash` written, not yet exercised |
@@ -1235,6 +1235,126 @@ and four things worth fixing.
 - Every fix above was verified to fail without itself: the timeout assertion and
   the failure-message regression test were each run against the old code and
   seen to fail with their own diagnostic before the fix went back in.
+
+### Day 2, 2026-08-12: cmd/shellforge migrates to cobra, the first three dependencies
+
+Issue #48. `cmd/shellforge` no longer hand-rolls its own dispatcher.
+`spf13/cobra`, `goccy/go-yaml`, and `modernc.org/sqlite` are the module's
+first three real dependencies beyond `creack/pty` and `golang.org/x/term`.
+
+- **`root.go` and `version.go` are new; `commands.go` is gone.**
+  `NewRootCommand(VersionInfo) *cobra.Command` builds the whole tree.
+  `main.go` is back down to constructing the root command, executing it with
+  the Ctrl-C-aware context, and rendering any error through `ux.Render`,
+  matching the ticket's own `main.go` sketch. `run` keeps its existing,
+  already-tested `parseRunArgs` by setting `DisableFlagParsing` on its
+  `cobra.Command` rather than rewriting argument handling this ticket was not
+  asked to touch; `cmd_run.go`, `cmd_run_test.go`, and
+  `control_channel_test.go` are otherwise untouched.
+- **Fourteen verbs, not the ticket's own twelve.** The ticket's Interfaces
+  section names `doctor init run play check hint reset map stats author
+  sandbox version`, dropping `skip` and `bug-report` from what was already
+  registered and tested. Both are kept: `skip` is in
+  `docs/design/PROJECT-BRIEF.md`'s own scope table, which the ticket says it
+  is matching, and `internal/platform/ux.Render`'s fallback message for an
+  unexpected error already tells the learner to run `shellforge bug-report`,
+  so dropping it would point that message at a command that does not exist.
+  `TestRegisteredVerbSetMatchesTheDocumentedSet` pins the full fourteen.
+- **`sandbox` and `author` are `cobra.Command` groups**, each with the four
+  stub subcommands the ticket's Interfaces section names verbatim:
+  `sandbox build|rebuild|destroy|status`, `author validate|scaffold|test|record`.
+  This does change `sandbox`'s subcommand set from the single stub's own
+  `usage` string on Day 0 (`status|shell|rebuild|destroy`); the ticket's
+  explicit interface for #48 is the newer, authoritative source here.
+  `TestSandboxIsAGroupWithItsFourSubcommands` and
+  `TestAuthorIsAGroupWithItsFourSubcommands` pin both sets.
+- **Shell completion is explicitly off.** cobra registers a `completion`
+  subcommand by default; `root.CompletionOptions.DisableDefaultCmd = true`
+  turns it back off, because the ticket's own "Out of scope" section names
+  shell completion as the Day 3 doctor ticket's job, not this one's.
+- **CLAUDE.md is not touched, contrary to the ticket's file list.** The
+  ticket predates #43 (Day 1), which already moved the approved dependency
+  table to `.claude/skills/go-style/SKILL.md` and made CLAUDE.md say so
+  explicitly. Re-adding a table to CLAUDE.md now would recreate the exact
+  two-copies-drift problem #43 closed.
+- **`goccy/go-yaml` and `modernc.org/sqlite` needed a real importer, or CI's
+  own tidiness gate would strip them again.** `.github/workflows/ci.yml`
+  (lines 176 to 193) runs `go mod tidy` and fails on any diff, and Go's
+  module graph pruning drops a required module nothing imports. The ticket's
+  own file list scopes this ticket to `cmd/shellforge` alone for behaviour,
+  which cannot satisfy that: `cmd/shellforge` importing either package
+  directly would itself violate the very confinement the ticket's own
+  acceptance criteria ask for. Asked; the answer was to add a minimal, real
+  primitive in each package rather than defer the two dependencies to their
+  own tickets. **`internal/content/yaml.go`** adds `Unmarshal(filename
+  string, data []byte, v any) error`, strict-mode `goccy/go-yaml` naming the
+  source file in its error, exactly the decoding primitive `internal/content`'s
+  own `doc.go` already promised; it knows nothing about the level schema,
+  naming a level id and a field is the validator's job, tracked at #53.
+  **`internal/store/store.go`** adds `Open(ctx, path) (*sql.DB, error)`,
+  which opens through the `modernc.org/sqlite` driver and enables WAL mode,
+  matching `internal/store`'s own `doc.go`; schema and migrations are #51's
+  job. Neither package gained anything beyond that one function and its
+  test.
+- **`internal/archtest` gained two tests, each verified against a deliberate
+  violation before being committed**, per the ticket's own acceptance
+  criteria: `TestConfinedDependenciesStayConfined` fails if `goccy/go-yaml`
+  is imported anywhere but `internal/content`, or `modernc.org/sqlite`
+  anywhere but `internal/store` (proven by temporarily blank-importing the
+  sqlite driver into `cmd/shellforge/main.go`, watching the test name the
+  exact violation, then reverting). `TestGoModDirectDependenciesAreApproved`
+  cross-checks go.mod's own direct `require` block against the Dependencies
+  table in the go-style skill (proven by temporarily deleting `spf13/cobra`'s
+  row from that table). The check is one-directional on purpose: the table
+  may list an approved module go.mod does not use yet (`fatih/color`,
+  `stretchr/testify` both still do), but nothing may reach go.mod without
+  first being in the table.
+- **Dependency versions were chosen to avoid the floor-bump trap go.mod's own
+  header comment already documents for `golang.org/x/term`.** `spf13/cobra`
+  pinned at `v1.10.2` and `goccy/go-yaml` at `v1.19.2` are both plain; the
+  newest `modernc.org/sqlite` (`v1.56.0`, and `v1.44.0` and above generally)
+  requires `go >= 1.24` or `1.25` in its own go.mod, which would have forced
+  this module's floor up from `1.23.0` again. Checked each version's
+  declared `go` directive against the proxy before choosing:
+  `modernc.org/sqlite@v1.38.0` is the newest release whose own go.mod, and
+  its `modernc.org/libc@v1.65.10` dependency's go.mod, both still say
+  `go 1.23.0`. `go.mod`'s floor is unchanged at `1.23.0`, and `go mod tidy`
+  is a no-op across two consecutive runs.
+- **`.github/workflows/ci.yml`** gained a `Build cmd/shellforge` step,
+  `go build -o bin/shellforge ./cmd/shellforge`, ahead of the existing
+  `go build -v ./...`, so a missing main package fails loudly again rather
+  than the way `-v ./...` alone let it pass silently until #11.
+  `scripts/check-ci-gates.py` and its pytest suite both still pass against
+  the edited workflow.
+- **gosec found one real issue in the new code, fixed here**: `store.go`'s
+  `Open` discarded `db.Close()`'s own error on the path where enabling WAL
+  mode fails (G104). Fixed by folding a non-nil close error into the
+  returned message rather than dropping it.
+- **Found, not fixed, out of this ticket's scope**: the Docs job's own doc
+  anchor check in `ci.yml` greps for the literal text `DocAnchor:\s*"..."`,
+  which only matches a struct literal. Every `ux.Fail` call in this codebase,
+  including every one this ticket added, is positional
+  (`ux.Fail(op, err, remediation, "anchor")`), so that grep has apparently
+  matched nothing since #6 first wired doc anchors up. Confirmed locally:
+  `grep -rhoE 'DocAnchor:\s*"[a-z0-9-]+"' --include='*.go' .` returns zero
+  matches against the whole tree, `ux_test.go` and `cmd_run_test.go`
+  included, even though both files reference real anchors. Every anchor this
+  ticket uses is the empty string, so nothing here depends on the check
+  actually running, but the gate itself needs a follow-up issue.
+- Gates run locally, all green: `gofmt -s -w .`, `go vet ./...`,
+  `go build -o bin/shellforge ./cmd/shellforge`, `go build -v ./...`,
+  `go test ./...`, `go test -race ./...`, `go test ./internal/archtest/...`
+  (four tests, two new), `./scripts/check-punctuation.sh`,
+  `./scripts/check-allowlist-regexp.sh`, `./scripts/check-links.sh`,
+  `python3 scripts/check-ci-gates.py`, `python3 -m pytest scripts/tests -q`,
+  `go mod tidy` (stable across two runs), and a local
+  `gosec -quiet -exclude-dir=docs ./...`, clean after the fix above.
+  `govulncheck` could not run: this environment's proxy returned 403 on the
+  vulnerability database fetch. CI is authoritative for that one. Manually
+  exercised the built binary on Linux: grouped `help` output, `version`,
+  several stub verbs including a subcommand (`sandbox build`,
+  `author validate`), an unknown command, and `run` with no level, each
+  producing the expected user-facing error or output.
 
 ---
 
