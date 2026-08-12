@@ -5,8 +5,8 @@
 # depth, which silently excluded the entire cmd/shellforge package directory
 # from the repository: `git ls-files cmd/shellforge/` returned nothing, and
 # because CI builds with `go build ./...` and tests with `go test ./...`, both
-# simply skipped a package that was not there and reported green. The CLI entry
-# point was untracked from Day 0 until issue #11 found it.
+# skipped a package that was not there and reported green. The CLI entry point
+# was untracked from Day 0 until issue #11 found it.
 /bin/
 /dist/
 /build/

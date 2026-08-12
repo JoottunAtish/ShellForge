@@ -201,7 +201,7 @@ func TestValidateLevelRootRefusals(t *testing.T) {
 }
 
 // TestValidateLevelRootAccepts covers the other side, so the guard is not
-// simply refusing everything and passing its refusal table by accident.
+// refusing everything and passing its refusal table by accident.
 func TestValidateLevelRootAccepts(t *testing.T) {
 	cases := []string{
 		"/home/learner/quest",
@@ -252,6 +252,13 @@ func TestResolveLevelRootRefusesASymlinkEscape(t *testing.T) {
 
 // TestTeardownRefusesBeforeItDeletes asserts the guard runs first. A refused
 // root must produce zero rm calls, not a refusal reported after the fact.
+//
+// It asserts on chown as well as rm. The chown is recursive and runs as root,
+// so on the wrong path it can lock the learner out of directories it does not
+// own the contents of; it is a state-changing call and it must be behind the
+// same guard. The guard does hold today, because resolveLevelRoot runs before
+// either call, but asserting only on rm would let a future reordering that
+// hoisted the chown above the guard pass this test unchanged.
 func TestTeardownRefusesBeforeItDeletes(t *testing.T) {
 	s := &fakeSession{
 		exec: func(argv []string, _ runtime.ExecOpts) (runtime.ExecResult, error) {
@@ -271,7 +278,7 @@ func TestTeardownRefusesBeforeItDeletes(t *testing.T) {
 		t.Fatal("Teardown accepted a level root containing a traversal")
 	}
 	for _, argv := range s.argvs {
-		if argv[0] == "rm" {
+		if argv[0] == "rm" || argv[0] == "chown" {
 			t.Fatalf("Teardown ran %v after the guard should have refused", argv)
 		}
 	}
@@ -554,6 +561,194 @@ func TestCheckRunsAsTheLearner(t *testing.T) {
 	}
 	if got != demoUser {
 		t.Errorf("Check ran as %q, want %q", got, demoUser)
+	}
+}
+
+// TestCheckBoundsItsRead asserts the check reads with a timeout.
+//
+// The path being read is one the learner owns, and cat is not guaranteed to
+// return: report.txt as a named pipe with no writer blocks forever. Without
+// ExecOpts.Timeout the docker backend never reports TimedOut at all, so the
+// read has no bound, the control channel is wedged for the rest of the
+// session, and Check's own TimedOut branch is unreachable code.
+func TestCheckBoundsItsRead(t *testing.T) {
+	var got runtime.ExecOpts
+	s := &fakeSession{
+		exec: func(_ []string, opts runtime.ExecOpts) (runtime.ExecResult, error) {
+			got = opts
+			return runtime.ExecResult{ExitCode: 1}, nil
+		},
+	}
+	if _, _, err := Demo().Check(context.Background(), s); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if got.Timeout <= 0 {
+		t.Error("Check read report.txt with no ExecOpts.Timeout. A report.txt that is a named pipe then blocks the read " +
+			"forever, which wedges the control channel and means no later check is ever served.")
+	}
+}
+
+// TestCheckReportsATimeout asserts the bound above is reported to the learner
+// with something they can act on, rather than as a silent level failure.
+func TestCheckReportsATimeout(t *testing.T) {
+	s := &fakeSession{
+		exec: func(_ []string, _ runtime.ExecOpts) (runtime.ExecResult, error) {
+			return runtime.ExecResult{ExitCode: -1, TimedOut: true}, nil
+		},
+	}
+	passed, _, err := Demo().Check(context.Background(), s)
+	if err == nil {
+		t.Fatal("Check reported no error for a read that timed out")
+	}
+	if passed {
+		t.Error("Check passed on a read that timed out")
+	}
+	if !strings.Contains(err.Error(), "rm ~/quest/report.txt") {
+		t.Errorf("the timeout error does not tell the learner what to run next: %v", err)
+	}
+}
+
+// TestCaseSensitivityDoesNotChangeTheAnswer records the fact the failure
+// messages depend on.
+//
+// The only thing in this fixture that matches ERROR is the literal level
+// label, so counting case-sensitively and case-insensitively give the same
+// number. That is why no failure message asks a stuck learner whether their
+// search was case-insensitive: it cannot be the cause, and sending them after
+// it wastes the one message they read.
+//
+// If a future fixture grows lowercase error text, this test fails, and the
+// wording can be revisited deliberately instead of becoming accidentally true.
+func TestCaseSensitivityDoesNotChangeTheAnswer(t *testing.T) {
+	insensitive, sensitive := 0, 0
+	for _, f := range Demo().Files {
+		for _, line := range strings.Split(strings.TrimRight(string(f.Content), "\n"), "\n") {
+			if errorLine.MatchString(line) {
+				insensitive++
+			}
+			if strings.Contains(line, "ERROR") {
+				sensitive++
+			}
+		}
+	}
+	if insensitive != sensitive {
+		t.Errorf("case-insensitive counting finds %d lines and case-sensitive finds %d. "+
+			"Case sensitivity now changes the answer, so the failure messages may need to mention it.", insensitive, sensitive)
+	}
+	if sensitive != demoErrorCount {
+		t.Errorf("case-sensitive counting finds %d lines, but the answer is %d", sensitive, demoErrorCount)
+	}
+}
+
+// TestCheckFailureMessagesNameRealFailureModes is the regression test for a
+// failure message that sent a stuck learner after something that could not be
+// the cause.
+//
+// The original message asked "Is your search case-insensitive?" for every
+// failure, which by TestCaseSensitivityDoesNotChangeTheAnswer above can never
+// be why the count is wrong. It also reported "the number is off" for a
+// report.txt holding the RIGHT number in the wrong shape, which is the one
+// case where recounting is exactly the wrong next move.
+func TestCheckFailureMessagesNameRealFailureModes(t *testing.T) {
+	level := Demo()
+
+	cases := []struct {
+		name      string
+		exitCode  int
+		stdout    string
+		wantInMsg string
+		wantNotIn string
+	}{
+		{
+			name:      "missing says so and does not talk about the count",
+			exitCode:  1,
+			wantInMsg: "no ~/quest/report.txt",
+			wantNotIn: "case-insensitive",
+		},
+		{
+			name:      "empty is told apart from wrong",
+			stdout:    "\n",
+			wantInMsg: "empty",
+			wantNotIn: "case-insensitive",
+		},
+		{
+			name:      "a wrong number quotes what is there",
+			stdout:    "12",
+			wantInMsg: `"12"`,
+			wantNotIn: "case-insensitive",
+		},
+		{
+			name:      "the right count in the wrong shape quotes it rather than blaming the number",
+			stdout:    level.Answer() + " logs/app-1.log",
+			wantInMsg: level.Answer() + " logs/app-1.log",
+			wantNotIn: "case-insensitive",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &fakeSession{
+				exec: func(_ []string, _ runtime.ExecOpts) (runtime.ExecResult, error) {
+					return runtime.ExecResult{ExitCode: tc.exitCode, Stdout: []byte(tc.stdout)}, nil
+				},
+			}
+			passed, message, err := level.Check(context.Background(), s)
+			if err != nil {
+				t.Fatalf("Check: %v", err)
+			}
+			if passed {
+				t.Fatalf("Check passed on %q", tc.stdout)
+			}
+			if !strings.Contains(message, tc.wantInMsg) {
+				t.Errorf("the message does not mention %q: %s", tc.wantInMsg, message)
+			}
+			if strings.Contains(strings.ToLower(message), tc.wantNotIn) {
+				t.Errorf("the message asks about %q, which cannot be the cause: %s", tc.wantNotIn, message)
+			}
+		})
+	}
+}
+
+// TestCheckFailureMessagesNeverLeakTheAnswer asserts a learner cannot read the
+// count off a failure. The wrong-content message quotes what they wrote, so
+// this only holds while nothing else in the message names the total.
+func TestCheckFailureMessagesNeverLeakTheAnswer(t *testing.T) {
+	level := Demo()
+
+	for _, stdout := range []string{"", "\n", "12", "not a number"} {
+		s := &fakeSession{
+			exec: func(_ []string, _ runtime.ExecOpts) (runtime.ExecResult, error) {
+				return runtime.ExecResult{Stdout: []byte(stdout)}, nil
+			},
+		}
+		_, message, err := level.Check(context.Background(), s)
+		if err != nil {
+			t.Fatalf("Check: %v", err)
+		}
+		if strings.Contains(message, level.Answer()) {
+			t.Errorf("the failure message for %q contains the answer %q: %s", stdout, level.Answer(), message)
+		}
+	}
+}
+
+// TestQuoteReportContentTruncates asserts a learner who redirects a whole log
+// file into report.txt does not get it read back at them.
+func TestQuoteReportContentTruncates(t *testing.T) {
+	long := strings.Repeat("x", 4000)
+	got := quoteReportContent(long)
+	if len(got) > 200 {
+		t.Errorf("quoteReportContent returned %d characters for a 4000 character file", len(got))
+	}
+	if !strings.Contains(got, "truncated") {
+		t.Errorf("a truncated value does not say so: %s", got)
+	}
+
+	// A multi-byte rune straddling the cut must not be split into an invalid
+	// sequence. strconv.Quote would escape the broken half as \x.., which is
+	// unreadable noise in a message aimed at a beginner.
+	runeHeavy := strings.Repeat("é", 100)
+	if got := quoteReportContent(runeHeavy); strings.Contains(got, `\x`) {
+		t.Errorf("truncation split a rune: %s", got)
 	}
 }
 

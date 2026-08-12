@@ -85,12 +85,13 @@ func TestDestructiveRemovalInsideTheSandboxCannotReachTheHost(t *testing.T) {
 	}
 
 	// Record the host's own working directory listing too, so the assertion is
-	// not limited to one file in one temp directory.
-	repoRoot, err := os.Getwd()
+	// not limited to one file in one temp directory. This is the package
+	// directory that `go test` runs in, not the repository root.
+	hostWorkDir, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
 	}
-	before, err := os.ReadDir(repoRoot)
+	before, err := os.ReadDir(hostWorkDir)
 	if err != nil {
 		t.Fatalf("read the host working directory: %v", err)
 	}
@@ -122,7 +123,7 @@ func TestDestructiveRemovalInsideTheSandboxCannotReachTheHost(t *testing.T) {
 	}
 
 	// 2. The host working directory still has everything it started with.
-	after, err := os.ReadDir(repoRoot)
+	after, err := os.ReadDir(hostWorkDir)
 	if err != nil {
 		t.Fatalf("THE HOST WORKING DIRECTORY IS GONE: %v", err)
 	}
@@ -181,7 +182,7 @@ func TestDestructiveRemovalInsideTheSandboxCannotReachTheHost(t *testing.T) {
 //
 // TODO(v0.2): decide whether Act V drops no-new-privileges for levels that
 // declare they need sudo, or whether the curriculum teaches sudo without
-// running it. Do NOT simply remove the flag to make a level pass.
+// running it. Do NOT resolve it by removing the flag to make a level pass.
 func TestSudoIsRefusedByNoNewPrivileges(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), goldenTimeout)
 	defer cancel()

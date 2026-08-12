@@ -113,10 +113,19 @@ func sortedEnvArgs(env map[string]string) []string {
 // nothing caught it until the demo level's control channel replied with zero
 // bytes and `check` printed nothing at all.
 //
-// It is added ONLY when there is stdin to send. Passing -i unconditionally
-// would attach this process's own standard input to every Exec, and during a
-// level that standard input is the learner's terminal in raw mode: a check
-// running in the background could then consume the learner's keystrokes.
+// It is added only when there is stdin to send, because there is nothing for
+// it to do otherwise: execRunner.run leaves cmd.Stdin nil when the caller
+// passed no bytes, and os/exec then connects the child to os.DevNull, so -i
+// would allocate a standard input the container process sees EOF on
+// immediately.
+//
+// Be clear about what that reasoning is NOT, because an earlier version of
+// this comment got it wrong and the wrong version is the more alarming one. An
+// unconditional -i could not have reached the learner's terminal. os/exec
+// never substitutes this process's own os.Stdin for a nil cmd.Stdin, so a
+// check running behind an attached shell was never able to consume the
+// learner's keystrokes, and nobody should re-derive a security argument from
+// that. The conditional is a tidiness choice, not a safety control.
 func (s *dockerSession) execArgv(user, workdir string, env map[string]string, command []string, withStdin bool) []string {
 	argv := []string{"docker", "exec"}
 	if withStdin {

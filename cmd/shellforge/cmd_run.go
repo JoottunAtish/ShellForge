@@ -63,6 +63,21 @@ const (
 
 	// cleanupTimeout bounds teardown after the shell has exited.
 	cleanupTimeout = 30 * time.Second
+
+	// controlDrainTimeout bounds how long the exit path waits for the control
+	// loop to return after its context is cancelled.
+	//
+	// Cancelling runCtx unblocks the loop's read, and the docker backend then
+	// kills the sandbox-side process it started. That kill runs INSIDE the
+	// goroutine, so returning without waiting for it races process exit, and a
+	// lost race leaves a `cat` holding the FIFO open in a container that
+	// outlives the run.
+	//
+	// Bounded rather than unconditional: a control loop that will not come
+	// back must not be able to stop the learner from getting their prompt
+	// back. One orphaned process in a disposable container is the smaller
+	// problem.
+	controlDrainTimeout = 5 * time.Second
 )
 
 // runOptions is what `run` parsed out of its arguments.
@@ -281,11 +296,23 @@ func runDemo(ctx context.Context, opts runOptions) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	go serveControlRequests(runCtx, sess, level, reqPath, resPath)
+	// served closes when the control loop has returned, which is after it has
+	// killed whatever it left running inside the sandbox. Waiting on it is what
+	// makes the comment above true rather than merely likely.
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		serveControlRequests(runCtx, sess, level, reqPath, resPath)
+	}()
 	go logCommandEvents(runCtx, mux.Events(), os.Stderr, opts.debug)
 
 	runErr := mux.Run(runCtx)
 	cancel()
+
+	if !waitForControlLoop(served, controlDrainTimeout) {
+		fmt.Fprintln(os.Stderr, "warning: the control channel did not stop cleanly, so a process may be left running inside the sandbox container. "+
+			"It is harmless, and `docker rm -f shellforge-sandbox` clears it if you would rather not leave it there.")
+	}
 
 	if runErr != nil {
 		if errors.Is(runErr, pty.ErrSignalled) {
@@ -387,6 +414,22 @@ func serveControlRequests(ctx context.Context, s runtime.Session, level sandbox.
 		if err != nil && ctx.Err() != nil {
 			return
 		}
+	}
+}
+
+// waitForControlLoop waits for the control loop to return, up to budget, and
+// reports whether it did.
+//
+// Its own function so the bound is testable without a Docker daemon and a host
+// pseudo terminal, neither of which runDemo can do without.
+func waitForControlLoop(served <-chan struct{}, budget time.Duration) bool {
+	timer := time.NewTimer(budget)
+	defer timer.Stop()
+	select {
+	case <-served:
+		return true
+	case <-timer.C:
+		return false
 	}
 }
 

@@ -1093,10 +1093,16 @@ three of which no existing test could have caught.
   unblocked the shim's `cat`, then wrote zero bytes and closed: the shim got an
   immediate EOF and printed nothing. Everything looked right and nothing worked.
   Measured, not inferred: `echo x | docker exec c tee /tmp/probe` leaves the
-  probe empty and the same command with `-i` writes `x`. `-i` is now added only
-  when there is stdin to send, because during a level this process's own
-  standard input is the learner's terminal in raw mode and a background check
-  with `-i` could consume their keystrokes. **`runtimetest` had no assertion
+  probe empty and the same command with `-i` writes `x`. `-i` is added only when
+  there is stdin to send, because there is nothing for it to do otherwise:
+  `execRunner.run` leaves `cmd.Stdin` nil when the caller passed no bytes, and
+  `os/exec` then connects the child to `os.DevNull`. Review caught the first
+  version of this note claiming the conditional was a safety control, on the
+  grounds that an unconditional `-i` would attach this process's own standard
+  input and let a background check eat the learner's keystrokes. That is wrong:
+  `os/exec` never substitutes `os.Stdin` for a nil `cmd.Stdin`, so the keystrokes
+  were never reachable. The conditional is tidiness, and nobody should rebuild a
+  security argument on it. **`runtimetest` had no assertion
   covering the field at all**, which is why this shipped; `PushFiles` uses stdin
   too but through `docker cp -`, which reads the local CLI's stdin and was
   unaffected, so the gap stayed invisible. New contract assertion
@@ -1125,8 +1131,8 @@ three of which no existing test could have caught.
   `.gitignore` line 5 was `shellforge`, unanchored, which matches any path
   component with that name at any depth, including the directory. `git ls-tree
   origin/main cmd/` returned nothing. Because CI builds with `go build ./...`
-  and tests with `go test ./...`, both simply skipped a package that was not
-  there and reported green, so the CLI entry point and its tests had never once
+  and tests with `go test ./...`, both skipped a package that was not there
+  and reported green, so the CLI entry point and its tests had never once
   been compiled or run in CI since Day 0. The patterns are now anchored to
   `/shellforge` and `/shellforge.exe`, with a comment saying why they must stay
   that way, and `main.go`, `commands.go` and `commands_test.go` are committed
@@ -1180,6 +1186,56 @@ three of which no existing test could have caught.
   `scripts/check-ci-gates.py` plus `pytest` (no PyYAML, no pytest). This change
   touches no CI YAML and no Python. CI is authoritative for those.
 
+#### Review pass on #72, same branch
+
+A full review of the branch before merge. No blocking defect, one wrong comment
+and four things worth fixing.
+
+- **The stated reason for making `docker exec -i` conditional was wrong, and the
+  wrong version was the alarming one.** It claimed an unconditional `-i` would
+  attach this process's own standard input and let a background check eat the
+  learner's keystrokes. `os/exec` connects a nil `cmd.Stdin` to `os.DevNull` and
+  never substitutes `os.Stdin`, and `execRunner.run` leaves it nil when the
+  caller passed no bytes, so the keystrokes were never reachable. The behaviour
+  is unchanged and still correct; the comment in `session.go` and the note above
+  now say why it is a tidiness choice and record that it is not a safety
+  control, so nobody rebuilds a security argument on it.
+- **`DemoLevel.Check` read `report.txt` with no timeout**, which made its own
+  `res.TimedOut` branch unreachable code: the docker backend only reports
+  `TimedOut` when `ExecOpts.Timeout` is set. The path being read is one the
+  learner owns, so `cat` was not guaranteed to return. A `report.txt` that is a
+  named pipe with no writer wedged the control channel for the rest of the
+  session, and a link to `/dev/zero` grew the host process without bound.
+  Bounded at ten seconds, with a message naming the file to remove.
+- **The failure message asked whether the search was case-insensitive, which
+  cannot ever be the cause.** Nothing in the fixture matches ERROR in any case
+  except the literal level label, so `grep -r ERROR` and `grep -ri ERROR` both
+  return 147: measured both ways, not reasoned about. There are now three
+  messages instead of one, telling missing, empty, and wrong apart, and the
+  wrong one quotes what is in the file, because a learner who ran `wc -l` on a
+  file rather than a pipe has the right count in the wrong shape and recounting
+  is the one thing that will not help.
+  `TestCaseSensitivityDoesNotChangeTheAnswer` pins the fact the wording rests
+  on, so a fixture that later grows lowercase error text fails a test instead of
+  quietly making the old advice true again.
+- **Nothing waited for the control loop on the way out**, so the claim that no
+  `cat` is left holding the FIFO open was likely rather than true: the kill runs
+  inside that goroutine, and returning without waiting for it raced process
+  exit. The exit path now waits, bounded at five seconds, because a control loop
+  that will not come back must not be able to hold the learner's prompt hostage.
+- **`TestTeardownRefusesBeforeItDeletes` asserted no `rm` but not no `chown`.**
+  The chown is recursive and runs as root, so it is a state-changing call and
+  belongs behind the same guard. The guard does already cover it; the test now
+  says so, which is what stops a future reordering from passing unnoticed.
+- Deferred deliberately, filed as #77: `run` still decides whether an
+  interactive shell is possible by testing `runtime.GOOS` rather than by asking
+  `Runtime.Capabilities()`. The refusal is correct today, and the fix touches
+  `runtime.Caps`, which is a code-owner path, on a branch already carrying more
+  than one logical change.
+- Every fix above was verified to fail without itself: the timeout assertion and
+  the failure-message regression test were each run against the old code and
+  seen to fail with their own diagnostic before the fix went back in.
+
 ---
 
 ## Day 1: the spike
@@ -1230,8 +1286,8 @@ is then created with `--security-opt no-new-privileges`, which prevents sudo
 from gaining privileges at all, so the grant has no effect.
 `TestSudoIsRefusedByNoNewPrivileges` pins the current behaviour with a
 `TODO(v0.2)`. Either Act V drops the flag for levels that declare they need
-sudo, or the curriculum teaches sudo without running it. **Do not simply remove
-the flag to make a level pass.**
+sudo, or the curriculum teaches sudo without running it. **Do not resolve it by
+removing the flag to make a level pass.**
 
 ## Day 2: content engine and verification
 

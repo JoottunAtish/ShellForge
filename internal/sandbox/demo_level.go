@@ -69,6 +69,21 @@ const (
 	// offline: the same seed produces byte-identical logs on every machine,
 	// with no network call and no embedded asset file.
 	demoSeed = 20260314
+
+	// checkTimeout bounds the one Exec the check makes.
+	//
+	// Without it, cat is not guaranteed to return, and the check runs on
+	// a path the learner owns. A report.txt that is a named pipe with no
+	// writer blocks the read forever, which wedges the control channel for
+	// the rest of the session: the learner's own `check` hangs and no later
+	// one is ever served. A symlink to an endless device such as /dev/zero is
+	// worse, because the runtime accumulates stdout in memory with no cap.
+	// Neither is a plausible accident. Neither should cost a learner their
+	// session either, and the failure it produces has to be a bounded one.
+	//
+	// Ten seconds is far longer than reading one small file needs, and far
+	// shorter than a learner will sit in front of a dead prompt.
+	checkTimeout = 10 * time.Second
 )
 
 // DemoLevel is the Day 1 hardcoded level. It is replaced by YAML on Day 2 and
@@ -422,6 +437,53 @@ func (l DemoLevel) Setup(ctx context.Context, s runtime.Session) error {
 	return nil
 }
 
+// The check's failure messages.
+//
+// There are three because they are three different problems, and telling them
+// apart is the difference between a learner fixing what is actually wrong and
+// a learner redoing the part that was already right.
+//
+// None of them asks whether the search was case-insensitive, and that is
+// deliberate. Nothing in this fixture matches ERROR in any case except the
+// literal level label, so `grep -r ERROR` and `grep -ri ERROR` return the same
+// number and case sensitivity cannot be the reason a learner's count is wrong.
+// Asking anyway spends the one message a stuck learner reads on a dead end.
+// TestCaseSensitivityDoesNotChangeTheAnswer pins the fact this wording rests
+// on, so a fixture that later grows lowercase error text fails a test instead
+// of quietly making the advice true again.
+const (
+	onFailMissing = "There is no ~/quest/report.txt yet. Put your total in that file, as a single number on its own."
+	onFailEmpty   = "~/quest/report.txt exists but is empty, so nothing reached it. Check that your command prints a number on its own before you send it to the file."
+)
+
+// onFailWrong reports a report.txt that exists and holds the wrong thing.
+//
+// It quotes what is in there, because a wrong number and a wrong format fail
+// this check identically and need opposite fixes. A learner who counted with
+// `wc -l` against a file rather than a pipe has "147 somefile" in report.txt:
+// the count is already right, and telling them the number is off sends them
+// away to recount something they had finished.
+func onFailWrong(got string) string {
+	return fmt.Sprintf("~/quest/report.txt holds %s, which is not the total on its own. "+
+		"Three things worth checking: that the search reaches all three files under logs/ rather than one of them, "+
+		"that you are counting matching lines rather than words, bytes, or every line in the files, "+
+		"and that nothing but the number ends up in the file.", quoteReportContent(got))
+}
+
+// quoteReportContent renders report.txt's content for a failure message,
+// truncated on a rune boundary.
+//
+// The learner owns this string and can redirect an entire log file into it, so
+// it is never printed whole: the message has to stay readable on the terminal
+// it is about to be written to.
+func quoteReportContent(got string) string {
+	const max = 48
+	if runes := []rune(got); len(runes) > max {
+		return strconv.Quote(string(runes[:max])) + " (truncated)"
+	}
+	return strconv.Quote(got)
+}
+
 // Check runs the single assertion and returns a human-readable result.
 //
 // It reads real sandbox state through Session.Exec and never consults the
@@ -430,26 +492,32 @@ func (l DemoLevel) Setup(ctx context.Context, s runtime.Session) error {
 // ran. It also never writes: cat is the whole of it, so running Check twice
 // leaves the filesystem identical.
 func (l DemoLevel) Check(ctx context.Context, s runtime.Session) (passed bool, message string, err error) {
-	const onFail = "report.txt is missing or the number is off. Are you searching *all* the files in logs/? Is your search case-insensitive?"
-
-	res, execErr := s.Exec(ctx, []string{"cat", "--", l.ReportPath()}, runtime.ExecOpts{User: demoUser})
+	res, execErr := s.Exec(ctx, []string{"cat", "--", l.ReportPath()}, runtime.ExecOpts{
+		User: demoUser,
+		// Bounded, because the path being read is one the learner controls.
+		// See checkTimeout.
+		Timeout: checkTimeout,
+	})
 	if execErr != nil {
 		return false, "", fmt.Errorf("read %s: %w", l.ReportPath(), execErr)
 	}
 	if res.TimedOut {
-		return false, "", fmt.Errorf("read %s: the check timed out", l.ReportPath())
+		return false, "", fmt.Errorf("read %s: gave up after %s. If report.txt is a named pipe, or a link to something with no end such as /dev/zero, remove it with `rm ~/quest/report.txt` and write an ordinary file instead", l.ReportPath(), checkTimeout)
 	}
 	// A non-zero exit is the file being absent or unreadable, which is a
 	// normal check failure and not an error. That distinction is the reason
 	// this reads through Exec rather than PullFile: PullFile reports both
 	// cases the same way.
 	if res.ExitCode != 0 {
-		return false, onFail, nil
+		return false, onFailMissing, nil
 	}
 
 	got := strings.TrimSpace(string(res.Stdout))
+	if got == "" {
+		return false, onFailEmpty, nil
+	}
 	if got != l.Answer() {
-		return false, onFail, nil
+		return false, onFailWrong(got), nil
 	}
 	return true, fmt.Sprintf("report.txt holds the total ERROR count (%s)", l.Answer()), nil
 }

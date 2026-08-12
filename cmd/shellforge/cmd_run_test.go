@@ -26,7 +26,7 @@ func TestParseRunArgs(t *testing.T) {
 		wantLevel string
 		wantDebug bool
 	}{
-		{"just the level", []string{"demo"}, "demo", false},
+		{"only the level", []string{"demo"}, "demo", false},
 		{"debug with an equals sign", []string{"demo", "--log-level=debug"}, "demo", true},
 		{"debug as two arguments", []string{"demo", "--log-level", "debug"}, "demo", true},
 		{"the flag before the level", []string{"--log-level=debug", "demo"}, "demo", true},
@@ -279,6 +279,38 @@ func TestPrepareControlChannelFailsOnANonZeroExit(t *testing.T) {
 	if err == nil {
 		t.Fatal("prepareControlChannel reported success even though mkfifo exited non-zero")
 	}
+}
+
+// --------------------------------------------------------------------------
+// Draining the control loop on the way out
+// --------------------------------------------------------------------------
+
+// TestWaitForControlLoop covers both sides of the bound.
+//
+// The exit path has to wait for the control loop, because the loop is what
+// kills the sandbox-side process it started: returning without waiting races
+// process exit and can leave a `cat` holding the FIFO open in a container that
+// outlives the run. It also has to give up, because a loop that will not come
+// back must not be able to hold the learner's prompt hostage.
+func TestWaitForControlLoop(t *testing.T) {
+	t.Run("returns true once the loop has finished", func(t *testing.T) {
+		served := make(chan struct{})
+		close(served)
+		if !waitForControlLoop(served, 5*time.Second) {
+			t.Error("waitForControlLoop reported a timeout for a loop that had already returned")
+		}
+	})
+
+	t.Run("gives up rather than blocking the exit path", func(t *testing.T) {
+		served := make(chan struct{}) // never closed: the loop is wedged
+		start := time.Now()
+		if waitForControlLoop(served, 20*time.Millisecond) {
+			t.Error("waitForControlLoop claimed a wedged loop had returned")
+		}
+		if elapsed := time.Since(start); elapsed > 2*time.Second {
+			t.Errorf("waitForControlLoop took %s to give up on a 20ms budget", elapsed)
+		}
+	})
 }
 
 // --------------------------------------------------------------------------
