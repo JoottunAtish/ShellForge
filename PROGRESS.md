@@ -983,6 +983,69 @@ Agent tooling only. No Go code, no test, no gate, and no level changed here
   `./scripts/check-links.sh`, both clean. The Go gates were not run and did not
   apply: this change touches no Go file. CI is authoritative for the rest.
 
+### Day 1, 2026-08-12: fuzz crasher upload and a reporting-only label prune mode, partial pass on issue #45
+
+Issue #45, two of three pieces. Stays open: the five default labels themselves
+are not deleted.
+
+- **`.github/workflows/ci.yml`** gained a new step, "Upload fuzz crashers",
+  immediately after "Fuzz the OSC parser" in the `test` job. It runs only
+  `if: failure() && matrix.os == 'ubuntu-latest'` and uploads
+  `internal/pty/testdata/fuzz/FuzzParser/` with `if-no-files-found: ignore`,
+  using `actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a #
+  v7.0.1`. A red fuzz run destroys its own reproducer the moment the runner
+  workspace is torn down, so without this step a crashing input found in CI
+  has to be reproduced by hand instead of downloaded and added to the seed
+  corpus. The fuzz duration and the seed corpus itself were not touched.
+- **`scripts/sync-labels.sh` gained a `--prune` mode**, checked before the
+  existing positional `$1` repo handling since `--prune` is a flag, not a
+  repo argument. It prints the five names GitHub auto-creates on every new
+  repository (`bug`, `documentation`, `enhancement`, `invalid`, `question`),
+  states that they shadow the `type:` taxonomy in `.github/labels.yml`, and
+  names the exact manual command (`gh label delete <name>`) to run only
+  after confirming each still has zero issues and zero pull requests. It
+  never calls `gh label delete` or any other mutating `gh` command, and
+  exits 0 without requiring `gh` to be installed at all. The default sync
+  behaviour (no `--prune`) is unchanged.
+- **`scripts/tests/test_sync_labels_prune.py`** is new. It runs
+  `bash scripts/sync-labels.sh --prune` as a subprocess with a fake `gh` on
+  `PATH` that logs every call it receives, and asserts: exit code 0; the
+  five default label names appear in stdout; no other name from
+  `.github/labels.yml` appears in stdout, so a future accidental widening of
+  the prune list would be caught; and the fake `gh`'s call log, if it has
+  any content at all, never contains the substring "delete" in any case.
+  Confirmed failing before `--prune` existed (the script fell through to the
+  normal sync path and printed `created ...` for every real label instead),
+  passing after.
+- **`scripts/tests/test_ci_yml_fuzz_upload_step.py`** is new. It parses the
+  real `ci.yml`, finds the step named "Fuzz the OSC parser", and asserts the
+  very next step in the `test` job is the new upload step with the right
+  `path`, `if-no-files-found`, and `if:` condition. A second test reuses
+  `gates.parse_uses_lines` and `gates.check_uses_ref` from
+  `scripts/check-ci-gates.py` to confirm the new `uses:` line is pinned to a
+  40 character lowercase commit SHA with a version comment, the same
+  standard every other action in this repository already meets. Confirmed
+  failing before the step existed (no step follows the fuzz step; no
+  `actions/upload-artifact@` reference found), passing after.
+- **The five default labels are NOT deleted, and `.github/labels.yml` was
+  deliberately left untouched.** No tool available in this environment can
+  perform that write: no GitHub MCP label-delete tool, no `gh` CLI
+  installed, and no direct GitHub API call permitted by this environment's
+  own operating rules, even though a token happens to be present in the
+  environment. All five were already confirmed this session to carry zero
+  issues and zero pull requests as of 2026-08-12, so the delete itself is a
+  five-command manual step (`gh label delete <name>` per name) for whoever
+  next has `gh` access, not a research task. `.github/labels.yml` gained no
+  header comment claiming the prune happened, because it has not happened
+  yet.
+- **Issue #45 stays open.** The reporting mode and its tests, and the CI
+  upload step and its tests, are done. The five labels themselves are not.
+- Gates run locally, all green: `./scripts/check-punctuation.sh`,
+  `python3 scripts/check-ci-gates.py`, `python3 -m pytest scripts/tests -q`,
+  and `./scripts/check-links.sh`. `gofmt`, `go vet`, `go test`,
+  `go test -race`, and `go test ./internal/archtest/...` were not run and do
+  not apply: this change touches no Go file.
+
 ---
 
 ## Day 1: the spike

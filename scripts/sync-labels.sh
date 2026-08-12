@@ -13,14 +13,52 @@
 #   ./scripts/sync-labels.sh              # sync to the current repo
 #   ./scripts/sync-labels.sh owner/repo   # sync to a specific repo
 #   DRY_RUN=1 ./scripts/sync-labels.sh    # print what would change
+#   ./scripts/sync-labels.sh --prune      # report GitHub's default labels
+#                                         # (does not delete anything, see below)
 
 set -uo pipefail
 
 cd "$(dirname "$0")/.." || exit 2
 
 LABELS_FILE=".github/labels.yml"
-REPO="${1:-}"
 DRY_RUN="${DRY_RUN:-}"
+
+# --prune is a flag, not a repo argument, so it is checked before the
+# positional $1 handling below claims it.
+#
+# GitHub auto-creates five labels (bug, documentation, enhancement, invalid,
+# question) on every new repository, before this script ever runs. They
+# shadow the `type:` taxonomy in .github/labels.yml (compare "bug" here with
+# "type: bug" there) and are not part of that taxonomy, so this script never
+# creates, updates, or deletes them through the sync loop above.
+#
+# This mode only reports them. It never calls a mutating gh command, because
+# deleting a label silently removes it from every issue and pull request that
+# carried it, and that decision belongs to a human who has confirmed each
+# label is actually unused, not to a script run unattended.
+if [ "${1:-}" = "--prune" ]; then
+  cat <<'EOF'
+GitHub's auto-created default labels, not part of .github/labels.yml:
+
+  bug
+  documentation
+  enhancement
+  invalid
+  question
+
+Each one shadows a same-topic `type:` label in .github/labels.yml. This script
+does not delete them for you. For each one, confirm it has zero open or closed
+issues and zero pull requests, then remove it by hand:
+
+  gh label delete <name>
+
+Run this only after that confirmation. This script never runs gh label delete
+itself.
+EOF
+  exit 0
+fi
+
+REPO="${1:-}"
 
 if ! command -v gh >/dev/null 2>&1; then
   echo "sync-labels: the gh CLI is not installed." >&2

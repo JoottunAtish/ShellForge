@@ -227,6 +227,20 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: go test -run '^FuzzParser$' -fuzz '^FuzzParser$' -fuzztime 30s ./internal/pty
 
+      - name: Upload fuzz crashers
+        # A red fuzz run destroys its own reproducer the moment the runner
+        # workspace is torn down. Uploading the corpus directory keeps the
+        # crashing input around long enough to add it to the seed corpus.
+        # Linux only, matching the fuzz step itself; the directory does not
+        # exist on the Windows leg, so if-no-files-found: ignore keeps that
+        # leg's own (unrelated) failures from also failing on a missing path.
+        if: failure() && matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-crashers
+          path: internal/pty/testdata/fuzz/FuzzParser/
+          if-no-files-found: ignore
+
   # -------------------------------------------------------------------------
   # Security. Separate job so a vulnerability report does not hide behind a
   # compile error, and so it can be read at a glance in the checks list.
