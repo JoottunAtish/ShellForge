@@ -856,6 +856,81 @@ allowlist accepts or refuses; it is now enforced from one place instead of seven
   this environment and were not run locally; CI runs both and is
   authoritative.
 
+### Day 1, 2026-08-12: percent-encode the OSC 7 cwd payload, partial pass on issue #44
+
+Issue #44, three of five acceptance criteria. Stays open: AC3 and the sandbox
+end-to-end verification are not done here.
+
+- **AC1, done.** `images/rc/instrument.bash` gained `__sf_urlencode`, called
+  from `__sf_after` before the OSC 7 marker is written, so `$PWD` reaches the
+  payload percent-encoded instead of raw. A directory literally named `100%`
+  now encodes to `100%25`, which `url.PathUnescape` decodes back to `100%`. A
+  directory literally named `a%20b` (five literal characters) encodes to
+  `a%2520b`, which decodes back to `a%20b` exactly, staying distinguishable
+  from a directory actually named `a b`, which separately encodes to `a%20b`
+  and decodes back to `a b`. That distinguishability is the entire point of
+  AC1, and it now holds.
+- **AC2, done.** `__sf_urlencode` is bash builtins only: `printf`, parameter
+  expansion, and a C-style `for` loop, no subprocess and no `$(...)`. It
+  writes its result to the global `__sf_encoded` specifically to avoid
+  forking a subshell. `LC_ALL=C` makes bash index the string one byte at a
+  time rather than one multibyte character at a time, which is what makes a
+  path containing a multi-byte UTF-8 character round-trip correctly through
+  a function with no notion of what a UTF-8 code point is; that reasoning is
+  written into the comment above the function, per AC2.
+- **`images/rc/instrument_test.bash`** is a new standalone unit test for
+  `__sf_urlencode`, runnable with no Docker and no sandbox
+  (`bash images/rc/instrument_test.bash`). It extracts only the function with
+  `sed` and `eval` rather than sourcing the whole of `instrument.bash`, which
+  also pulls in `/etc/bash.bashrc`, the user's own `.bashrc`, and sets
+  `PROMPT_COMMAND` and several `readonly` variables: side effects a unit test
+  for one function has no business triggering. Seven cases, including the
+  `100%` and `a%20b` round-trips above, a multi-byte UTF-8 case, and the root
+  path. All seven pass. Set mode 755. Wired into the `Style and punctuation`
+  CI job as a new step, after the CRLF gate and before the merge gate check.
+- **`internal/pty/osc_test.go`**: the two `hostileCases()` rows that pinned
+  the now-fixed producer mismatch (`cwd unencoded bare percent at end` and
+  `cwd unencoded percent mid path`) are removed, per that comment block's own
+  last sentence, which said to remove rather than update them once the
+  producer was fixed to percent-encode. No replacement rows were added:
+  `hostileCases()` already covers malformed-percent robustness generically
+  through `cwd bad percent` and `cwd truncated percent`, independent of any
+  specific producer.
+- **AC5, done.** `TestEventKindString` is new: a table test covering all
+  five `EventKind` constants (`promptstart`, `commandstart`, `preexec`,
+  `commanddone`, `cwdreport`) plus a value outside all five, asserting the
+  `eventkind(99)` fallback form. `EventKind.String()` itself was not
+  changed: it already existed with exactly this behaviour, written in an
+  earlier review pass but never covered by a test until now. This closes the
+  last 0-percent-coverage gap the OSC parser had.
+- **`internal/pty/osc.go`**: comment-only change inside `recognize`'s OSC 7
+  branch. The paragraph that said the producer does not yet encode the path
+  and blamed issue #25 now says the producer meets the contract as of issue
+  #44, points at `__sf_urlencode` and its RFC 3986 unreserved-plus-slash rule,
+  and points at `images/rc/instrument_test.bash` for the round-trip cases.
+  The paragraph explaining why a raw-path fallback was rejected (the `a%20b`
+  versus `a b` ambiguity) is kept, because that reasoning is exactly why the
+  fix works. No logic in this file changed: `recognize`, `Write`, and `step`
+  are untouched.
+- **AC3 and the sandbox end-to-end verification are NOT done here.** AC3
+  needs `vim-session.bin` re-captured inside the built sandbox image via
+  `make image` then `script -q`, and this environment has no running Docker
+  daemon: `docker version` succeeds against the client but the daemon socket
+  is unreachable. `internal/pty/testdata/vim-session.bin` was not touched.
+  **AC4 needed no change**: `.gitattributes` already marks `*.bin binary`,
+  verified, not edited.
+- **Issue #44 stays open.** The remaining piece, the vim fixture recapture
+  plus running the golden path against a real sandbox, needs Docker and is
+  still tracked there.
+- Gates run locally, all green: `gofmt -s -w .`, `go vet ./...`,
+  `go test ./...`, `go test -race ./...`,
+  `./scripts/check-punctuation.sh`, `go test ./internal/archtest/...`,
+  `./scripts/check-allowlist-regexp.sh`, `./scripts/check-links.sh`,
+  `python3 scripts/check-ci-gates.py`, `python3 -m pytest scripts/tests -q`,
+  and `bash images/rc/instrument_test.bash`. `govulncheck` and `gosec` are
+  not installed in this environment and were not run locally; CI runs both
+  and is authoritative.
+
 ### Day 1 follow-ups, 2026-08-12: a token saver autonomous run profile
 
 Agent tooling only. No Go code, no test, no gate, and no level changed here

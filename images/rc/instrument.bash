@@ -54,6 +54,45 @@ PS1='\[\e]133;A\a\]'"${PS1:-\u@quest:\w\$ }"'\[\e]133;B\a\]'
 PS0='\e]133;C\a'
 
 # ---------------------------------------------------------------------------
+# Percent-encoding for the OSC 7 cwd report.
+#
+# The OSC 7 payload written below is a file:// URI, and a URI is
+# percent-encoded by definition. internal/pty's parser decodes that payload
+# with Go's url.PathUnescape and finds the path by splitting on the first '/'
+# after the host, so the path's internal '/' separators must never be
+# percent-encoded, only the bytes within each path segment. This function
+# percent-encodes every byte of its argument that is not RFC 3986 unreserved
+# (letters, digits, '-', '.', '_', '~'), except '/', which passes through
+# unencoded because it is the path separator, not a byte to encode.
+#
+# It writes its result to the global __sf_encoded rather than printing and
+# being captured with $(...), because command substitution forks a subshell
+# and this file's whole point is that nothing in it forks: no subprocess,
+# only bash builtins (printf, parameter expansion, a C-style for loop).
+#
+# LC_ALL=C makes bash index the string one byte at a time, not one multibyte
+# character at a time. That is what makes a path containing a multi-byte
+# UTF-8 character come out correct: this function has no notion of what a
+# UTF-8 code point is, it just encodes raw bytes one at a time, and
+# url.PathUnescape on the decoding side reassembles those bytes into the same
+# UTF-8 character it started as.
+# ---------------------------------------------------------------------------
+__sf_urlencode() {
+  local LC_ALL=C s="$1" i c hex
+  __sf_encoded=
+  for (( i = 0; i < ${#s}; i++ )); do
+    c="${s:i:1}"
+    case "$c" in
+      [a-zA-Z0-9._~/-]) __sf_encoded+="$c" ;;
+      *)
+        printf -v hex '%02X' "'$c"
+        __sf_encoded+="%$hex"
+        ;;
+    esac
+  done
+}
+
+# ---------------------------------------------------------------------------
 # Post-command hook.
 #
 # Capturing $? on the very first line is not stylistic. Any command before it,
@@ -65,7 +104,8 @@ __sf_after() {
 
   # Semantic markers for the host parser.
   printf '\e]133;D;%s\a' "$ec"
-  printf '\e]7;file://quest%s\a' "$PWD"
+  __sf_urlencode "$PWD"
+  printf '\e]7;file://quest%s\a' "$__sf_encoded"
 
   # Durable journal, readable from inside the sandbox by check scripts and
   # surviving a crash of the host process.

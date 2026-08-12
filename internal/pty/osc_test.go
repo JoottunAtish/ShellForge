@@ -73,16 +73,6 @@ func hostileCases() []struct {
 		{"cwd bad percent", "\x1b]7;file://quest/home/%zz\x07"},
 		{"cwd truncated percent", "\x1b]7;file://quest/home/%2\x07"},
 		{"cwd no path separator", "\x1b]7;file://quest\x07"},
-		// The next two rows pin a KNOWN MISMATCH, not a desired end state.
-		// instrument.bash emits $PWD raw, unencoded, but the OSC 7 payload
-		// is a file:// URI and this parser correctly percent-decodes it per
-		// url.PathUnescape. A bare '%' that is not part of a valid escape
-		// fails to unescape, so the marker goes unrecognized today and is
-		// forwarded rather than reported. Issue #25 tracks fixing the
-		// producer to percent-encode the path; once it does, these rows
-		// stop being reachable and should be removed rather than updated.
-		{"cwd unencoded bare percent at end", "\x1b]7;file://quest/home/learner/100%\x07"},
-		{"cwd unencoded percent mid path", "\x1b]7;file://quest/home/learner/50%off\x07"},
 		// Both rows below reach recognize's OSC 7 branch and decode fine as
 		// far as url.PathUnescape is concerned, but the decoded path
 		// contains a C0 control byte, so it is rejected outright: no Event,
@@ -100,6 +90,32 @@ func hostileCases() []struct {
 		{"nul and high bytes", "\x00\xff\xfe\x80"},
 		{"empty osc payload", "\x1b]\x07"},
 		{"osc introducer then st only", "\x1b]\x1b\\"},
+	}
+}
+
+// TestEventKindString is AC5: every EventKind constant formats to its
+// lowercase name, and a value outside the five declared constants falls
+// back to the eventkind(N) form rather than panicking or printing a bare
+// integer.
+func TestEventKindString(t *testing.T) {
+	cases := []struct {
+		name string
+		k    EventKind
+		want string
+	}{
+		{"prompt start", PromptStart, "promptstart"},
+		{"command start", CommandStart, "commandstart"},
+		{"preexec", PreExec, "preexec"},
+		{"command done", CommandDone, "commanddone"},
+		{"cwd report", CwdReport, "cwdreport"},
+		{"unknown value", EventKind(99), "eventkind(99)"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := c.k.String(); got != c.want {
+				t.Errorf("String(): want %q, got %q", c.want, got)
+			}
+		})
 	}
 }
 
