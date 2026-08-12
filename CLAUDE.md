@@ -90,6 +90,8 @@ Do not load everything. Match the work.
 | **`github-workflow`** | Branch, issue, label, PR, review comment, commit |
 | **`review-code`** | Auditing a diff for bugs and safety flaws |
 | **`review-pr`** | Reviewing a pull request on GitHub |
+| **`auto-implement`** | Starting an unattended autonomous run, opus-first profile |
+| **`auto-implement-saver`** | The same run under a token budget: sonnet first, opus on trigger |
 
 ---
 
@@ -132,6 +134,8 @@ docs/                               user docs; docs/design/ holds the design rec
 scripts/                            check-punctuation.sh, check-allowlist-regexp.sh,
                                      check-links.sh, sync-labels.sh
 .claude/skills/                     the detailed rules, loaded on demand
+.claude/routine/                    unattended run prompts: AUTO_IMPLEMENT.md and
+                                     AUTO_IMPLEMENT_SAVER.md
 .github/workflows/                  ci.yml
 ```
 
