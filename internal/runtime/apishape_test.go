@@ -26,7 +26,6 @@ import (
 	"go/types"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 )
@@ -441,64 +440,19 @@ func TestEveryExportedIdentifierIsDocumented(t *testing.T) {
 	}
 }
 
-// allowlistPattern is the identifier allowlist regexp the security skill
-// requires on every field that reaches a docker or wsl.exe argv. It forces
-// the first character to be alphanumeric, so a validated value can never
-// begin with a hyphen and be mistaken for a flag such as -f or --force.
-// That is argument injection, a different failure from shell injection, and
-// passing an argv vector instead of a command string does not close it.
-//
-// The looser single-class form this replaced, the one that allowed a hyphen
-// in any position including the first, is deliberately not written out here.
-// scripts/check-allowlist-regexp.sh fails the build if it appears anywhere in
-// the tree, and a copy sitting inside a comment that explains why it is wrong
-// would be indistinguishable from a copy somebody is about to trust. Issue
-// #19 removed the last of them and .claude/skills/security/SKILL.md now
-// quotes the same regexp this constant pins.
-const allowlistPattern = `^[a-zA-Z0-9][a-zA-Z0-9_-]*$`
-
-// TestAllowlistPatternRefusesFlagShapedValues turns the reason for the
-// leading-character restriction into an executable assertion, so a future
-// loosening of allowlistPattern goes red here rather than only in prose.
-func TestAllowlistPatternRefusesFlagShapedValues(t *testing.T) {
-	re, err := regexp.Compile(allowlistPattern)
-	if err != nil {
-		t.Fatalf("compile allowlistPattern %q: %v", allowlistPattern, err)
-	}
-
-	tests := []struct {
-		name  string
-		value string
-		want  bool
-	}{
-		{"plain name", "shellforge", true},
-		{"sandbox user", "learner", true},
-		{"single letter", "a", true},
-		{"leading digit", "0abc", true},
-		{"underscore and hyphen inside", "img_v2-1", true},
-		{"pack id", "core-linux-basics", true},
-		{"empty", "", false},
-		{"short flag", "-f", false},
-		{"long flag", "--force", false},
-		{"bare hyphen", "-", false},
-		{"leading underscore", "_tmp", false},
-		{"embedded space", "a b", false},
-		{"shell metacharacter", "a;b", false},
-		{"path separator", "a/b", false},
-		{"parent traversal", "..", false},
-		{"trailing newline", "ok\n", false},
-		{"embedded newline", "a\nb", false},
-		{"non ascii", "caf\u00e9", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := re.MatchString(tt.value); got != tt.want {
-				t.Errorf("allowlistPattern.MatchString(%q) = %v, want %v", tt.value, got, tt.want)
-			}
-		})
-	}
-}
+// allowlistFuncName is the name of the exported helper every doc comment
+// below is expected to name instead of restating the identifier allowlist
+// regexp inline. internal/platform/identifier.go holds the single source of
+// truth for the pattern itself (IdentifierPattern) and the exact-value
+// assertion that guards it (TestExactPattern in
+// internal/platform/identifier_test.go, which also carries the refusal
+// table this file used to duplicate). ValidIdentifier lives in
+// internal/platform rather than this package because internal/runtime
+// declares interfaces and value types only; see doc.go and
+// TestExecTakesArgvNotACommandString below. A doc comment that names the
+// function rather than the pattern cannot drift out of sync with a future
+// tightening or loosening of that pattern.
+const allowlistFuncName = "ValidIdentifier"
 
 // TestDestructiveFieldsCarryTheirWarning is the machine-checkable form of the
 // ticket's safety review. ImageSpec.Name, every User field, and
@@ -520,8 +474,8 @@ func TestDestructiveFieldsCarryTheirWarning(t *testing.T) {
 	_, files := parsePackage(t)
 
 	requiredSubstrings := map[string][]string{
-		"Name": {allowlistPattern, "reject", "sanitiz", "destroy", "compile-time constant"},
-		"User": {allowlistPattern},
+		"Name": {allowlistFuncName, "reject", "sanitiz", "destroy", "compile-time constant"},
+		"User": {allowlistFuncName},
 		"Path": {"level setup root", "/home/learner/", "resolve", "symlink", "refus"},
 	}
 

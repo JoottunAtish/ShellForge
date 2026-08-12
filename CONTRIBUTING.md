@@ -18,9 +18,9 @@ These are short because they are the ones that actually get violated.
 2. **No em dashes or en dashes** anywhere in the repository. Use a plain ASCII
    hyphen, a colon, or a comma. CI fails the build on typographic punctuation. Run
    `./scripts/check-punctuation.sh` locally.
-3. **Ask before adding a dependency.** The approved set is listed in CLAUDE.md.
-   Every dependency is a cross-compilation risk and this project ships a single
-   static binary.
+3. **Ask before adding a dependency.** The approved set is listed in
+   `.claude/skills/go-style/SKILL.md`. Every dependency is a cross-compilation
+   risk and this project ships a single static binary.
 4. **Checks never mutate state.** A verification check that writes to the sandbox is
    a bug. CI hashes the filesystem before and after a double check run.
 5. **Every user-facing error names what failed, why, and the next command to run.**

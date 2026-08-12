@@ -18,6 +18,7 @@ import (
 
 	"github.com/creack/pty"
 
+	"github.com/JoottunAtish/ShellForge/internal/platform"
 	"github.com/JoottunAtish/ShellForge/internal/runtime"
 )
 
@@ -63,8 +64,8 @@ func (s *dockerSession) effectiveUser(override string) (string, error) {
 	if user == "" {
 		user = s.spec.User
 	}
-	if user != "" && !identifierPattern.MatchString(user) {
-		return "", fmt.Errorf("docker: user %q does not match %s", user, identifierPattern.String())
+	if user != "" && !platform.ValidIdentifier(user) {
+		return "", fmt.Errorf("docker: user %q does not match %s", user, platform.IdentifierPattern)
 	}
 	return user, nil
 }
