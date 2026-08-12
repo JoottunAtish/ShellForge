@@ -101,8 +101,27 @@ func sortedEnvArgs(env map[string]string) []string {
 // docker's own options before the container name and the command, per the
 // security skill: that is what keeps a command whose first character
 // happens to be "-" from being read as another docker flag.
-func (s *dockerSession) execArgv(user, workdir string, env map[string]string, command []string) []string {
+//
+// withStdin adds "-i", and it is required for ExecOpts.Stdin to work at all.
+// Setting cmd.Stdin on the local docker process is not enough: without -i,
+// `docker exec` does not connect the container process's standard input to
+// anything, so the bytes are read by nobody and the process sees an immediate
+// EOF. Measured against a live container, not inferred: `echo x | docker exec
+// c tee /tmp/probe` leaves /tmp/probe empty, and the same command with -i
+// writes "x". That silently discarded every ExecOpts.Stdin this backend was
+// ever given, and the contract suite had no assertion covering the field, so
+// nothing caught it until the demo level's control channel replied with zero
+// bytes and `check` printed nothing at all.
+//
+// It is added ONLY when there is stdin to send. Passing -i unconditionally
+// would attach this process's own standard input to every Exec, and during a
+// level that standard input is the learner's terminal in raw mode: a check
+// running in the background could then consume the learner's keystrokes.
+func (s *dockerSession) execArgv(user, workdir string, env map[string]string, command []string, withStdin bool) []string {
 	argv := []string{"docker", "exec"}
+	if withStdin {
+		argv = append(argv, "-i")
+	}
 	if user != "" {
 		argv = append(argv, "-u", user)
 	}
@@ -130,7 +149,7 @@ func (s *dockerSession) Exec(ctx context.Context, argv []string, opts runtime.Ex
 		return runtime.ExecResult{}, err
 	}
 
-	full := s.execArgv(user, workdir, opts.Env, wrapWithPIDMarker(argv))
+	full := s.execArgv(user, workdir, opts.Env, wrapWithPIDMarker(argv), len(opts.Stdin) > 0)
 
 	execCtx := ctx
 	if opts.Timeout > 0 {

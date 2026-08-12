@@ -83,8 +83,10 @@ func TestRunContractDispatchesEveryAssertion(t *testing.T) {
 	if !ok {
 		t.Fatal("RunContract reported failure with an all-skip Factory")
 	}
-	if got := atomic.LoadInt32(&calls); got != 12 {
-		t.Fatalf("Factory calls: want 12, got %d", got)
+	// Thirteen since ExecWritesStdin was added, which closed a gap that had
+	// let the docker backend discard ExecOpts.Stdin entirely.
+	if got := atomic.LoadInt32(&calls); got != 13 {
+		t.Fatalf("Factory calls: want 13, got %d", got)
 	}
 }
 

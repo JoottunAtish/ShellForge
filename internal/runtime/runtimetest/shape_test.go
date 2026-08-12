@@ -137,11 +137,11 @@ func sourceAssertionNames(t *testing.T) []string {
 // TestContractTableIsComplete proves that the unexported dispatch table in
 // contract.go lists every exported assertion function exactly once, with no
 // omission and no duplicate. This is the regression this guard exists for:
-// somebody adds a thirteenth assertion and forgets to register it, or
+// somebody adds a fourteenth assertion and forgets to register it, or
 // registers one twice under two names.
 func TestContractTableIsComplete(t *testing.T) {
-	if len(contract) != 12 {
-		t.Fatalf("dispatch table length: want 12, got %d", len(contract))
+	if len(contract) != 13 {
+		t.Fatalf("dispatch table length: want 13, got %d", len(contract))
 	}
 
 	seen := make(map[string]bool, len(contract))

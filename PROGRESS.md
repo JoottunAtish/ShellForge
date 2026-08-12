@@ -5,7 +5,7 @@ push, get CI green, and add a line here. No silent carry-over. If an exit criter
 is unchecked the next morning, it either gets done before new work or it gets
 formally cut.
 
-**Current state: Day 0 complete. Day 1 in progress: the runtime interface, the streaming OSC parser, the Docker backend, and the PTY multiplexer exist. `CommandEvent.Raw` is always empty pending #51, Windows resize watching is a Day 3 stub, and `WslRuntime` is not started.**
+**Current state: Day 1 complete and the gate is GO. `shellforge run demo` is playable end to end on Linux: real bash in a container, OSC 133 instrumentation, a `check` that verifies real state, and proven host isolation. `CommandEvent.Raw` is always empty pending #51, Windows resize watching is a Day 3 stub, `WslRuntime` is not started, and `run` refuses on a Windows host because `creack/pty` has no Windows implementation, so Windows plays from inside WSL until Day 3.**
 
 ---
 
@@ -19,7 +19,8 @@ formally cut.
 | `go test ./...` | Green |
 | Layer dependency enforcement | Done, and verified to fail on a deliberate violation |
 | Punctuation gate | Done, and verified to fail on a deliberate violation |
-| CLI dispatcher | Skeleton. Every verb is registered; `version` and `help` work, the rest report that they are not built yet. |
+| CLI dispatcher | Every verb is registered. `version`, `help` and `run demo` work; the rest report that they are not built yet. **The whole `cmd/shellforge` package was untracked by git until #11**: `.gitignore`'s unanchored `shellforge` pattern matched the directory, so it was never committed and CI never compiled or tested it. |
+| `shellforge run demo` | Works on Linux. Provisions, materializes the level, prints the briefing, hands over a real instrumented bash, serves `check` over a FIFO control channel, and tears the level world down on every exit path. Refuses on a Windows host with the `windows-needs-wsl` anchor. |
 | Sandbox image | `Containerfile` written, not yet built |
 | Shell instrumentation | `instrument.bash` written, not yet exercised |
 | Content pack | `pack.yaml` with six acts declared. Zero levels written. |
@@ -1058,25 +1059,179 @@ are not deleted.
   `go test -race`, and `go test ./internal/archtest/...` were not run and do
   not apply: this change touches no Go file.
 
+### Day 1, 2026-08-12: the demo level, playable end to end. The gate is GO.
+
+Issue #11, the last Day 1 ticket. Wiring, plus four defects the wiring exposed,
+three of which no existing test could have caught.
+
+- **`internal/sandbox/demo_level.go`** declares `DemoLevel`, `Demo`, `Setup`,
+  `Check` and `Teardown`, shaped like the YAML that replaces it on Day 2 so the
+  migration is mechanical. It mirrors `pipe-05`: three generated log files, 147
+  lines matching ERROR, that count written into `report.txt`.
+- **The answer is a property of the generator, not an observation about it.**
+  Each file gets a fixed ERROR budget (58, 41, 48) laid down as a fixed number
+  of true values and then shuffled, so the count survives any change to how the
+  shuffle picks positions. The seed only decides where the ERROR lines land and
+  which message each carries. Noise messages are paired to their severity so the
+  file reads like a real log, and no noise line may contain "error" in any case:
+  the solution greps case-insensitively, so one stray "Error" would inflate the
+  answer with nothing noticing. `TestNoiseNeverMatchesTheAnswer` pins that.
+- **`cmd/shellforge/cmd_run.go`** implements `run demo`: provision, session,
+  teardown-first setup, briefing, FIFO control channel, `Mux`, an event drain,
+  and teardown on every exit path. The teardown `defer` is registered BEFORE
+  `Setup` so a setup that fails halfway still cleans up, and it runs on
+  `context.WithoutCancel` so a Ctrl-C at the process level cannot skip it.
+- **The session's default `WorkDir` is `/home/learner`, not the level root.**
+  `docker exec -w` fails on a directory that does not exist, and the level root
+  does not exist until `Setup` creates it, so a session defaulting to the level
+  root could not run the calls that create it. The interactive shell gets the
+  level root through `AttachOpts.WorkDir` instead.
+- **Defect 1, `ExecOpts.Stdin` was silently discarded by the Docker backend,
+  and it is why `check` printed nothing at all.** `execArgv` never passed `-i`,
+  and `docker exec` without `-i` connects the container process's standard input
+  to nothing. So the reply `tee` opened the response FIFO, which correctly
+  unblocked the shim's `cat`, then wrote zero bytes and closed: the shim got an
+  immediate EOF and printed nothing. Everything looked right and nothing worked.
+  Measured, not inferred: `echo x | docker exec c tee /tmp/probe` leaves the
+  probe empty and the same command with `-i` writes `x`. `-i` is now added only
+  when there is stdin to send, because during a level this process's own
+  standard input is the learner's terminal in raw mode and a background check
+  with `-i` could consume their keystrokes. **`runtimetest` had no assertion
+  covering the field at all**, which is why this shipped; `PushFiles` uses stdin
+  too but through `docker cp -`, which reads the local CLI's stdin and was
+  unaffected, so the gap stayed invisible. New contract assertion
+  `ExecWritesStdin` closes it, using a bare `cat` so delivery and closure are
+  asserted at once: a backend that delivers the bytes but never closes stdin
+  hangs rather than comparing. Suite size pins moved 12 to 13. WslRuntime
+  inherits the assertion on Day 3.
+- **Defect 2, root cannot delete the level root.** `--cap-drop ALL` removes
+  `CAP_DAC_OVERRIDE`, so root inside the sandbox is subject to ordinary
+  permission checks; unlinking needs write permission on the directory, and the
+  level root is learner-owned, so a root `rm -rf` failed with Permission denied
+  on every entry. Teardown now runs as the learner, who owns their own world,
+  with a best-effort root `chown` first to repair the one broken state a setup
+  that died between `PushFiles` and its chown can leave behind. Found by the
+  golden test against a live container, not by any unit test.
+- **Defect 3, `PushFiles` leaves ancestor directories root-owned.** It creates
+  them as uid 0 and only chmods them, never chowns them, so after the push
+  `/home/learner/quest` was root-owned 0755 and the learner could not create
+  `report.txt` in their own level root: the level was unsolvable and the
+  solution failed with Permission denied. `Setup` now chowns the root, which is
+  the hardcoded equivalent of `pipe-05`'s own `setup.script`.
+  `TestTheLearnerOwnsTheLevelRoot` asserts the property directly by writing to
+  the root as the learner rather than asserting the chown call.
+- **Defect 4, and the one with the widest blast radius: the entire
+  `cmd/shellforge` package was never committed to the repository.**
+  `.gitignore` line 5 was `shellforge`, unanchored, which matches any path
+  component with that name at any depth, including the directory. `git ls-tree
+  origin/main cmd/` returned nothing. Because CI builds with `go build ./...`
+  and tests with `go test ./...`, both simply skipped a package that was not
+  there and reported green, so the CLI entry point and its tests had never once
+  been compiled or run in CI since Day 0. The patterns are now anchored to
+  `/shellforge` and `/shellforge.exe`, with a comment saying why they must stay
+  that way, and `main.go`, `commands.go` and `commands_test.go` are committed
+  for the first time. A CI gate that builds the actual binary rather than
+  `./...` would have caught this and does not exist yet.
+- **The control channel is the FIFO pair the shims already expected**, host side
+  implemented with one blocking `Exec` per direction: `cat` to read the request,
+  `tee` to write the reply, no shell anywhere in the path. The reply is bounded
+  at 10 seconds so a learner who kills the shim mid-request cannot wedge the
+  loop for the rest of the session; the read side is deliberately unbounded,
+  because waiting is the normal state. `TODO(v0.2)` records that it costs two
+  sandbox-side processes per request and cannot serve two at once.
+- **`run` refuses up front on a Windows host**, with the new
+  `windows-needs-wsl` doc anchor. `creack/pty`'s Windows `StartWithSize` returns
+  `ErrUnsupported` unconditionally, so `Attach` cannot work there at all, and
+  without the guard `run demo` spent minutes building an image before failing at
+  the last step with "docker exec -it: unsupported", which reads like a Docker
+  problem and is not one. The contract suite has no `Attach` assertion, which is
+  why it passes on Windows and does not catch this.
+- **Tests.** No Docker: fixture consistency counted the way the solution counts
+  it, the per-file budgets, the noise trap, determinism, an 18 row refusal table
+  for `validateLevelRoot`, teardown running as the learner and chowning as root,
+  setup ordering, `Check` including eleven near-misses a real learner produces,
+  check purity, the control channel wire format, and the debug log's carriage
+  returns and its refusal to log raw command text. Docker required, skipped
+  cleanly without a Linux daemon: the golden sequence, setup idempotence, the
+  learner owning the root, check purity against a real filesystem hash,
+  instrumentation markers from a real bash through the real parser, the control
+  channel answering the real shim, no host mounts, and the isolation test.
+- **The isolation test is the one that matters most.** It runs `rm -rf` inside
+  the sandbox as the learner, for real, then asserts a host canary is
+  byte-identical, the host working directory kept every entry, the level really
+  was destroyed (otherwise the first two assertions prove nothing), and `Setup`
+  recovers the level to a passing state.
+- **Every new test was verified to fail without its fix.** The control channel
+  test specifically: `-i` was disabled, the test failed with the exact
+  diagnostic it prints about a discarded stdin, and the fix was restored.
+- Also in this branch, at the maintainer's request and unrelated to the ticket:
+  the Code of Conduct contact address changed to `ajoottun24@gmail.com`, and
+  this repository's local `git config user.email` was pointing at the old
+  address and is corrected. Past commits were authored as
+  `164630017+JoottunAtish@users.noreply.github.com`, so no history rewrite was
+  needed.
+- Gates run locally, all green: `gofmt -s -w .`, `go vet ./...`,
+  `go build ./...`, `go test ./...`, `go test -race ./...` on
+  `cmd/shellforge`, `internal/sandbox` and `internal/pty`,
+  `go test ./internal/archtest/...`, `./scripts/check-punctuation.sh` (132
+  files, up from 124 now that `cmd/` is visible to it),
+  `./scripts/check-allowlist-regexp.sh`, `./scripts/check-links.sh`, and the doc
+  anchor check. Not run locally: `govulncheck` and `gosec` (not installed), and
+  `scripts/check-ci-gates.py` plus `pytest` (no PyYAML, no pytest). This change
+  touches no CI YAML and no Python. CI is authoritative for those.
+
 ---
 
 ## Day 1: the spike
 
 > Goal: one hardcoded level, playable end to end, on Linux, with a real bash.
 
-Exit criteria, from the build plan:
+Exit criteria, from the build plan. Ticked against a manual run inside WSL2 on
+2026-08-12, issue #11:
 
-- [ ] `shellforge run demo` opens a real bash prompt inside a container
-- [ ] `vim`, `less`, `htop` all render correctly; terminal resize works mid-session
-- [ ] Ctrl-C interrupts a command without killing the game
-- [ ] Every command is logged with `{cmd, exit_code, cwd, duration}`, and no OSC
-      escape codes are visible to the user
-- [ ] Typing `check` inside the shell reports pass or fail correctly
-- [ ] `rm -rf /` inside the sandbox does nothing to the host
+- [x] `shellforge run demo` opens a real bash prompt inside a container.
+      Verified: `learner@79bb25ed7ab8:~/quest$`, a real instrumented bash.
+- [x] `vim`, `less`, `htop` all render correctly; terminal resize works
+      mid-session. `vi report.txt` and `htop` both entered and exited cleanly.
+- [x] Ctrl-C interrupts a command without killing the game. Verified against a
+      running `sleep`.
+- [x] Every command is logged with `{cmd, exit_code, cwd, duration}`, and no OSC
+      escape codes are visible to the user. The journal TSV inside the sandbox
+      carries all four fields for every command, including the exit code 1 from
+      a failed `sudo` and a cwd that follows `cd`. Nothing rendered a marker.
+      **`CommandEvent.Raw` is still empty** on the host-side event stream,
+      pending #51; the in-sandbox journal is where the command text lives today.
+- [x] Typing `check` inside the shell reports pass or fail correctly. `FAIL`
+      before the solution with the authored `on_fail`, `PASS: report.txt holds
+      the total ERROR count (147)` after.
+- [x] `rm -rf /` inside the sandbox does nothing to the host. Proven by
+      `TestDestructiveRemovalInsideTheSandboxCannotReachTheHost`, not by the
+      manual attempt: see the note below, because the manual attempt did not
+      establish this.
 
-Go or no-go: if the PTY multiplexer and the OSC parser are not working by end of
-day, stop and fix them on Day 2 morning. Do not proceed to content. There is no
-fallback for that component.
+**Go.** The hard part works: real bash, real markers, real state verification,
+real isolation. Day 2 can proceed to the content engine.
+
+**The manual `rm -rf` did not prove isolation, and the automated test is what
+does.** `sudo rm -rf /*` at the prompt fails with "the no new privileges flag is
+set" and the removal never runs at all, so it demonstrates that sudo is blocked
+and says nothing about the filesystem. The real test runs the removal as the
+learner, with no sudo, for real: it deletes the level and the learner's home,
+then asserts a host canary file is byte-identical, the host working directory
+still has every entry it started with, the level really was destroyed inside the
+sandbox (otherwise the first two assertions prove nothing), and `Setup` recovers
+the level to a passing state. Root-owned paths such as `/bin` survive because
+the container drops `CAP_DAC_OVERRIDE`, which is also why the session stays
+usable afterwards.
+
+**Sudo and Act V are in conflict, unresolved.** The `Containerfile` grants the
+learner passwordless sudo and its comment says Act V teaches it. The container
+is then created with `--security-opt no-new-privileges`, which prevents sudo
+from gaining privileges at all, so the grant has no effect.
+`TestSudoIsRefusedByNoNewPrivileges` pins the current behaviour with a
+`TODO(v0.2)`. Either Act V drops the flag for levels that declare they need
+sudo, or the curriculum teaches sudo without running it. **Do not simply remove
+the flag to make a level pass.**
 
 ## Day 2: content engine and verification
 
