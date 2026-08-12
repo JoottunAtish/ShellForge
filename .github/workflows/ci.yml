@@ -126,6 +126,13 @@ jobs:
         # so a future relaxation of it fails here rather than going unnoticed.
         run: python3 -m pytest scripts/tests -q
 
+      - name: CLI entry point package is present, tracked, and buildable
+        # Issue #11: cmd/shellforge was never committed, and go build ./...
+        # and go test ./... both silently skip a package that is not there.
+        # scripts/tests/test_check_cli_package.py already runs above, as
+        # part of the pytest step; this step exercises the gate for real.
+        run: ./scripts/check-cli-package.sh
+
       - name: Sandbox shims are executable
         run: |
           set -euo pipefail
@@ -216,6 +223,39 @@ jobs:
       - name: Test with race detector
         # The PTY multiplexer is concurrent by nature, so this is not optional.
         run: go test -race ./...
+
+      - name: make build produces a runnable binary (Linux)
+        # go build ./... above proves the packages compile, but nothing yet
+        # proves the documented build command works: the Makefile's own
+        # -ldflags version stamping, and -o bin/shellforge, actually produce
+        # a binary a learner could run. Exercises the real command from the
+        # README rather than a paraphrase of it.
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          make build
+          test -x bin/shellforge
+          ./bin/shellforge version
+
+      - name: make.ps1 build produces a runnable binary (Windows)
+        # Windows has no make by default, so make.ps1 is the documented build
+        # command there. This proves the PowerShell path independently of the
+        # Makefile: same -ldflags version stamping, same -o bin\shellforge.exe.
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          .\make.ps1 build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path 'bin\shellforge.exe')) {
+            Write-Host "FAIL: bin\shellforge.exe was not produced" -ForegroundColor Red
+            exit 1
+          }
+          & .\bin\shellforge.exe version
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "FAIL: bin\shellforge.exe version exited $LASTEXITCODE" -ForegroundColor Red
+            exit $LASTEXITCODE
+          }
 
       - name: Fuzz the OSC parser
         # The parser consumes an adversarial byte stream by construction: the

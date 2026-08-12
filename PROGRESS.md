@@ -34,6 +34,7 @@ formally cut.
 | Merge gate check | Done. `scripts/check-ci-gates.py` asserts no CI job can fail without blocking a merge |
 | Action pinning gate | Done, and verified to fail on a deliberate tag pin. Covered by `scripts/tests/test_check_ci_gates.py` |
 | Allowlist regexp gate | Done. After the #42 harvest it catches the anchored single-class form with a leading, trailing, or backslash-escaped hyphen under the `+`, `*`, and `{n,m}` quantifiers, in either case order, and reads git and grep exit status directly so a scan that could not run fails loudly rather than reporting clean. Covered by `scripts/tests/test_check_allowlist_regexp.py`. It still matches spellings, not every string a regexp engine would treat as equivalent. |
+| CLI entry point gate | Done. `scripts/check-cli-package.sh` fails if `cmd/shellforge` is missing or empty, if a `.go` file under `cmd/` is untracked, if any `.go` file anywhere in the repository is matched by a gitignore rule, or if no file under `cmd/shellforge` declares `func main()`. Wired into `make lint`, `.\make.ps1 lint`, and the style job. The `test` job also runs `make build` on Linux and `.\make.ps1 build` on Windows and checks the resulting binary runs `version`. Covered by `scripts/tests/test_check_cli_package.py`, including the exact #11 reproduction: an unanchored `shellforge` gitignore line plus a file on disk. |
 | Label taxonomy | Defined in `.github/labels.yml`, applied by `./scripts/sync-labels.sh` |
 | Issue templates | Four forms, including a self-contained implementation ticket |
 | MCP servers | `.mcp.json` auto-connects jCodemunch and jDocmunch |
@@ -1355,6 +1356,77 @@ first three real dependencies beyond `creack/pty` and `golang.org/x/term`.
   several stub verbs including a subcommand (`sandbox build`,
   `author validate`), an unknown command, and `run` with no level, each
   producing the expected user-facing error or output.
+
+---
+
+### Day 1, 2026-08-12: fail the build if the CLI entry point vanishes again
+
+Issue #73. CI and scripts only, zero layer, no Go file touched.
+
+- **`scripts/check-cli-package.sh`** is a new style gate asserting four things,
+  each with its own message: `cmd/shellforge/` exists and holds at least one
+  `.go` file, every `.go` file under `cmd/` is tracked by git, no `.go` file
+  anywhere in the repository is matched by a gitignore rule, and the main
+  package declares `func main()`. A missing git, grep, or find, or a call made
+  outside a git repository, exits 2 rather than reporting clean, matching
+  `check-allowlist-regexp.sh`'s convention. Wired into `make lint`,
+  `.\make.ps1 lint`, and the style job, plus its own step there so a failure
+  reads as its own line in the checks list.
+- **`git check-ignore` needed `--no-index` to catch the actual #11 shape.**
+  Its default mode consults the index and never reports an already-tracked
+  path as ignored, mirroring `git status`. That default would hide the defect
+  the moment the file was first committed: a bad gitignore rule added later
+  would go unnoticed for every file that predates it. Found by hand, not by
+  the test suite: the pytest fixture for the ignored-file case happens to
+  leave the file untracked, so it passed either way, but the real repository
+  did not until this was fixed. See the verification below.
+- **The `test` job now runs `make build` on `ubuntu-latest` and
+  `.\make.ps1 build` on `windows-latest`**, then asserts the binary exists and
+  its `version` subcommand exits 0. Neither the documented build command nor
+  its `-ldflags` version stamping was exercised by CI before this: `go build
+  ./...` proves the packages compile, nothing proved `-o bin/shellforge`
+  actually produces a binary a learner could run.
+- **Verification performed for real, not merely described**: `.gitignore`'s
+  `/shellforge` line was changed to unanchored `shellforge` locally, and
+  `bash scripts/check-cli-package.sh` was run from the repository root. It
+  failed, naming all six tracked files under `cmd/shellforge` and the
+  `.gitignore:13:shellforge` rule that matched each one. `.gitignore` was then
+  restored with `git checkout -- .gitignore`; `git diff --stat .gitignore`
+  showed nothing, and the gate passed clean again immediately afterward. This
+  is also the reproduction that surfaced the `--no-index` gap above: the first
+  version of the script reported clean against the reverted `.gitignore`
+  because the files were already tracked, which is precisely the false green
+  this ticket exists to close.
+- `scripts/tests/test_check_cli_package.py` covers a clean repository, the
+  #11 reproduction (untracked file under `cmd/`, and separately an ignored
+  file naming both the file and the rule), the anchored pattern passing, a
+  missing package directory, an empty package directory, a missing
+  `func main`, running outside a git repository, and a whole-repository
+  assertion against the real checkout with no fixture, which is what makes
+  `make lint` meaningful. Structured like
+  `scripts/tests/test_check_allowlist_regexp.py`: a throwaway git repository
+  per case under `tmp_path`, the real script copied in, `git init` plus
+  `git add`, run as a subprocess.
+- `docs/05-troubleshooting.md` is untouched. No new `DocAnchor` is emitted by
+  this change; the gate's failures print their own remediation directly to
+  stderr, the same convention `check-allowlist-regexp.sh` already uses.
+- Gates run locally, all green: `bash scripts/check-cli-package.sh`,
+  `python3 -m pytest scripts/tests -q` (55 passed, including the 9 new cases),
+  `gofmt -s -l .` (no output, no `.go` file was touched by this ticket),
+  `go vet ./...`, `go test ./...`, `./scripts/check-punctuation.sh`,
+  `go test ./internal/archtest/...`, `./scripts/check-allowlist-regexp.sh`,
+  `./scripts/check-links.sh`, and `python3 scripts/check-ci-gates.py` (needed
+  `pip install pyyaml pytest` first in this environment; confirms `ci.yml`
+  stays well-formed and every `uses:` stays pinned, unaffected since no new
+  `uses:` line was added). `make build` **does** work in this environment,
+  Go is installed here unlike some earlier sessions, so it was run for real:
+  `go build -trimpath -ldflags "..." -o bin/shellforge ./cmd/shellforge`
+  succeeded, and `./bin/shellforge version` printed the version, commit,
+  build date, Go version, and platform, exiting 0. `govulncheck` and `gosec`
+  are not installed in this environment and were not run locally; neither
+  applies here anyway, since no Go code changed. The Windows leg
+  (`.\make.ps1 build` on `windows-latest`) is asserted by the new CI step and
+  was not run locally: this environment has no Windows host.
 
 ---
 
