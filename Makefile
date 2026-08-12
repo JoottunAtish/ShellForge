@@ -23,7 +23,7 @@ CONTAINER_ENGINE := $(shell command -v docker 2>/dev/null || command -v podman 2
 
 .DEFAULT_GOAL := help
 .PHONY: help build install test race fuzz cover lint fmt vet punct allowlist links arch \
-        labels sec vuln gosec image rootfs run golden validate clean tools ci
+        cli labels sec vuln gosec image rootfs run golden validate clean tools ci
 
 ## help: Show this help.
 help:
@@ -84,6 +84,10 @@ links:
 arch:
 	go test ./internal/archtest/...
 
+## cli: Assert the CLI entry point package is present, tracked, and buildable.
+cli:
+	@bash scripts/check-cli-package.sh
+
 ## gates: Assert no CI job can fail without blocking a merge.
 gates:
 	@python3 scripts/check-ci-gates.py 2>/dev/null || python scripts/check-ci-gates.py
@@ -93,7 +97,7 @@ labels:
 	@bash scripts/sync-labels.sh
 
 ## lint: gofmt check, go vet, punctuation gate, allowlist gate, link check, layer test.
-lint: vet punct allowlist links arch
+lint: vet punct allowlist links arch cli
 	@unformatted="$$(gofmt -s -l . )"; \
 	if [ -n "$$unformatted" ]; then \
 		echo "FAIL: these files are not gofmt -s clean:"; \

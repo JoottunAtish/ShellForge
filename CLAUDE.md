@@ -132,7 +132,7 @@ packs/core-linux-basics/            pack.yaml, levels/, assets/
 images/                             Containerfile, wsl.conf, rc/, bin/
 docs/                               user docs; docs/design/ holds the design record
 scripts/                            check-punctuation.sh, check-allowlist-regexp.sh,
-                                     check-links.sh, sync-labels.sh
+                                     check-links.sh, check-cli-package.sh, sync-labels.sh
 .claude/skills/                     the detailed rules, loaded on demand
 .claude/routine/                    unattended run prompts: AUTO_IMPLEMENT.md and
                                      AUTO_IMPLEMENT_SAVER.md
