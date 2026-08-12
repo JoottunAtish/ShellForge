@@ -77,6 +77,7 @@ PS0='\e]133;C\a'
 # url.PathUnescape on the decoding side reassembles those bytes into the same
 # UTF-8 character it started as.
 # ---------------------------------------------------------------------------
+# BEGIN __sf_urlencode
 __sf_urlencode() {
   local LC_ALL=C s="$1" i c hex
   __sf_encoded=
@@ -91,6 +92,7 @@ __sf_urlencode() {
     esac
   done
 }
+# END __sf_urlencode
 
 # ---------------------------------------------------------------------------
 # Post-command hook.

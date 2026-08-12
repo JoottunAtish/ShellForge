@@ -12,7 +12,7 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 src="$here/instrument.bash"
 
-eval "$(sed -n '/^__sf_urlencode()/,/^}/p' "$src")"
+eval "$(sed -n '/^# BEGIN __sf_urlencode$/,/^# END __sf_urlencode$/p' "$src")"
 
 fail=0
 

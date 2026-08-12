@@ -890,12 +890,17 @@ end-to-end verification are not done here.
   CI job as a new step, after the CRLF gate and before the merge gate check.
 - **`internal/pty/osc_test.go`**: the two `hostileCases()` rows that pinned
   the now-fixed producer mismatch (`cwd unencoded bare percent at end` and
-  `cwd unencoded percent mid path`) are removed, per that comment block's own
-  last sentence, which said to remove rather than update them once the
-  producer was fixed to percent-encode. No replacement rows were added:
-  `hostileCases()` already covers malformed-percent robustness generically
-  through `cwd bad percent` and `cwd truncated percent`, independent of any
-  specific producer.
+  `cwd unencoded percent mid path`) are removed. **Not because the payloads
+  become unreachable**: this file's own documented threat model says a
+  byte-identical forged marker, written by any process with access to the
+  PTY and not just `instrument.bash`, is indistinguishable from a genuine
+  one, so a bare-percent OSC 7 payload stays fully reachable regardless of
+  what `instrument.bash` emits. The real reason is that equivalent branch
+  coverage over `url.PathUnescape`'s failure modes already exists,
+  independent of any specific producer: the still-present `cwd bad percent`
+  row (invalid hex digit) and `cwd truncated percent` row (short string)
+  already exercise the identical two failure branches those rows exercised.
+  No replacement rows were added.
 - **AC5, done.** `TestEventKindString` is new: a table test covering all
   five `EventKind` constants (`promptstart`, `commandstart`, `preexec`,
   `commanddone`, `cwdreport`) plus a value outside all five, asserting the

@@ -37,6 +37,7 @@ func recognizedCases() []struct {
 		{"cwd home BEL", "\x1b]7;file://quest/home/learner\x07", Event{Kind: CwdReport, Cwd: "/home/learner"}},
 		{"cwd root ST", "\x1b]7;file://quest/\x1b\\", Event{Kind: CwdReport, Cwd: "/"}},
 		{"cwd percent space", "\x1b]7;file://quest/home/learner/my%20dir\x07", Event{Kind: CwdReport, Cwd: "/home/learner/my dir"}},
+		{"cwd percent literal", "\x1b]7;file://quest/home/learner/100%25\x07", Event{Kind: CwdReport, Cwd: "/home/learner/100%"}},
 		{"cwd percent slash", "\x1b]7;file://quest/home/a%2Fb\x07", Event{Kind: CwdReport, Cwd: "/home/a/b"}},
 		{"cwd empty host", "\x1b]7;file:///home/learner\x07", Event{Kind: CwdReport, Cwd: "/home/learner"}},
 		{"cwd other host", "\x1b]7;file://sandbox/srv\x07", Event{Kind: CwdReport, Cwd: "/srv"}},
