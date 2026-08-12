@@ -343,20 +343,19 @@ func recognize(payload []byte) (Event, bool) {
 		// is percent-encoded by definition, so the producer MUST
 		// percent-encode the path before writing it here. This decoding side
 		// is correct and does not change to accommodate a producer that gets
-		// it wrong. images/rc/instrument.bash:68 does not yet encode the
-		// path: it writes printf '\e]7;file://quest%s\a' "$PWD" with $PWD
-		// raw. Issue #25 tracks fixing the producer.
+		// it wrong. images/rc/instrument.bash now meets that contract:
+		// __sf_after calls __sf_urlencode on $PWD before writing it into the
+		// payload (issue #44, superseding #25). __sf_urlencode encodes every
+		// byte outside the RFC 3986 unreserved set as %XX before $PWD reaches
+		// this payload, except '/', which stays a raw path separator.
 		//
-		// The practical consequence today: a path containing a bare '%' that
-		// is not part of a valid escape, for example a directory literally
-		// named "50%off", fails url.PathUnescape below. The whole payload is
-		// then unrecognized, so it is forwarded to the terminal as an
-		// unrecognized OSC sequence rather than reported as a CwdReport
-		// event. This is not a decoding bug: it is the producer mismatch
-		// made visible. A raw-path fallback was proposed and rejected,
-		// because it would make a directory literally named "a%20b"
-		// permanently ambiguous with a directory named "a b" once the
-		// producer is fixed to encode correctly.
+		// A raw-path fallback was proposed and rejected while this mismatch
+		// stood, because it would make a directory literally named "a%20b"
+		// permanently ambiguous with a directory named "a b". That reasoning
+		// is exactly why the fix above works: with the producer encoding
+		// correctly, "a%20b" and "a b" encode to two different payloads and
+		// stay distinguishable. See images/rc/instrument_test.bash for the
+		// round-trip cases, including that one.
 		//
 		// url.PathUnescape, not url.QueryUnescape: QueryUnescape maps '+' to
 		// a space and would rename a directory literally called "a+b" to

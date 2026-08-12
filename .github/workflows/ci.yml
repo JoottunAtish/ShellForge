@@ -101,6 +101,9 @@ jobs:
           fi
           echo "OK: no CRLF in sandbox-bound files"
 
+      - name: Percent-encoder unit test (instrument.bash)
+        run: bash images/rc/instrument_test.bash
+
       - name: No CI job escapes the merge gate, no action pinned to a tag
         # Two invariants, one script.
         #
