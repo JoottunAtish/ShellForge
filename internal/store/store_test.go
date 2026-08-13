@@ -279,6 +279,62 @@ func TestOpenOnACorruptFileLeavesItUntouched(t *testing.T) {
 	}
 }
 
+// TestOpenOnACorruptFileLeaksNoDescriptor pins the fix for a leak that only
+// Windows CI could see. classifyOpenError used to discard the *os.File its
+// permission probe opened, so every failed Open that classified as corrupt
+// leaked a descriptor. Unix tolerates that (an unlinked file with an open
+// handle still goes away), so the whole suite passed on Linux while
+// windows-latest failed t.TempDir cleanup with "The process cannot access the
+// file because it is being used by another process".
+//
+// Counting /proc/self/fd is Linux specific and this test skips elsewhere,
+// which is the point: without it the guard lives only on a Windows runner,
+// and a leak nobody can reproduce locally is a leak that comes back. The
+// Windows behaviour is still covered, by the two corrupt-file tests above
+// failing their own cleanup.
+func TestOpenOnACorruptFileLeaksNoDescriptor(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("counting open descriptors through /proc/self/fd is Linux specific")
+	}
+
+	countFDs := func() int {
+		t.Helper()
+		entries, err := os.ReadDir("/proc/self/fd")
+		if err != nil {
+			t.Fatalf("read /proc/self/fd: %v", err)
+		}
+		return len(entries)
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "progress.db")
+	if err := os.WriteFile(dbPath, garbageBytes(), 0o600); err != nil {
+		t.Fatalf("write garbage file: %v", err)
+	}
+
+	// One failed Open first, so that any one-off allocation the driver makes
+	// on its own initialisation is not counted as this call's leak.
+	if _, err := Open(context.Background(), dbPath); err == nil {
+		t.Fatal("Open succeeded against a corrupt file")
+	}
+
+	before := countFDs()
+	const rounds = 20
+	for i := 0; i < rounds; i++ {
+		if _, err := Open(context.Background(), dbPath); err == nil {
+			t.Fatal("Open succeeded against a corrupt file")
+		}
+	}
+	after := countFDs()
+
+	// A leak of one descriptor per call would show as +20 here. Allow a small
+	// slack for unrelated runtime activity rather than demanding equality,
+	// which would make this flaky for no gain: the defect this guards against
+	// grows linearly with the loop and clears any slack immediately.
+	if after-before >= rounds/2 {
+		t.Errorf("open descriptors grew from %d to %d across %d failed Opens: classifyOpenError is leaking its probe handle", before, after, rounds)
+	}
+}
+
 func TestOpenClassifiesAnUnreadableFileAsUnwritable(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows does not enforce POSIX mode bits the same way")

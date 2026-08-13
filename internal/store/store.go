@@ -123,8 +123,29 @@ func (s *Store) DB() *sql.DB {
 // without string matching a driver error message. It opens path itself
 // with os.O_RDWR and no os.O_CREATE, so the classification attempt itself
 // creates or modifies nothing.
+//
+// The probe closes its handle immediately, and that close is load bearing
+// rather than tidiness. Discarding the *os.File leaked a descriptor on every
+// path that classified as corrupt, which Unix tolerates: an unlinked file
+// with an open handle still goes away. Windows does not, so t.TempDir's
+// cleanup could not remove progress.db and TestOpenOnACorruptFileFails and
+// TestOpenOnACorruptFileLeavesItUntouched both failed on windows-latest with
+// "The process cannot access the file because it is being used by another
+// process" while passing on Linux. The platform difference hid the leak; it
+// did not cause it.
+//
+// #nosec G304 -- path is the progress database path this package was handed,
+// derived from platform.DatabasePath rather than from learner input or pack
+// content, and it has already been opened by the sqlite driver by the time
+// this runs. The open carries no os.O_CREATE and no os.O_TRUNC, so it cannot
+// create or destroy anything; it exists only to read the errno that tells a
+// permission problem apart from a corrupt file.
 func classifyOpenError(path string, cause error) *ux.Error {
-	if _, err := os.OpenFile(path, os.O_RDWR, 0o600); err != nil && errors.Is(err, fs.ErrPermission) {
+	probe, err := os.OpenFile(path, os.O_RDWR, 0o600)
+	if err == nil {
+		_ = probe.Close() // nothing was read from it; the errno was the answer
+	}
+	if err != nil && errors.Is(err, fs.ErrPermission) {
 		return ux.Fail(
 			"open the file where Shellforge records your progress",
 			cause,
