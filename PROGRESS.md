@@ -1482,6 +1482,179 @@ Issue #73. CI and scripts only, zero layer, no Go file touched.
   (`.\make.ps1 build` on `windows-latest`) is asserted by the new CI step and
   was not run locally: this environment has no Windows host.
 
+### Day 2, 2026-08-13: the verification check registry
+
+Issue #49. First code in `internal/verify`: a check registry and all 14
+check types from the docs/LEVEL-FORMAT.md catalogue (the section's own "13
+types" heading undercounts by one against its own list, see below), each
+reading real sandbox state through `Session.Exec`. Not wired to a real
+sandbox or to `internal/journal`: this ticket is explicitly scoped to the
+snapshot readers and the checks, unit tested against fixtures and a fake
+`Session`, and stops short of the engine that assembles results, the
+composition nodes (`any_of`/`all_of`/`not`), and the `run` wiring that needs
+the real `SF_STATE` fix from a different ticket.
+
+- `check.go` declares `Status`, `Result`, `Env`, `Check`, `Spec`, `Factory`,
+  `JournalReader`, `Scope`, and `ScopeKind`, plus the shared param-decoding
+  helpers every `*_checks.go` file uses to turn a `Spec.Params` map into a
+  typed, validated check. `registry.go` is `Register`/`Lookup`/`Types`, a
+  mutex-guarded map; `Register` panics on a duplicate type name, which is a
+  programming error rather than a runtime condition.
+- `snapshot.go` implements `Snapshots.Env` and `Snapshots.Cwd`, both reading
+  through `Session.Exec` (`cat` against a file under `Snapshots.Dir`), never
+  a local filesystem call. `env -0` output is split on NUL only, and each
+  record on the first `=` only, so a value containing a literal newline or
+  `=` survives intact; both are pinned by fixtures in `snapshot_test.go`.
+- **`Cwd` has no dedicated snapshot file to read, and the ticket's own
+  interface names it as if it did.** `instrument.bash` writes exactly four
+  files (`env.snapshot`, `alias.snapshot`, `func.snapshot`,
+  `shopt.snapshot`), none of them a cwd file. `Cwd` calls `Env` internally
+  and reads `PWD` out of the result, since bash auto-exports it. Recorded as
+  a contract decision rather than silently worked around.
+- **Any `Snapshots` read failure, whether the file is genuinely absent or
+  `Session.Exec` itself errored, collapses to one sentinel,
+  `ErrSnapshotMissing`.** `env_var` and `cwd_is` translate it into a
+  `Status: error` `Result` with a message that says there is nothing to
+  check yet, never into `Status: fail`, so a learner who has not pressed
+  Enter at the sandbox prompt is not told they got the objective wrong.
+  `docs/05-troubleshooting.md` gained one heading, `missing-snapshot`
+  (placed immediately after `vm-platform-missing` per the ticket's explicit
+  instruction), and `snapshot.go` carries a bare `// DocAnchor:
+  "missing-snapshot"` comment next to the sentinel rather than routing
+  through `internal/platform/ux.Fail`: a check `Result` is shown through the
+  level UI, not rendered as a CLI-level `ux.Error`, and the CI anchor gate
+  greps `.go` source for the `DocAnchor: "..."` string literally, so a bare
+  comment satisfies it without forcing an unnatural `ux.Fail` call. Verified
+  locally against the exact grep and heading-match commands
+  `.github/workflows/ci.yml`'s Docs job runs.
+- All 14 check types are registered from `init()` in the `*_checks.go` file
+  that owns them: `fs_checks.go` (`file_exists`, `file_absent`,
+  `file_content`, `dir_exists`, `dir_tree`, `file_mode`, `file_owner`,
+  `symlink_target`), `shell_checks.go` (`env_var`, `cwd_is`),
+  `process_checks.go` (`process_running`), `journal_checks.go`
+  (`command_matched`, `command_not_matched`), `script_check.go` (`script`).
+  Filesystem checks share one `statPath` helper (`stat -c '%F|%a|%U|%G'`)
+  that distinguishes "does not exist" from "exists but the probe itself
+  failed" by matching stat's own "No such file or directory" text; every
+  other non-zero exit or Go error from `Exec` is `Status: error`, never a
+  guessed pass or fail. `file_absent` is the check this protects most
+  directly: a permission failure while probing must not read as "the
+  learner deleted it".
+- `file_content` implements all six match modes plus `ignore_case`;
+  `dir_tree` lists both sides with `find -printf '%P\n'` for the structural
+  set `names_only` checks, and additionally hashes every regular file with
+  `find -type f -exec sha256sum {} +` for `names_and_hashes`; `file_mode`
+  accepts an exact `mode` or an `any_of` list, both parsed as octal with
+  `strconv.ParseUint(v, 8, 32)`, which tolerates the leading zero a level
+  author writes without special-casing it.
+- `env_var` with no `value` param passes on presence alone, including a
+  variable exported to the empty string: the parsed snapshot map holds the
+  key either way, so presence is `_, ok := snapshot[name]`, not a
+  non-empty-string check.
+- `process_running` runs `ps -eo pid,args` and matches `pattern` against
+  every line after the header row, honouring `negate`. `command_matched` and
+  `command_not_matched` share one implementation reading
+  `Env.Journal.Commands(scope)`; `scope` is parsed from the single YAML
+  string the level format documents (`level`, `last`, `last_n:N`) into
+  `Scope{Kind, N}`, with an invalid string or a non-positive `last_n` value
+  rejected in the `Factory`.
+- `script` runs `["bash", "-c", body]` with `ExecOpts.User` set to `"learner"`
+  by default or the validated `as_user`, exit 0 as pass, and a failing
+  script's trimmed stdout appended to the authored `on_fail`. **`as_user` is
+  validated with `platform.ValidIdentifier` before it can reach
+  `ExecOpts.User`, rejecting rather than sanitizing**, per the security
+  skill's rule for anything reaching an argv. `ValidIdentifier` already
+  rejects the empty string, since the pattern requires a first character, so
+  no separate branch was needed to refuse an explicitly empty `as_user`
+  distinctly from `--privileged`, `-u root`, or `root learner`: all four are
+  the same rejection path, each pinned by its own individually named test.
+  An `as_user` key entirely absent from `Params` is the only path that
+  reaches the `"learner"` default without validation, and that distinction
+  (absent vs. explicitly empty) is called out in the test itself, not just
+  in this note.
+- `internal/verify/verifytest` holds a fake `runtime.Session`: `Exec`
+  answers from a FIFO queue of scripted `Step` functions, one per call, and
+  panics on the next call past the end of the queue rather than returning a
+  zero value, so an under-scripted test fails loudly instead of asserting
+  against garbage. `Attach`, `PushFiles`, `PullFile`, and `Close` all panic
+  unconditionally: no check in this package calls any of the four, and the
+  fake is built to prove that rather than quietly tolerate it.
+- **`internal/verify` never imports `internal/journal`, by design, not just
+  by the layer rule.** `internal/journal` is L2 and `internal/verify` is L3,
+  so importing it would be a legal downward edge that `internal/archtest`
+  would wave through; the package declares its own `JournalReader`
+  interface instead, satisfied by `internal/journal` from outside this
+  package. `check_test.go` adds a source-parsing test, mirroring
+  `internal/runtime/runtimetest`'s own import-scoping test, that parses
+  every non-test `.go` file in this package's directory and fails if any of
+  them imports `internal/journal`. `doc.go`'s stale sentence claiming this
+  package "may import internal/journal, internal/runtime, and below" is
+  fixed to say it does not import `internal/journal` at all and names the
+  `JournalReader` indirection; the four documented invariants are otherwise
+  unchanged. Also added `internal/verify/verifytest` to
+  `internal/archtest/layers_test.go`'s layer table at L3, alongside
+  `internal/verify` itself, since the archtest walk fails any package with
+  no assigned layer.
+- `docs/LEVEL-FORMAT.md` was read against every implemented param shape
+  (match modes, `dir_tree` modes, `file_mode`'s `mode`/`any_of`, the `scope`
+  string grammar, `script`'s `as_user`/`run`) and not touched: nothing here
+  diverges from what section 3 already documents. The 13-vs-14 count noted
+  above is a heading miscount, not a param-shape difference, so it is
+  recorded here rather than used as grounds to edit that file under this
+  ticket's own stated scope.
+- A test asserts no check's constructed `argv` contains a shell
+  metacharacter that was not present in its own input: a deliberately
+  shell-shaped path (`$(rm -rf /)`, `;`, a redirection) is round-tripped
+  through `file_exists`, `file_absent`, `dir_exists`, `file_content`,
+  `file_mode`, and `file_owner`, and the fake `Session` proves it arrived as
+  one untouched argv element rather than a fragment of something evaluated.
+  `script` is confirmed to be the sole exception by design: its body reaches
+  `bash -c` as exactly one argv element, never concatenated with anything
+  else, pinned separately in `script_check_test.go`.
+- Gates run locally, all green: `gofmt -s -w .`, `go vet ./...`,
+  `go build ./...`, `go test ./...`, `go test -race ./...`,
+  `go test ./internal/archtest/...`, `./scripts/check-punctuation.sh`
+  (staged first, since it reads `git ls-files` and the new package was
+  otherwise invisible to it), `./scripts/check-allowlist-regexp.sh`,
+  `./scripts/check-links.sh`, `python3 scripts/check-ci-gates.py`, and
+  `python3 -m pytest scripts/tests -q` (57 passed; `pytest` needed
+  installing first in this environment). `govulncheck ./...` and
+  `gosec ./...` are not installed here and were not run locally; nothing in
+  this ticket needed the Docker daemon, which is confirmed not running
+  here regardless. CI is authoritative for all three.
+
+### Day 2 follow-up, 2026-08-13: review fixes on #49
+
+Ten review findings on PR #81, all fixed on the same branch. Four were
+argument injection: a level-supplied `path` reached `stat`, `cat`, and
+`readlink` with no `--`, so a path beginning with a hyphen would have been
+read as an option rather than as an operand. Passing an argv vector stops a
+shell from interpreting the value; only `--` stops the option parser. GNU
+find has no such terminator and fails on `--` as an unknown predicate, so
+`dir_tree` rejects a non-absolute `path` or `compare_to` in its `Factory`
+instead, which closes the same hole for the one command that cannot be
+fixed the same way. `argv_injection_test.go` gained the `dir_tree` and
+`symlink_target` cases it had claimed to cover and did not, plus a second
+test asserting the terminator is present before every path operand and
+absent from find's.
+
+Also: `file_content` reads `value` through `paramStringPresence`, so
+`match: exact` with an empty value, the natural way to assert that a file is
+empty, is authorable again; `dir_tree` reports a root that does not exist as
+`Status: fail` with the authored `on_fail` rather than `Status: error`,
+matching what `statPath` already does for every other filesystem check, so a
+learner who has not created the directory yet is not told the check broke;
+`dir_tree` normalizes a trailing slash on either root, which previously made
+every hash comparison fail; `equalStringMaps` checks membership rather than
+reading a missing key back as the empty string; and `verifytest/doc.go` no
+longer claims a compiler-enforced guardrail that did not exist. That claim
+is now true instead: `check_test.go` walks every `.go` file in the module and
+fails if a non-test file imports the fake.
+
+`docs/LEVEL-FORMAT.md` is again untouched. Requiring an absolute `dir_tree`
+path is implementation validation of what the catalogue already implies, not
+a new documented shape.
+
 ---
 
 ## Day 1: the spike

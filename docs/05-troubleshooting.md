@@ -68,6 +68,20 @@ dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /nores
 
 ---
 
+## missing-snapshot
+
+**You'll see:** A check reports it could not tell yet, instead of pass or fail,
+right after a level starts or right after `reset`.
+
+**What it means:** Verification reads shell state, such as an environment
+variable or the current directory, from files the sandbox shell writes after
+every command you run. Nothing has run yet, so those files do not exist yet
+either. This is not a wrong answer: there is nothing to check yet.
+
+**Fix:** Run a command at the sandbox prompt, then run `check` again.
+
+---
+
 ## wsl-not-installed
 
 **You'll see:** `doctor` reports WSL is not installed.

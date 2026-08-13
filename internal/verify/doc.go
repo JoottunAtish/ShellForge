@@ -1,6 +1,11 @@
 // Package verify is the check registry and the verification engine.
 //
-// Layer L3. May import internal/journal, internal/runtime, and below.
+// Layer L3. May import internal/runtime and below. It does not import
+// internal/journal at all: it declares its own JournalReader interface
+// instead, satisfied by internal/journal from outside this package. That
+// indirection is what lets a check ask about command history without this
+// package ever knowing internal/journal's concrete type, and a
+// source-parsing test holds the line so the import cannot come back quietly.
 //
 // Three invariants:
 //
@@ -23,7 +28,7 @@
 // or fail from real state read through Session.Exec, never by opening the journal.
 // The PROMPT_COMMAND snapshot files above are a different source and remain
 // legitimate: they are shell-local state a check reads directly, not the
-// journal's account of history. See internal/journal for the full statement. The
-// engine is expected to drop its journal import entirely once it lands, and a
-// test will hold that line.
+// journal's account of history. See internal/journal for the full statement.
+// This package never imports internal/journal at all, for the reason given
+// above, and a test holds that line.
 package verify
