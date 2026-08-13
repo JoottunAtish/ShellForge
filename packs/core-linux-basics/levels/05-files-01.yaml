@@ -1,0 +1,126 @@
+id: files-01
+version: 1
+title: "Laying Foundations"
+act: act2
+
+difficulty: 2
+xp: 50
+par_commands: 3
+estimated_minutes: 5
+concepts: [mkdir, mkdir-p, touch, nested-directories]
+prerequisites: [nav-04]
+tags: [must-know]
+
+briefing: |
+  ## 09:05, Tuesday. Filing for the new quarter.
+
+  Shipping wants the 2026 first-quarter paperwork filed the same way as every
+  other quarter, and nobody has created the folders yet.
+
+  Inside `~/shipments`, build the path `2026/q1`. Neither `2026` nor `q1`
+  exists, so you are creating two levels at once. There is a flag for that, and
+  finding it now will save you doing this four times a year by hand.
+
+  Then put two empty files in the new folder: `manifest.csv`, which the import
+  job fills in overnight, and `.gitkeep`, which is how an empty folder survives
+  being committed.
+
+objectives:
+  - id: quarter-folder
+    text: "shipments/2026/q1 exists"
+  - id: manifest-file
+    text: "An empty manifest.csv is in it"
+  - id: gitkeep-file
+    text: "A .gitkeep is in it"
+  - id: one-command
+    text: "Built both folder levels in one command"
+    optional: true
+
+setup:
+  root: /home/learner/shipments
+  files:
+    - path: README.txt
+      content: |
+        Filing convention, do not improvise.
+
+          <year>/<quarter>/manifest.csv
+          <year>/<quarter>/.gitkeep
+
+        Quarters are q1 to q4, lowercase. The import job writes manifest.csv
+        overnight, so it starts empty and stays empty until then.
+
+    - path: 2025/q4/manifest.csv
+      content: |
+        shipment,origin,destination,weight_kg
+        SH-0912,Port Louis,Rotterdam,1105
+
+    - path: 2025/q4/.gitkeep
+      content: ""
+  script: |
+    chown -R learner:learner .
+
+checks:
+  - id: quarter-folder
+    type: dir_exists
+    path: /home/learner/shipments/2026/q1
+    on_fail: >-
+      There is no 2026/q1 folder yet. Both levels have to exist: 2026 first,
+      then q1 inside it. If the command complained about a missing directory,
+      that is exactly the problem the recursive flag solves.
+
+  - id: manifest-file
+    all_of:
+      - type: file_exists
+        path: /home/learner/shipments/2026/q1/manifest.csv
+        on_fail: "manifest.csv is not in 2026/q1 yet."
+      - type: file_content
+        path: /home/learner/shipments/2026/q1/manifest.csv
+        match: line_count
+        value: "0"
+        on_fail: >-
+          manifest.csv exists but is not empty. The overnight import writes it;
+          it starts empty. Create it without putting anything in it.
+    on_fail: >-
+      2026/q1 needs an empty manifest.csv. `touch` creates an empty file, or
+      updates the timestamp of one that already exists.
+
+  - id: gitkeep-file
+    type: file_exists
+    path: /home/learner/shipments/2026/q1/.gitkeep
+    on_fail: >-
+      .gitkeep is missing from 2026/q1. The leading dot is part of the name, so
+      it will not show up in a plain listing once you have made it. Use `ls -a`
+      to confirm.
+
+  - id: one-command
+    optional: true
+    type: command_matched
+    pattern: 'mkdir\s+(-[a-zA-Z]*\s+)*-[a-zA-Z]*p'
+    scope: level
+    on_fail: >-
+      It works, and there is a shorter way. `mkdir -p a/b/c` creates every
+      level of the path that does not exist yet, in one command, and says
+      nothing if it is already there.
+
+hints:
+  - cost: 5
+    text: >-
+      `mkdir` makes one folder. By default it refuses to create a folder whose
+      parent does not exist yet, which is why doing this in one step needs a
+      flag.
+  - cost: 10
+    text: >-
+      Read `man mkdir` and look for the flag described as creating parent
+      directories as needed. It is a single letter.
+  - cost: 20
+    text: >-
+      `mkdir -p ~/shipments/2026/q1` builds both levels. Then `touch` the two
+      files inside it. `touch` can take more than one filename at a time.
+  - cost: 30
+    reveal_solution: true
+
+solution: |
+  mkdir -p ~/shipments/2026/q1
+  touch ~/shipments/2026/q1/manifest.csv ~/shipments/2026/q1/.gitkeep
+
+teardown: {}

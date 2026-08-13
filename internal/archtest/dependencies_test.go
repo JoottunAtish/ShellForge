@@ -20,6 +20,24 @@ var confinedImports = map[string]string{
 	"modernc.org/sqlite":       "internal/store",
 }
 
+// confinedModuleFor reports which package, if any, is the sole permitted
+// importer of importPath.
+//
+// It matches a confined module's subpackages too, not only its root. The
+// level loader legitimately imports github.com/goccy/go-yaml/ast to decode a
+// check's line number, and an exact-match rule would have treated that as an
+// unconfined third party import: the parser's own AST package would have been
+// reachable from anywhere in the module while the parser itself was fenced,
+// which is the fence with a door in it.
+func confinedModuleFor(importPath string) (string, bool) {
+	for module, owner := range confinedImports {
+		if importPath == module || strings.HasPrefix(importPath, module+"/") {
+			return owner, true
+		}
+	}
+	return "", false
+}
+
 // TestConfinedDependenciesStayConfined enforces confinedImports. Verified
 // against a deliberate violation before this test was committed: a temporary
 // blank import of modernc.org/sqlite added to cmd/shellforge failed this
@@ -30,7 +48,7 @@ func TestConfinedDependenciesStayConfined(t *testing.T) {
 
 	for pkg, imps := range imports {
 		for _, imp := range imps {
-			owner, restricted := confinedImports[imp.path]
+			owner, restricted := confinedModuleFor(imp.path)
 			if !restricted || pkg == owner {
 				continue
 			}

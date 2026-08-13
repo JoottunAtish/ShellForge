@@ -1,0 +1,120 @@
+id: files-02
+version: 1
+title: "Reading the Records"
+act: act2
+
+difficulty: 2
+xp: 60
+par_commands: 4
+estimated_minutes: 6
+concepts: [head, tail, wc, less, redirection]
+prerequisites: [files-01]
+tags: [must-know, text-processing]
+
+briefing: |
+  ## 11:50. Somebody wants numbers by lunch.
+
+  `~/quest/deliveries.log` is one line per delivery event, all of yesterday.
+  Operations wants three things and does not want to wait:
+
+  1. The **first** line of the file, in `~/quest/first.txt`.
+  2. The **last three** lines, in `~/quest/last.txt`.
+  3. The **total number of lines**, in `~/quest/count.txt`.
+
+  Fair warning: the file is four thousand lines long. You can print the whole
+  thing to your screen, and you will spend the next minute scrolling. There are
+  commands that take just the top, just the bottom, and just the count.
+
+objectives:
+  - id: first-line
+    text: "quest/first.txt holds the first line"
+  - id: last-lines
+    text: "quest/last.txt holds the last three lines"
+  - id: line-count
+    text: "quest/count.txt holds the total line count"
+  - id: no-flooding
+    text: "Did not dump the whole file to the screen"
+    optional: true
+
+setup:
+  root: /home/learner/quest
+  files:
+    - path: deliveries.log
+      generate:
+        kind: loglines
+        seed: 20260314
+        lines: 4000
+    - path: README.txt
+      content: |
+        deliveries.log is written by the dispatch service, one line per event,
+        oldest first. It is rotated at 02:00 and never edited in place.
+  script: |
+    chown -R learner:learner .
+
+checks:
+  - id: first-line
+    type: file_content
+    path: /home/learner/quest/first.txt
+    match: trimmed_equals
+    value: "2026-03-14T02:00:18Z worker WARN queue depth check"
+    on_fail: >-
+      first.txt does not hold the first line of deliveries.log. It wants that
+      one line and nothing else. `head` prints from the top of a file, and
+      takes a flag for how many lines you want.
+
+  - id: last-lines
+    type: file_content
+    path: /home/learner/quest/last.txt
+    match: trimmed_equals
+    value: "2026-03-14T13:37:12Z worker WARN heartbeat acknowledged\n2026-03-14T13:37:14Z billing DEBUG heartbeat acknowledged\n2026-03-14T13:37:18Z api WARN queue depth check"
+    on_fail: >-
+      last.txt does not hold the last three lines, in the order they appear in
+      the file. `tail` is `head` from the other end, and takes the same flag
+      for how many lines. Do not reverse them.
+
+  - id: line-count
+    type: file_content
+    path: /home/learner/quest/count.txt
+    match: trimmed_equals
+    value: "4000"
+    on_fail: >-
+      count.txt should hold the number of lines in deliveries.log and nothing
+      else. If yours has the filename next to the number, you gave the file to
+      the counting command as an argument; feeding it in on standard input
+      instead leaves you with the bare number.
+
+  - id: no-flooding
+    severity: warn
+    type: command_not_matched
+    pattern: '^\s*cat\s+\S*deliveries\.log'
+    scope: level
+    on_fail: >-
+      Printing the whole file works, and it is why `head`, `tail` and `less`
+      exist. At four thousand lines you scroll; at four million you wait. Try
+      it the other way once before you move on.
+
+hints:
+  - cost: 5
+    text: >-
+      Three different commands, one per file. Each of them can take the file as
+      an argument and prints its answer to the screen, so send that to a file
+      with `>`.
+  - cost: 10
+    text: >-
+      `head` reads from the top, `tail` from the bottom, and `wc -l` counts
+      lines. `head` and `tail` both take `-n` to say how many.
+  - cost: 20
+    text: >-
+      `head -n 1 deliveries.log > first.txt` and `tail -n 3 deliveries.log >
+      last.txt`. For the count, `wc -l < deliveries.log` reads the file on
+      standard input, which is what stops it printing the filename too.
+  - cost: 35
+    reveal_solution: true
+
+solution: |
+  cd ~/quest
+  head -n 1 deliveries.log > first.txt
+  tail -n 3 deliveries.log > last.txt
+  wc -l < deliveries.log > count.txt
+
+teardown: {}

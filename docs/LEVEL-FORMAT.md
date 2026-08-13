@@ -171,6 +171,7 @@ whether a level's world is already in place.
 | No `source:` pointing outside the pack | Reproducibility |
 | DAG acyclic, all `prerequisites` resolve | Unlock logic |
 | Non-optional checks ≥1 | A level you can't fail isn't a level |
+| `command_matched` and `command_not_matched` must set `optional: true` or `severity: warn` | The journal is learner-influenced and may never decide pass or fail |
 
 ---
 
@@ -257,8 +258,19 @@ Checks are **read-only**. A check that mutates state is a bug and CI catches it 
 
 ### Journal / behavioural
 
+**A journal check may never gate passing.** It must set `optional: true` or
+`severity: warn`, and `shellforge author validate` rejects a level where one
+does neither. The journal records what the learner typed, and the shell
+instrumentation writes it from inside the sandbox, where a learner can forge an
+entry with a `printf` of the right escape sequence. A level that stakes passing
+on that signal can be beaten without solving it, and, worse, can fail a learner
+who solved it a way the pattern did not anticipate. Use these for bonus
+objectives, for the handful of levels where the syntax genuinely is the lesson,
+and for anti-pattern warnings.
+
 ```yaml
 - type: command_matched
+  optional: true             # R  optional: true or severity: warn
   pattern: 'grep.*\|\s*wc\s+-l'
   scope: level               # level | last_n:5 | last
 ```

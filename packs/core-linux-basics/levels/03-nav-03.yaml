@@ -1,0 +1,137 @@
+id: nav-03
+version: 1
+title: "Getting Around"
+act: act1
+
+difficulty: 2
+xp: 60
+par_commands: 5
+estimated_minutes: 6
+concepts: [cd, absolute-paths, relative-paths, parent-directory]
+prerequisites: [nav-02]
+tags: [must-know, orientation]
+
+briefing: |
+  ## 11:20. The warehouse records.
+
+  The paper records were scanned years ago and filed by where they physically
+  sat in the building: bay, then aisle, then shelf. Kofi's note says the
+  shipping manifests you need are in the **third bay, second aisle, shelf C**.
+
+  The tree starts at `~/warehouse`. There are other bays and other aisles, and
+  most of them hold something that looks close enough to fool you.
+
+  Go and stand in the right folder, then leave a note there saying where you
+  are.
+
+objectives:
+  - id: note-exists
+    text: "A here.txt exists in bay-3/aisle-2/shelf-c"
+  - id: note-content
+    text: "here.txt holds the full path of that shelf"
+  - id: quick-return
+    text: "Came home with a single-character argument"
+    optional: true
+
+setup:
+  root: /home/learner/warehouse
+  files:
+    - path: README.txt
+      content: |
+        Warehouse scan archive.
+
+        Filed by physical location: bay, then aisle, then shelf.
+        Bays are numbered. Aisles are numbered within a bay. Shelves are
+        lettered within an aisle.
+
+    - path: bay-1/aisle-1/shelf-a/manifests.txt
+      content: |
+        Empty. Cleared during the 2024 audit.
+
+    - path: bay-1/aisle-2/shelf-c/manifests.txt
+      content: |
+        Decoy. Same shelf letter, wrong bay.
+
+    - path: bay-2/aisle-1/shelf-b/manifests.txt
+      content: |
+        Rotterdam paperwork, 2023. Superseded.
+
+    - path: bay-2/aisle-2/shelf-c/manifests.txt
+      content: |
+        Decoy. Same aisle and shelf, wrong bay.
+
+    - path: bay-3/aisle-1/shelf-c/manifests.txt
+      content: |
+        Decoy. Right bay, wrong aisle.
+
+    - path: bay-3/aisle-2/shelf-a/manifests.txt
+      content: |
+        Decoy. Right bay and aisle, wrong shelf.
+
+    - path: bay-3/aisle-2/shelf-b/manifests.txt
+      content: |
+        Decoy. Right bay and aisle, wrong shelf.
+
+    - path: bay-3/aisle-2/shelf-c/manifests.txt
+      content: |
+        SHIPPING MANIFESTS, current.
+
+        SH-1001  Port Louis   Rotterdam  1420 kg
+        SH-1002  Rotterdam    Hamburg     880 kg
+        SH-1003  Hamburg      Gdansk     2310 kg
+  script: |
+    chown -R learner:learner .
+
+checks:
+  - id: note-exists
+    type: file_exists
+    path: /home/learner/warehouse/bay-3/aisle-2/shelf-c/here.txt
+    on_fail: >-
+      There is no here.txt on shelf C of aisle 2 in bay 3. If you created one
+      somewhere else, you were standing in the wrong folder when you made it.
+      Check where you are before you write.
+
+  - id: note-content
+    type: file_content
+    path: /home/learner/warehouse/bay-3/aisle-2/shelf-c/here.txt
+    match: trimmed_equals
+    value: "/home/learner/warehouse/bay-3/aisle-2/shelf-c"
+    on_fail: >-
+      here.txt exists but does not hold the full path of the shelf. It needs
+      the whole path starting from the slash, not the shelf name on its own.
+      Standing in the folder and printing the working directory gets you it
+      exactly.
+
+  - id: quick-return
+    optional: true
+    type: command_matched
+    pattern: '^\s*cd\s*$|^\s*cd\s+~\s*$|^\s*cd\s+-\s*$'
+    scope: level
+    on_fail: >-
+      There is a shortcut home. `cd` on its own goes to your home folder, and
+      `cd -` jumps back to wherever you were before.
+
+hints:
+  - cost: 5
+    text: >-
+      `cd` changes which folder you are standing in. Folder names are joined
+      with `/`, so you can describe a whole route in one go.
+  - cost: 10
+    text: >-
+      You do not need one `cd` per level. `cd a/b/c` walks all three at once.
+      Starting the path with `~` means "from my home folder", which works no
+      matter where you are now.
+  - cost: 20
+    text: >-
+      `cd ~/warehouse/bay-3/aisle-2/shelf-c`, then `pwd > here.txt`. Writing
+      `here.txt` with no folder in front of it puts the file wherever you are
+      standing, which is the point of this one.
+  - cost: 35
+    reveal_solution: true
+
+solution: |
+  cd ~/warehouse/bay-3/aisle-2/shelf-c
+  pwd > here.txt
+  cd -
+
+teardown: {}

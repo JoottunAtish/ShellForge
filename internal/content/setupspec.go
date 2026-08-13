@@ -1,39 +1,10 @@
 package content
 
-// Level is the typed surface a level pack decodes into. It declares only the
-// four fields issue #50's setup and teardown runner reads: id, setup,
-// teardown, and the source file the loader read it from.
-//
-// Contract with issue #53, which owns the full level type and the file names
-// pack.go, level.go, check.go, load.go, embed.go, and validate.go: #53
-// extends this declaration in place, in this file or after moving it to
-// level.go, adding every remaining field docs/LEVEL-FORMAT.md section 2
-// describes (title, act, difficulty, xp, concepts, briefing, objectives,
-// checks, hints, solution, tags, and the rest). It does not redeclare Level.
-// If a second declaration appears, the Go compiler reports a duplicate
-// declaration immediately, which is the correct loud failure rather than a
-// silent divergence between two copies of the same type. See PROGRESS.md for
-// the follow-up ratification issue this decision needs against #53.
-type Level struct {
-	// ID is the level's unique identifier, matching [a-z0-9][a-z0-9-]* per
-	// the authoring invariants in docs/LEVEL-FORMAT.md section 2. It is
-	// validated with platform.ValidIdentifier before it becomes a path
-	// element or an argv element, because it reaches both: the sentinel
-	// path and the sandbox user allowlist.
-	ID string `yaml:"id"`
+import (
+	"fmt"
 
-	// Setup describes how the level's world is materialized into the
-	// sandbox before the learner plays.
-	Setup Setup `yaml:"setup"`
-
-	// Teardown describes how the level's world is removed afterward.
-	Teardown Teardown `yaml:"teardown"`
-
-	// SourceFile is the path the level was loaded from, for use in error
-	// messages. It carries yaml:"-" because it is set by the loader, never
-	// by the pack's own YAML.
-	SourceFile string `yaml:"-"`
-}
+	"github.com/goccy/go-yaml/ast"
+)
 
 // Setup is the "world setup" block of a level, docs/LEVEL-FORMAT.md section
 // 2. Root is the level's world inside the sandbox; teardown deletes it, so
@@ -76,6 +47,19 @@ type FileSpec struct {
 	// exclusive with Source and Generate.
 	Content string `yaml:"content"`
 
+	// ContentSet reports whether the YAML declared a content key at all,
+	// which is not the same question as whether Content is empty.
+	//
+	// An empty file is a real thing a level needs to materialize: files-01
+	// creates a .gitkeep, which exists precisely to be empty. Deciding "did
+	// the author choose content" by testing Content != "" makes that level
+	// unwritable, because an empty body and an absent key look identical.
+	// The decoder below records the answer instead of inferring it.
+	//
+	// It carries yaml:"-" because it is set by the decoder, never by the
+	// pack's own YAML.
+	ContentSet bool `yaml:"-"`
+
 	// Generate describes a deterministic generator that produces the file
 	// body. Mutually exclusive with Source and Content.
 	Generate *GenerateSpec `yaml:"generate"`
@@ -92,6 +76,69 @@ type FileSpec struct {
 	// Owner is an owner and group pair such as "learner:learner". Empty
 	// means the runner's default, also "learner:learner".
 	Owner string `yaml:"owner"`
+}
+
+// fileSpecKeys are the keys a setup file entry may declare. The decoder
+// refuses anything else, which keeps a typo a rejection rather than a
+// silently missing mode or owner.
+var fileSpecKeys = map[string]bool{
+	"path":     true,
+	"source":   true,
+	"content":  true,
+	"generate": true,
+	"mode":     true,
+	"owner":    true,
+}
+
+// UnmarshalYAML decodes one setup file entry.
+//
+// It is hand-rolled for one reason: ContentSet. Struct tag decoding cannot
+// tell an absent content key from an empty one, and a level that materializes
+// an empty file needs that distinction. Everything else here is what strict
+// struct decoding would have done anyway, including refusing an unknown key.
+func (f *FileSpec) UnmarshalYAML(node ast.Node) error {
+	*f = FileSpec{}
+
+	m, ok := node.(ast.MapNode)
+	if !ok {
+		return fmt.Errorf("a setup file entry must be a mapping of fields, found %s", node.Type())
+	}
+
+	seen := map[string]bool{}
+	for it := m.MapRange(); it.Next(); {
+		key := it.Key().GetToken().Value
+		if !fileSpecKeys[key] {
+			return fmt.Errorf("unknown setup file field %q", key)
+		}
+		if seen[key] {
+			return fmt.Errorf("setup file field %q appears twice", key)
+		}
+		seen[key] = true
+
+		var err error
+		switch key {
+		case "path":
+			err = decodeNode(it.Value(), key, &f.Path)
+		case "source":
+			err = decodeNode(it.Value(), key, &f.Source)
+		case "content":
+			err = decodeNode(it.Value(), key, &f.Content)
+			f.ContentSet = true
+		case "generate":
+			var g GenerateSpec
+			if err = decodeNode(it.Value(), key, &g); err == nil {
+				f.Generate = &g
+			}
+		case "mode":
+			err = decodeNode(it.Value(), key, &f.Mode)
+		case "owner":
+			err = decodeNode(it.Value(), key, &f.Owner)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // GenerateSpec names a deterministic generator and its parameters. In v0.1

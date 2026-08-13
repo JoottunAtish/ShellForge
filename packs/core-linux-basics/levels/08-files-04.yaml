@@ -1,0 +1,190 @@
+id: files-04
+version: 1
+title: "Controlled Demolition"
+act: act2
+
+difficulty: 3
+xp: 70
+par_commands: 4
+estimated_minutes: 6
+concepts: [rm, rmdir, rm-r, no-undo]
+prerequisites: [files-03]
+tags: [must-know, destructive]
+
+briefing: |
+  ## 08:20, Wednesday. Disk is at 94 percent.
+
+  **Read this before you type anything.**
+
+  There is no recycle bin. There is no undo. A file you delete on this machine
+  is gone, immediately, with no confirmation unless you ask for one. That is
+  not a warning about this exercise, it is how the command works everywhere.
+
+  This is also a sandbox, and `shellforge reset` rebuilds the level from
+  scratch. So this is the safest place you will ever get to learn it. If you
+  delete the wrong thing here, reset it and try again.
+
+  In `~/quest`, clear out:
+
+  - the three `*.tmp` files
+  - `scratch/`, which is empty
+  - `cache/`, which is not empty
+
+  Leave `important/` exactly as you found it. Everything in it is the only
+  copy.
+
+objectives:
+  - id: temps-gone
+    text: "The three .tmp files are deleted"
+  - id: scratch-gone
+    text: "The empty scratch/ directory is gone"
+  - id: cache-gone
+    text: "The non-empty cache/ directory is gone"
+  - id: important-intact
+    text: "important/ is untouched, byte for byte"
+
+setup:
+  root: /home/learner/quest
+  files:
+    - path: render-8817.tmp
+      content: |
+        Scratch output from the map renderer. Safe to delete.
+
+    - path: render-8818.tmp
+      content: |
+        Scratch output from the map renderer. Safe to delete.
+
+    - path: export-queue.tmp
+      content: |
+        Half-written export. The job that made this died on Monday.
+
+    - path: cache/tiles/europe-north.dat
+      content: |
+        Cached tile data. Regenerated on demand.
+
+    - path: cache/tiles/europe-south.dat
+      content: |
+        Cached tile data. Regenerated on demand.
+
+    - path: cache/index.dat
+      content: |
+        Cache index. Rebuilt whenever a tile is missing.
+
+    - path: important/customer-contracts.txt
+      content: |
+        Meridian Logistics, signed customer contracts.
+
+        Northwind Freight     2026-01-04    36 months
+        Halden Shipping       2026-02-19    12 months
+        Corvo Maritime        2026-03-02    24 months
+
+    - path: important/insurance-policy.txt
+      content: |
+        Policy MG-4471-B. Cargo, all risks.
+        Renewal date 2026-11-30. Broker contact: ext 4180.
+
+    - path: important/kofi-handover.txt
+      content: |
+        If you are reading this I have already left.
+
+        The only thing on this machine that is not reproducible is this folder.
+        Everything else can be rebuilt from the deploy scripts. This cannot.
+
+                                                                      - Kofi
+  script: |
+    mkdir -p scratch
+    chown -R learner:learner .
+
+checks:
+  - id: temps-gone
+    all_of:
+      - type: file_absent
+        path: /home/learner/quest/render-8817.tmp
+        on_fail: "render-8817.tmp is still there."
+      - type: file_absent
+        path: /home/learner/quest/render-8818.tmp
+        on_fail: "render-8818.tmp is still there."
+      - type: file_absent
+        path: /home/learner/quest/export-queue.tmp
+        on_fail: "export-queue.tmp is still there."
+    on_fail: >-
+      At least one `.tmp` file is still in ~/quest. `rm` deletes files, and it
+      takes more than one name at a time. A `*` matches any run of characters,
+      so `*.tmp` names all three at once.
+
+  - id: scratch-gone
+    not:
+      type: dir_exists
+      path: /home/learner/quest/scratch
+      on_fail: "scratch/ still exists."
+    on_fail: >-
+      scratch/ is still there. It is empty, and `rmdir` removes an empty
+      directory. If you tried `rm scratch` on its own, `rm` will have refused:
+      it does not delete directories without being told to.
+
+  - id: cache-gone
+    not:
+      type: dir_exists
+      path: /home/learner/quest/cache
+      on_fail: "cache/ still exists."
+    on_fail: >-
+      cache/ is still there. `rmdir` will not take it, because it has files in
+      it. Deleting a directory and everything inside it needs the recursive
+      flag on `rm`. Check what you are pointing at before you press Enter.
+
+  - id: important-intact
+    all_of:
+      - type: file_content
+        path: /home/learner/quest/important/customer-contracts.txt
+        match: sha256
+        value: "1dccb37078788f7ed91f5c0ba79e7721f38642c44ab922203a35bc15ea96a45f"
+        on_fail: "important/customer-contracts.txt is missing, or a byte of it has changed."
+      - type: file_content
+        path: /home/learner/quest/important/insurance-policy.txt
+        match: sha256
+        value: "8c2f3eca490285eb7654f59a28ce7eabb69cafbc3eea2b9d37f6fca41f54ff3b"
+        on_fail: "important/insurance-policy.txt is missing, or a byte of it has changed."
+      - type: file_content
+        path: /home/learner/quest/important/kofi-handover.txt
+        match: sha256
+        value: "4b724dcaf73de60f1121e318ea3013759cabd5035042c2f62c6214384aab9558"
+        on_fail: "important/kofi-handover.txt is missing, or a byte of it has changed."
+      - type: script
+        run: |
+          count=$(find /home/learner/quest/important -type f | wc -l)
+          if [ "$count" -ne 3 ]; then
+            echo "important/ holds $count files, it should hold 3"
+            exit 1
+          fi
+        on_fail: "important/ does not hold exactly the three files it started with."
+    on_fail: >-
+      Something in important/ has changed or is gone. If a delete went wider
+      than you meant it to, that is the lesson this level exists to teach, and
+      it costs you nothing here: run `shellforge reset` to rebuild the level
+      and try again. Recursive deletes take the directory you name and
+      everything beneath it, so read the path twice before you run one.
+
+hints:
+  - cost: 5
+    text: >-
+      Three different tools. `rm` deletes files. `rmdir` deletes a directory
+      only if it is already empty. `rm` with a flag deletes a directory and
+      everything in it.
+  - cost: 10
+    text: >-
+      `rm *.tmp` clears the temporary files. `rmdir scratch` takes the empty
+      one. For cache/, read `man rm` and look for the recursive flag.
+  - cost: 20
+    text: >-
+      `rm -r cache` removes cache/ and its contents. If you want to be asked
+      before each deletion while you are learning, add `-i`.
+  - cost: 35
+    reveal_solution: true
+
+solution: |
+  cd ~/quest
+  rm *.tmp
+  rmdir scratch
+  rm -r cache
+
+teardown: {}

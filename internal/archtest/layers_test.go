@@ -47,6 +47,15 @@ var layers = map[string]int{
 	"internal/platform/ux": 0,
 	"internal/doctor":      0,
 
+	// The shipped content packs, embedded into the binary. It is data, not
+	// a layer: one embed.FS, one string constant, no behaviour, and no
+	// import but embed itself. It sits at the bottom so that internal/content
+	// may read it without the dependency pointing upward. It exists as a Go
+	// package at all only because embed cannot reach outside the directory
+	// its directive is written in, so the loader in internal/content cannot
+	// embed packs/core-linux-basics from three directories away.
+	"packs": 0,
+
 	// The test itself sits outside the layering.
 	"internal/archtest": 99,
 }
