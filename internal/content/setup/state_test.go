@@ -71,6 +71,43 @@ func TestSentinelPathRefusesAnInvalidLevelID(t *testing.T) {
 	}
 }
 
+// TestSentinelPathRefusesAnUnsafeStateDir pins the #83 review suggestion:
+// the state directory guard moved from resolveLevelRoot into sentinelPath,
+// the one place all three public entry points go through, so a broken
+// WithStateDir value fails closed here regardless of which of Setup,
+// Teardown, or IsSetUp called it.
+func TestSentinelPathRefusesAnUnsafeStateDir(t *testing.T) {
+	for _, dir := range []string{"", "relative/state", "/etc/shellforge-state"} {
+		if _, err := sentinelPath(dir, "nav-01"); err == nil {
+			t.Errorf("sentinelPath(%q, ...): want an error, got nil", dir)
+		}
+	}
+}
+
+// TestIsSetUpRefusesAnUnsafeStateDir pins the same guard specifically at
+// IsSetUp, which builds an argv from r.stateDir directly and, before the
+// #83 review, never validated it: NewRunner(sess, packFS,
+// WithStateDir("/etc")) followed by IsSetUp used to issue
+// `test -f /etc/levels/nav-01/SETUP_OK` inside the sandbox instead of
+// refusing. Asserting zero recorded test calls is what makes this
+// mutation-testable: removing sentinelPath's validateLevelRoot call leaves
+// IsSetUp still returning an error only if the fake happens to answer
+// non-zero, but this fake does not script test at all, so the call would go
+// through and this assertion would catch it.
+func TestIsSetUpRefusesAnUnsafeStateDir(t *testing.T) {
+	lvl := &content.Level{ID: "nav-01", Setup: content.Setup{Root: "/home/learner/quest"}}
+	for _, dir := range []string{"", "relative/state", "/etc/shellforge-state"} {
+		f := &fakeSession{}
+		r := NewRunner(f, nil, WithStateDir(dir))
+		if _, err := r.IsSetUp(context.Background(), lvl); err == nil {
+			t.Errorf("WithStateDir(%q): IsSetUp: want an error, got nil", dir)
+		}
+		if n := f.countArgvPrefix("test"); n != 0 {
+			t.Errorf("WithStateDir(%q): IsSetUp recorded %d test call(s), want 0: it must refuse before issuing one", dir, n)
+		}
+	}
+}
+
 // TestIsSetUpReadsTheSentinel pins criterion 6: IsSetUp reads the sentinel
 // through test -f and reports true, false, or an error, and never mutates.
 func TestIsSetUpReadsTheSentinel(t *testing.T) {

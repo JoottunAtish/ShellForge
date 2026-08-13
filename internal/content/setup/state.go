@@ -27,11 +27,24 @@ const userRoot = "root"
 // counted by any level that asks how many files are under the root, which
 // would make the runner a source of content bugs.
 //
-// levelID becomes a path element, so it is validated against
+// stateDir is caller-supplied (WithStateDir), not pack-supplied, but it
+// still becomes an argv element below, so it is validated here, every time
+// it is about to matter. This is the one place all three public entry
+// points (Setup and Teardown through writeSentinel and removeSentinel,
+// IsSetUp directly) go through, so validating it here, rather than
+// separately in resolveLevelRoot, means a broken WithStateDir value fails
+// closed on every path instead of on only two of the three.
+//
+// levelID becomes a path element too, so it is validated against
 // platform.ValidIdentifier before that happens: a level id is pack-supplied
 // data, and this is the same allowlist every other sandbox-bound identifier
 // in this codebase goes through.
 func sentinelPath(stateDir, levelID string) (string, error) {
+	if err := validateLevelRoot(stateDir); err != nil {
+		return "", ux.Fail("read the level definition",
+			fmt.Errorf("the configured state directory %q is not valid: %w", stateDir, err),
+			remediationUnsafeLevelRoot, "unsafe-level-root")
+	}
 	if !platform.ValidIdentifier(levelID) {
 		return "", ux.Fail("read the level definition",
 			fmt.Errorf("level id %q does not match %s", levelID, platform.IdentifierPattern),

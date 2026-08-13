@@ -193,18 +193,10 @@ func (r *Runner) refuseIfInsideStateDir(clean string) error {
 // after what the runner was doing conceptually (managing the level's world)
 // rather than which of the two callers happened to trigger it.
 func (r *Runner) resolveLevelRoot(ctx context.Context, root string) (string, error) {
-	// The state directory is caller-supplied (WithStateDir), not
-	// pack-supplied, but it still reaches the containment check below and,
-	// through sentinelPath, an argv element. Validating it lazily here,
-	// every time it is about to matter, means a broken WithStateDir value
-	// fails closed instead of silently defeating the containment check it
-	// exists to run.
-	if err := validateLevelRoot(r.stateDir); err != nil {
-		return "", ux.Fail("set the level world up",
-			fmt.Errorf("the configured state directory %q is not valid: %w", r.stateDir, err),
-			remediationUnsafeLevelRoot, "unsafe-level-root")
-	}
-
+	// The state directory itself is validated lazily inside sentinelPath,
+	// which every path that writes or reads the sentinel goes through
+	// (Setup, Teardown, and IsSetUp alike), so a broken WithStateDir value
+	// fails closed there instead of needing to be remembered here too.
 	if err := validateLevelRoot(root); err != nil {
 		return "", ux.Fail("set the level world up", err, remediationUnsafeLevelRoot, "unsafe-level-root")
 	}
@@ -229,6 +221,18 @@ func (r *Runner) resolveLevelRoot(ctx context.Context, root string) (string, err
 		return "", ux.Fail("set the level world up",
 			fmt.Errorf("refusing to use %q as a level root: inside the sandbox it resolves to %q, so something on that path is a symlink: %w", clean, resolved, ErrUnsafeLevelRoot),
 			remediationUnsafeLevelRoot, "unsafe-level-root")
+	}
+
+	// Re-validate the resolved value, matching internal/sandbox/demo_level.go's
+	// prior art for this exact containment problem. resolved equals clean
+	// here by the check above, so neither call below can fail today; both
+	// stay because the equality check above is the kind of thing a future
+	// change relaxes, and these are the assertions that would catch it.
+	if err := validateLevelRoot(resolved); err != nil {
+		return "", ux.Fail("set the level world up", err, remediationUnsafeLevelRoot, "unsafe-level-root")
+	}
+	if err := r.refuseIfInsideStateDir(resolved); err != nil {
+		return "", ux.Fail("set the level world up", err, remediationUnsafeLevelRoot, "unsafe-level-root")
 	}
 	return resolved, nil
 }
@@ -324,6 +328,22 @@ func (r *Runner) Setup(ctx context.Context, lvl *content.Level) error {
 
 	if err := r.Teardown(ctx, lvl); err != nil {
 		return err
+	}
+
+	// setup.files is optional (docs/LEVEL-FORMAT.md marks it "O"), so a
+	// level with only a setup.script is legal, and PushFiles returns
+	// immediately without touching the sandbox when the manifest is empty.
+	// Without this mkdir, such a level's chown below and its own script
+	// both target a root that was never created, and both fail. This must
+	// run as the learner: the ancestor directories under /home/learner
+	// belong to the learner, and the chown that follows is what fixes
+	// ownership of whatever PushFiles creates afterward as uid 0.
+	if res, err := r.sess.Exec(ctx, []string{"mkdir", "-p", "--", root}, runtime.ExecOpts{User: userLearner}); err != nil {
+		return r.rollback(ctx, lvl, ux.Fail("materialise the level world", err, remediationSandboxUnhealthy, "sandbox-unhealthy"))
+	} else if res.ExitCode != 0 {
+		return r.rollback(ctx, lvl, ux.Fail("materialise the level world",
+			fmt.Errorf("mkdir -p %q exited %d: %s", root, res.ExitCode, res.Stderr),
+			remediationSandboxUnhealthy, "sandbox-unhealthy"))
 	}
 
 	if err := r.sess.PushFiles(ctx, runtime.FileManifest{Files: manifest}); err != nil {
@@ -472,6 +492,11 @@ func (r *Runner) buildFileEntry(spec content.FileSpec, root string) (runtime.Fil
 		if err != nil {
 			return runtime.FileEntry{}, ux.Fail("read the level definition",
 				fmt.Errorf("mode %q on file %q does not parse as octal: %w: %v", spec.Mode, spec.Path, ErrInvalidLevelPack, err),
+				remediationLevelPackInvalid, "level-pack-invalid")
+		}
+		if v > 0o777 {
+			return runtime.FileEntry{}, ux.Fail("read the level definition",
+				fmt.Errorf("mode %q on file %q has bits set above 0o777: %w", spec.Mode, spec.Path, ErrInvalidLevelPack),
 				remediationLevelPackInvalid, "level-pack-invalid")
 		}
 		mode = fs.FileMode(v)

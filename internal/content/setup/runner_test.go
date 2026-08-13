@@ -90,12 +90,41 @@ func TestRefusesLevelRootLearnerHomeItself(t *testing.T) {
 	assertRefusesUnsafeRoot(t, "/home/learner")
 }
 
+// assertRefusesOnTheDotDotSegmentCheck asserts that validateLevelRoot
+// refuses root specifically on the pre-Clean ".." segment loop, by checking
+// the error names the segment rather than a later branch. Both
+// TestRefusesLevelRootParentTraversal and TestRefusesLevelRootTraversalToEtc
+// used inputs that clean to something a later branch would also catch, so
+// deleting the segment loop entirely left the whole package suite green: the
+// review found that "/home/learner/../.." cleans to "/" (caught by the
+// clean == "/" branch) and "/home/learner/quest/../../../etc" cleans to
+// "/etc" (caught by the prefix branch), so neither test noticed the loop was
+// gone. Asserting the specific message pins the guard itself, not just that
+// something eventually refused.
+func assertRefusesOnTheDotDotSegmentCheck(t *testing.T, root string) {
+	t.Helper()
+	err := validateLevelRoot(root)
+	if err == nil {
+		t.Fatalf("validateLevelRoot(%q): want a refusal, got nil", root)
+	}
+	if !errors.Is(err, ErrUnsafeLevelRoot) {
+		t.Errorf("validateLevelRoot(%q): err = %v, want it to wrap ErrUnsafeLevelRoot", root, err)
+	}
+	if !strings.Contains(err.Error(), "it contains a .. segment") {
+		t.Errorf("validateLevelRoot(%q): err = %v, want it to name the .. segment: this input also cleans to something a later branch would refuse on its own, so a message that does not name the segment means the pre-Clean check already ran regardless", root, err)
+	}
+}
+
 func TestRefusesLevelRootParentTraversal(t *testing.T) {
-	assertRefusesUnsafeRoot(t, "/home/learner/../..")
+	const root = "/home/learner/../.."
+	assertRefusesOnTheDotDotSegmentCheck(t, root)
+	assertRefusesUnsafeRoot(t, root)
 }
 
 func TestRefusesLevelRootTraversalToEtc(t *testing.T) {
-	assertRefusesUnsafeRoot(t, "/home/learner/quest/../../../etc")
+	const root = "/home/learner/quest/../../../etc"
+	assertRefusesOnTheDotDotSegmentCheck(t, root)
+	assertRefusesUnsafeRoot(t, root)
 }
 
 func TestRefusesLevelRootSymlink(t *testing.T) {
@@ -189,53 +218,30 @@ func TestSetupTearsDownFirst(t *testing.T) {
 	}
 }
 
-// TestSetupOnDirtyRootMatchesSetupOnCleanRoot pins criterion 1's idempotency:
-// running Setup twice produces the same manifest and the same argv
-// sequence, regardless of what the fake's recorded world looked like before
-// the second run.
-func TestSetupOnDirtyRootMatchesSetupOnCleanRoot(t *testing.T) {
-	newLevel := func() *content.Level {
-		return &content.Level{ID: "nav-01", Setup: content.Setup{Root: "/home/learner/quest", Files: []content.FileSpec{
-			{Path: "notes.txt", Content: "hello\n"},
-		}}}
-	}
+// TestSetupCreatesLevelRootWithNoFiles pins blocking finding 1 from the #83
+// review: setup.files is optional (docs/LEVEL-FORMAT.md marks it "O"), so a
+// level with only a setup.script is legal, and the real docker backend's
+// PushFiles returns immediately on an empty manifest without creating
+// anything. Without Setup's own mkdir -p, the chown that follows PushFiles,
+// and the setup script itself, both target a root nothing ever created.
+// dirAwareFakeSession answers non-zero for exactly that case, so this fails
+// without the fix instead of passing regardless like the five tests the
+// review named (TestSetupTearsDownFirst and friends), which all use a fake
+// that answers exit 0 to any unscripted call.
+func TestSetupCreatesLevelRootWithNoFiles(t *testing.T) {
+	f := newDirAwareFakeSession()
+	r := NewRunner(f, nil)
+	lvl := &content.Level{ID: "nav-01", Setup: content.Setup{
+		Root:   "/home/learner/quest",
+		Script: "true",
+	}}
 
-	f1 := &fakeSession{}
-	r1 := NewRunner(f1, nil)
-	if err := r1.Setup(context.Background(), newLevel()); err != nil {
-		t.Fatalf("first Setup: %v", err)
+	if err := r.Setup(context.Background(), lvl); err != nil {
+		t.Fatalf("Setup: %v, want the level root created before chown and the setup script run", err)
 	}
-
-	f2 := &fakeSession{}
-	r2 := NewRunner(f2, nil)
-	// Simulate a dirty world: pretend the sentinel already exists.
-	f2.whenArgvEquals([]string{"test", "-f", mustSentinelPath(t, DefaultStateDir, "nav-01")}, runtime.ExecResult{ExitCode: 0}, nil)
-	if err := r2.Setup(context.Background(), newLevel()); err != nil {
-		t.Fatalf("second Setup: %v", err)
+	if n := f.countArgvPrefix("mkdir"); n == 0 {
+		t.Error("recorded 0 mkdir call(s), want Setup to create the level root itself")
 	}
-
-	if len(f1.pushCalls) != 1 || len(f2.pushCalls) != 1 {
-		t.Fatalf("push calls: first %d, second %d, want 1 each", len(f1.pushCalls), len(f2.pushCalls))
-	}
-	m1, m2 := f1.pushCalls[0], f2.pushCalls[0]
-	if len(m1.Files) != len(m2.Files) {
-		t.Fatalf("manifests differ: %d files vs %d files", len(m1.Files), len(m2.Files))
-	}
-	for i := range m1.Files {
-		a, b := m1.Files[i], m2.Files[i]
-		if a.Path != b.Path || a.Mode != b.Mode || a.Owner != b.Owner || !bytes.Equal(a.Content, b.Content) {
-			t.Errorf("manifests differ at entry %d: %+v vs %+v", i, a, b)
-		}
-	}
-}
-
-func mustSentinelPath(t *testing.T, stateDir, levelID string) string {
-	t.Helper()
-	p, err := sentinelPath(stateDir, levelID)
-	if err != nil {
-		t.Fatalf("sentinelPath: %v", err)
-	}
-	return p
 }
 
 // TestMaterializedFilesHaveNoCarriageReturns pins criterion 2: a pack asset
@@ -301,6 +307,138 @@ func TestMaterializedFilesCarryModeAndOwner(t *testing.T) {
 // internal/sandbox/demo_golden_test.go's requireLinuxDocker.
 func TestCRLFScriptRunsInsideTheSandbox(t *testing.T) {
 	t.Skip("needs a live Linux Docker daemon; see internal/sandbox/demo_golden_test.go for the same shape once a runtime.Session fixture is wired here")
+}
+
+// TestBuildFileEntryRefusesInvalidSpecs pins blocking finding 2 from the #83
+// review: every validation branch in buildFileEntry, deleted five at once in
+// the review's scratch copy plus the ownerPattern check on its own, left the
+// whole package suite green because only the happy path was ever exercised.
+// Each case here must wrap ErrInvalidLevelPack and must not produce a
+// populated FileEntry.
+func TestBuildFileEntryRefusesInvalidSpecs(t *testing.T) {
+	const root = "/home/learner/quest"
+	defaultPackFS := fstest.MapFS{
+		"assets/a.txt": &fstest.MapFile{Data: []byte("hi")},
+	}
+
+	// escapingSourceFS is what makes the "source escapes the pack" case
+	// below actually pin buildFileEntry's own fs.ValidPath check, rather
+	// than merely observing a refusal that happens for a different reason.
+	// fstest.MapFS enforces fs.ValidPath inside its own Open, so a case
+	// built on it cannot tell "buildFileEntry's check refused this" from
+	// "the underlying FS refused this on its own": deleting the explicit
+	// check and rerunning against a MapFS-backed case still passes, exactly
+	// the kind of redundancy blocking finding 3 found in
+	// validateLevelRoot's ".." check. permissiveFS does not validate at
+	// all, and really does hold the file the traversal is reaching for, so
+	// with it, only buildFileEntry's own check stands between the two.
+	escapingSourceFS := permissiveFS{
+		"../outside.txt": []byte("secret"),
+		"assets/a.txt":   []byte("hi"),
+	}
+
+	tests := []struct {
+		name   string
+		spec   content.FileSpec
+		packFS fs.FS
+	}{
+		// This specific path is chosen so only the pre-Clean ".." segment
+		// loop refuses it: path.Clean("logs/../notes.txt") is "notes.txt",
+		// which joins under root exactly like a legitimate path, so the
+		// later abs/prefix check below would wave it through if the segment
+		// loop above it were ever lost. "../../etc/passwd" would not have
+		// exercised this guard at all: it escapes far enough that the
+		// prefix check catches it independently, the same redundancy noted
+		// above and the one blocking finding 3 found in validateLevelRoot's
+		// own ".." check.
+		{name: "path traverses through a .. segment that still lands under root", spec: content.FileSpec{Path: "logs/../notes.txt", Content: "x"}},
+		{name: "path escapes root with a .. segment", spec: content.FileSpec{Path: "../../etc/passwd", Content: "x"}},
+		{name: "path is absolute", spec: content.FileSpec{Path: "/etc/passwd", Content: "x"}},
+		{name: "path is empty", spec: content.FileSpec{Path: "", Content: "x"}},
+		{name: "path cleans to the root itself", spec: content.FileSpec{Path: ".", Content: "x"}},
+		{name: "both source and content set", spec: content.FileSpec{Path: "a.txt", Source: "assets/a.txt", Content: "x"}},
+		{name: "none of source, content, or generate set", spec: content.FileSpec{Path: "a.txt"}},
+		{name: "source escapes the pack", spec: content.FileSpec{Path: "a.txt", Source: "../outside.txt"}, packFS: escapingSourceFS},
+		{name: "mode does not parse as octal", spec: content.FileSpec{Path: "a.txt", Content: "x", Mode: "not-octal"}},
+		{name: "mode has bits above 0o777", spec: content.FileSpec{Path: "a.txt", Content: "x", Mode: "7777"}},
+		{name: "owner is flag-shaped", spec: content.FileSpec{Path: "a.txt", Content: "x", Owner: "-rf"}},
+		{name: "owner carries shell metacharacters", spec: content.FileSpec{Path: "a.txt", Content: "x", Owner: "learner:learner;rm -rf /"}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			packFS := tc.packFS
+			if packFS == nil {
+				packFS = defaultPackFS
+			}
+			r := NewRunner(&fakeSession{}, packFS)
+			entry, err := r.buildFileEntry(tc.spec, root)
+			if err == nil {
+				t.Fatalf("buildFileEntry(%+v): want a refusal, got entry %+v", tc.spec, entry)
+			}
+			if !errors.Is(err, ErrInvalidLevelPack) {
+				t.Errorf("buildFileEntry(%+v): err = %v, want it to wrap ErrInvalidLevelPack", tc.spec, err)
+			}
+			if entry.Path != "" || entry.Content != nil || entry.Mode != 0 || entry.Owner != "" {
+				t.Errorf("buildFileEntry(%+v): produced %+v, want a zero FileEntry on refusal", tc.spec, entry)
+			}
+		})
+	}
+}
+
+// permissiveFS is a minimal fs.FS whose Open does not validate name against
+// fs.ValidPath, unlike every standard library implementation this package
+// actually uses (fstest.MapFS included). It exists for exactly one case in
+// TestBuildFileEntryRefusesInvalidSpecs: proving that buildFileEntry's own
+// fs.ValidPath check on spec.Source is load-bearing, not incidental
+// protection borrowed from a spec-compliant fs.FS.
+type permissiveFS map[string][]byte
+
+// Open looks name up directly, with no validation at all: a caller can ask
+// for "../outside.txt" and get it back if the map holds that exact key.
+func (p permissiveFS) Open(name string) (fs.File, error) {
+	data, ok := p[name]
+	if !ok {
+		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
+	}
+	return &permissiveFile{Reader: bytes.NewReader(data)}, nil
+}
+
+// permissiveFile is the fs.File permissiveFS.Open returns. Stat is
+// deliberately unimplemented: fs.ReadFile tolerates a Stat error and falls
+// back to growing its buffer as it reads, so this file never needs a real
+// fs.FileInfo to be read in full.
+type permissiveFile struct {
+	*bytes.Reader
+}
+
+func (f *permissiveFile) Stat() (fs.FileInfo, error) {
+	return nil, errors.New("permissiveFile: Stat is not implemented")
+}
+func (f *permissiveFile) Close() error { return nil }
+
+var _ fs.FS = permissiveFS{}
+var _ fs.File = (*permissiveFile)(nil)
+
+// TestBuildManifestRefusesAnOversizedManifest pins blocking finding 2's
+// maxManifestBytes cap, the one guard in the untested set that lives in
+// buildManifest rather than buildFileEntry itself.
+func TestBuildManifestRefusesAnOversizedManifest(t *testing.T) {
+	lvl := &content.Level{ID: "nav-01", Setup: content.Setup{Root: "/home/learner/quest", Files: []content.FileSpec{
+		{Path: "big.txt", Content: strings.Repeat("x", maxManifestBytes+1)},
+	}}}
+	r := NewRunner(&fakeSession{}, nil)
+
+	entries, err := r.buildManifest(lvl, lvl.Setup.Root)
+	if err == nil {
+		t.Fatalf("buildManifest: want a refusal for a manifest over %d bytes, got %d entries", maxManifestBytes, len(entries))
+	}
+	if !errors.Is(err, ErrInvalidLevelPack) {
+		t.Errorf("buildManifest: err = %v, want it to wrap ErrInvalidLevelPack", err)
+	}
+	if entries != nil {
+		t.Errorf("buildManifest: entries = %+v, want nil on refusal", entries)
+	}
 }
 
 // TestSetupScriptRunsAsRootAfterTheFiles pins criterion 4: the script step
@@ -553,9 +691,19 @@ func TestSentinelIsWrittenOnlyAfterEveryStepSucceeds(t *testing.T) {
 // --------------------------------------------------------------------------
 
 // TestNoHostFilesystemRemovalInPackage parses every non-test .go file in
-// this package and fails on a call naming a host-side filesystem mutation,
-// and on any import of "os" outside this test's own allowlist. Shaped after
+// this package and fails if any of them imports "os" at all, under any
+// name, plus fails on a call naming a host-side filesystem mutation as a
+// second, narrower belt-and-braces check. Shaped after
 // TestVerifytestIsImportedOnlyByTests in internal/verify/check_test.go.
+//
+// The import ban is the load-bearing check. Everything this package does to
+// a level's world runs through runtime.Session.Exec inside the sandbox, so
+// no non-test file has a legitimate reason to import "os" at all; banning
+// the whole import, rather than naming individual functions, also catches
+// os.Create and os.OpenFile (host-side mutations the old call-name list did
+// not name) and survives an aliased import such as `import osx "os"`, which
+// the call-name check alone cannot see because it only recognises the
+// literal identifier "os" at a call site.
 func TestNoHostFilesystemRemovalInPackage(t *testing.T) {
 	dir := packageDirForTest(t)
 	fset := token.NewFileSet()
@@ -563,6 +711,7 @@ func TestNoHostFilesystemRemovalInPackage(t *testing.T) {
 	banned := map[string]bool{
 		"Remove": true, "RemoveAll": true, "Rename": true, "Truncate": true,
 		"Chmod": true, "Chown": true, "WriteFile": true, "Mkdir": true, "MkdirAll": true,
+		"Create": true, "OpenFile": true, "Symlink": true, "Link": true,
 	}
 
 	entries, err := os.ReadDir(dir)
@@ -578,6 +727,11 @@ func TestNoHostFilesystemRemovalInPackage(t *testing.T) {
 		f, err := parser.ParseFile(fset, full, nil, parser.AllErrors)
 		if err != nil {
 			t.Fatalf("parse %s: %v", full, err)
+		}
+		for _, imp := range f.Imports {
+			if strings.Trim(imp.Path.Value, `"`) == "os" {
+				t.Errorf("%s imports %q; every deletion in this package must run through Session.Exec inside the sandbox, so a non-test file has no legitimate use for it", name, "os")
+			}
 		}
 		ast.Inspect(f, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)

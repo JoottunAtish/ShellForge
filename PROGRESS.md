@@ -1802,6 +1802,156 @@ both. `govulncheck` and `gosec` are not installed here and were not run;
 though `check-ci-gates.py` itself, a plain script rather than a pytest
 suite, did.
 
+### Day 2 follow-up, 2026-08-13: review fixes on #83
+
+An independent review of PR #83 found three blocking gaps and a set of
+smaller ones. Fixed on the same branch, each guard mutation-tested the same
+way the review found the originals: delete it in a scratch copy, rerun the
+package suite, confirm it fails and names the right test.
+
+Blocking:
+
+- **`Setup` never created `setup.root`.** It relied on `PushFiles` creating
+  the root as a side effect of writing files into it, but `setup.files` is
+  optional, so a level with only a `setup.script` got a `chown` and a
+  `WorkDir` against a directory nothing had created, and both failed. Five
+  existing tests used exactly that shape and passed only because the fake
+  answers exit 0 to an unscripted call. Fixed with `mkdir -p -- <root>` as
+  the learner, after `Teardown` and before `PushFiles`, its exit code
+  checked like every other step. `TestSetupCreatesLevelRootWithNoFiles`
+  pins it against a new `dirAwareFakeSession`, which tracks which
+  directories `mkdir -p` actually created and answers `chown` and `bash -c`
+  non-zero against one that was not, the way the real docker backend would.
+  Deleting the `mkdir` step in a scratch copy fails exactly that test.
+- **Every validation branch in `buildFileEntry` was untested.** The review
+  deleted five guards at once (exactly-one-of source/content/generate, the
+  empty-or-absolute path check, the path-escapes-root prefix check,
+  `fs.ValidPath` on `source`, the `maxManifestBytes` cap) plus the
+  `ownerPattern` check on its own, and the suite stayed green throughout.
+  `TestBuildFileEntryRefusesInvalidSpecs` is a table test covering all of
+  those plus the path's own pre-Clean `..` segment loop, mutation-tested one
+  guard at a time. Two of the review's own listed inputs turned out not to
+  pin what they were meant to: `../../etc/passwd` escapes far enough that
+  the abs/prefix check catches it independently of the segment loop, so a
+  second case, `logs/../notes.txt` (which cleans to a path that legitimately
+  sits under root), was added to actually pin the segment loop; and
+  `source: ../outside.txt` against `fstest.MapFS` is refused by `MapFS.Open`
+  itself before `buildFileEntry`'s own `fs.ValidPath` check ever runs, so
+  that one case runs against a new `permissiveFS` test double that does not
+  validate at all, which is what makes the case prove buildFileEntry's own
+  check is load-bearing. `TestBuildManifestRefusesAnOversizedManifest`
+  covers the byte cap separately, since it lives in `buildManifest` rather
+  than `buildFileEntry`.
+- **`TestRefusesLevelRootParentTraversal` and
+  `TestRefusesLevelRootTraversalToEtc` did not pin the guard they are named
+  after.** Both inputs clean to something a later branch (the `/` result or
+  the prefix check) catches on its own, so deleting `validateLevelRoot`'s
+  pre-Clean `..` segment loop left the suite green. Both tests now also
+  assert the error names the segment ("it contains a .. segment") rather
+  than a later branch's message, which is what makes them fail when the
+  loop is removed instead of merely observing that something eventually
+  refused.
+
+Suggestions applied, each verified not to regress the suite:
+
+- `resolveLevelRoot` re-validates the resolved root against both
+  `validateLevelRoot` and `refuseIfInsideStateDir` after the `readlink`
+  round trip, matching `internal/sandbox/demo_level.go`'s prior art. Neither
+  call can fail today because resolution is refused unless it is an exact
+  identity; both stay for the same reason the prior art keeps them, in case
+  a future change relaxes that equality check.
+- The state directory guard moved out of `resolveLevelRoot` and into
+  `sentinelPath`, the one place `Setup`, `Teardown`, and `IsSetUp` all go
+  through. Before this, `IsSetUp` built an argv from `r.stateDir` with no
+  validation at all; `TestIsSetUpRefusesAnUnsafeStateDir` pins the new
+  coverage, and deleting the check in `sentinelPath` fails it along with
+  `TestSentinelPathRefusesAnUnsafeStateDir` and `TestRefusesAnUnsafeStateDir`.
+- `TestNoHostFilesystemRemovalInPackage`'s doc comment claimed it fails on
+  any import of `"os"` outside its own allowlist, but it only ever walked
+  call expressions for a literal `os.` identifier, which an aliased import
+  (`import osx "os"`) would defeat. The test now also fails if any non-test
+  `.go` file in the package imports `"os"` at all, checked by import path
+  rather than identifier, which is both stronger (also catches `os.Create`
+  and `os.OpenFile`, which the old call-name list did not name) and
+  actually matches what the comment already said. No non-test file in the
+  package imports `os` today, so this passes without any other change.
+  Verified: an aliased `osx "os"` import added to a scratch copy is caught.
+  PROGRESS.md's own claim in the Day 2 entry above, that nothing is staged
+  to a host path on disk, is now literally backed by this check rather than
+  by the narrower call-name list alone.
+- The three stale `/opt/shellforge/state` literals in
+  `internal/verify/snapshot_test.go` now read `/home/learner/.shellforge`,
+  matching what the Day 2 entry above already claimed was done everywhere.
+  They are arbitrary fixture strings with no behavior riding on the exact
+  value, so this is a wording fix, not a loosened assertion.
+- A `mode` whose parsed value carries a bit above `0o777` (for example
+  `"7777"`) is now refused rather than silently masked down to `0777` by
+  the docker backend's `e.mode.Perm()`. `TestBuildFileEntryRefusesInvalidSpecs`
+  covers it.
+
+Declined:
+
+- The other half of the same suggestion, letting `content: ""` express an
+  intentional empty file, is not applied. It needs a schema change to
+  `FileSpec` (a `*string` or an explicit `empty: true` field), which touches
+  the same `content.Level` surface issue #53 is expected to extend, and
+  making that call now would preempt the ratification issue this session
+  cannot open (see below).
+- `TestSetupOnDirtyRootMatchesSetupOnCleanRoot` claimed to pin criterion 1's
+  idempotency but simulated nothing: `Setup` never calls `IsSetUp`, so the
+  scripted `test -f` answer was never consulted, and the test compared two
+  manifests built by the same pure function from the same input, which
+  cannot differ. Building a real in-memory sandbox-state simulation strong
+  enough to make this test mean something is a bigger, riskier piece of
+  work than a review-response commit should carry, so the test is deleted
+  instead. This half of criterion 1 (setup on a dirty root behaves like
+  setup on a clean root) has no test today and needs a live-session fixture
+  to get one properly; recorded here rather than left as a test that reads
+  as coverage while asserting nothing.
+
+Answers to the review's two questions:
+
+- **`stripCRLF` versus `CLAUDE.md` non-negotiable 7.** They disagree as
+  written. `stripCRLF` rewrites only the `\r` in a `\r\n` pair; rule 7 says
+  to strip `\r` from every materialized file, unqualified, which would also
+  cover a classic Mac lone-CR line ending. The narrower behavior is the one
+  this session defends: an unconditional strip is not safe for a binary
+  asset that happens to contain a lone `0x0d`, and v0.1 has no binary-asset
+  concept to exempt one (tracked as `// TODO(v0.2)` in `runner.go`). That
+  makes this specification drift, not a bug to silently work around: rule 7
+  as written is broader than what ships, and this session is not editing
+  CLAUDE.md to narrow it. Flagged for the main session to open a drift
+  issue, either narrowing rule 7's wording to the CRLF-pair case or widening
+  the strip once a binary flag exists.
+- **The `content.Level` contract with #53.** The review is right that the
+  contract is fragile: it lives only in a doc comment on
+  `internal/content/setupspec.go` and a PROGRESS.md paragraph, its only
+  enforcement is that a second declaration of `Level` fails to compile, and
+  that failure mode only fires after whoever picks up #53 has already
+  written the competing type. This session cannot open the ratification
+  issue against #53 or link it from the doc comment, since it does not
+  touch GitHub state. Recorded again here, plainly, as a gap the main
+  session should close before #53 starts.
+
+Not touched, reported instead: the review's `ci.yml` doc-anchor gate
+finding is correct (`grep`ing only the struct-literal `DocAnchor: "..."`
+form matches one anchor that lives in a comment, and misses all 52 real,
+positional `ux.Fail` call sites) but changing a CI gate is out of scope for
+a review-response commit. All five doc anchors this package emits do have
+headings in `docs/05-troubleshooting.md`, checked by hand as the review
+itself did.
+
+Gates run locally, all green: `gofmt -s -l .` (clean), `go vet ./...`,
+`go build ./...`, `go test ./...`, `go test -race ./...`,
+`./scripts/check-punctuation.sh`, `./scripts/check-allowlist-regexp.sh`
+(run after staging the new `dirawaresession_test.go`, since it enumerates
+with `git ls-files`), `./scripts/check-links.sh`, and
+`python3 scripts/check-ci-gates.py`. `./scripts/check-cli-package.sh` also
+run and green, unaffected by this change. Docker is not running in this
+environment, `govulncheck` and `gosec` are not installed, and `pytest` is
+not installed, so none of the three ran; same gaps as the Day 2 entry
+above.
+
 ---
 
 ## Day 1: the spike
