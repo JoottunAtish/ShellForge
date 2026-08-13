@@ -348,6 +348,126 @@ docker rm -f shellforge-sandbox
 
 ---
 
+## progress-db-unwritable
+
+**You'll see:** an error while Shellforge tries to open the file where it
+records your progress, telling you the directory is not writable.
+
+**What it means:** Shellforge keeps a small file on your own computer that
+remembers which levels you have finished. That file lives in a folder your
+user account normally owns, and this error means Shellforge could not create
+or write to that folder, most often because of a permissions problem or a
+full disk.
+
+**Fix:**
+
+Check that you can create files in the folder the error names, then run:
+
+```
+shellforge doctor
+```
+
+If the folder belongs to a different user, or your disk is full, fix that
+first. Nothing about your progress is lost by this error: no file is deleted
+by it.
+
+---
+
+## progress-db-corrupt
+
+**You'll see:** an error while Shellforge tries to read the file where it
+records your progress, telling you the file is corrupt.
+
+**What it means:** the small file that remembers which levels you have
+finished is unreadable, most often because it was cut off mid-write by a
+crash or a power loss. Shellforge never repairs a file automatically and
+never deletes it either.
+
+**Fix:**
+
+Rename the file the error names to `progress.db.broken`, then run:
+
+```
+shellforge doctor
+```
+
+Shellforge will start a new progress file. The levels you have finished will
+be forgotten, and nothing else is lost. If you want help recovering the old
+one, keep `progress.db.broken` and mention it in a bug report.
+
+---
+
+## progress-db-in-use
+
+**You'll see:** an error while Shellforge tries to open the file where it
+records your progress, telling you the file is in use.
+
+**What it means:** another copy of Shellforge, most often one you already
+have open in a different window, has this file open right now. SQLite only
+lets one process finish a certain quick internal setup step on the file at a
+time, and this one lost that race. Nothing is wrong with the file itself,
+and Shellforge does not touch it when this happens.
+
+**Fix:**
+
+Close the other copy of Shellforge, or the other window running it, then run:
+
+```
+shellforge doctor
+```
+
+If nothing else is open, run `shellforge doctor` again anyway: an antivirus
+scanner or a backup tool can briefly hold the same kind of lock. If it keeps
+happening, check that only one antivirus or backup process watches your
+Shellforge data folder.
+
+---
+
+## progress-db-too-new
+
+**You'll see:** an error while Shellforge tries to open the file where it
+records your progress, telling you the file's format is newer than this copy
+of Shellforge understands.
+
+**What it means:** the small file that remembers which levels you have
+finished was last written by a newer version of Shellforge than the one you
+are running now. Opening it with an older version could scramble it, so
+Shellforge refuses instead.
+
+**Fix:**
+
+Update Shellforge to the latest version and start it again. If you are going
+back to an older version of Shellforge on purpose, rename the file the error
+names first; Shellforge will start a new progress file rather than touch the
+newer one.
+
+---
+
+## progress-db-migration-failed
+
+**You'll see:** an error while Shellforge tries to update the layout of the
+file where it records your progress.
+
+**What it means:** the small file that remembers which levels you have
+finished needs its internal layout updated for this version of Shellforge,
+and that update did not complete. This is our bug, not something you did
+wrong.
+
+**Fix:**
+
+Run:
+
+```
+shellforge doctor
+```
+
+and include its output if you report this. To carry on playing right away,
+rename the file the error names to `progress.db.broken`; Shellforge will
+start a new progress file, and the levels you have finished will be
+forgotten.
+
+---
+
 ## unsafe-level-root
 
 **You'll see:** "refusing to use ... as a level root", when starting or resetting
