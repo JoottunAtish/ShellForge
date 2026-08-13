@@ -36,7 +36,28 @@ func NewRootCommand(v VersionInfo) *cobra.Command {
 		Short:         "Learn the Linux command line in a terminal you can't break.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		// A bare `shellforge` falls back to Help, same as the old
+		// dispatcher's no-args case. The real reason a RunE is set at all is
+		// -v/--version below: cobra only parses a root-level flag when the
+		// root has something registered to run.
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if showVersion, _ := cmd.Flags().GetBool("version"); showVersion {
+				printVersion(cmd.OutOrStdout(), v)
+				return nil
+			}
+			return cmd.Help()
+		},
 	}
+	// Restores the old dispatcher's `-v`/`--version` alias for the `version`
+	// verb, per review on #80: cobra's own SilenceErrors turned that flag
+	// into an "unknown flag" error routed through ux.Render's "this is
+	// unexpected" fallback, when it used to just print the version. This is
+	// a local flag, not persistent: `-v` on a subcommand still means
+	// whatever that subcommand defines it to mean, matching the old
+	// dispatcher, which only ever recognized -v/--version as the first
+	// argument.
+	root.Flags().BoolP("version", "v", false, "Print version and build information")
+
 	// Shell completion belongs to the Day 3 doctor ticket, per #48's own
 	// scope. cobra registers a `completion` subcommand by default; turn it
 	// back off rather than ship it early and undocumented.

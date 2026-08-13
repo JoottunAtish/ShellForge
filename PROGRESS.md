@@ -1357,6 +1357,60 @@ first three real dependencies beyond `creack/pty` and `golang.org/x/term`.
   `author validate`), an unknown command, and `run` with no level, each
   producing the expected user-facing error or output.
 
+### Day 2 follow-up, 2026-08-13: review fix on #80, cobra's own errors and -v/--version
+
+PR #80 code owner review caught one blocking issue in the cobra migration
+above, missed locally because nothing exercised cobra's own error path or
+the version flag alias, both real on `main` before this PR. Fixed here.
+
+- **Two real regressions, both from `root.go` setting `SilenceErrors:
+  true` with nothing to translate cobra's own errors first.** `shellforge
+  -v` / `--version` used to work (the old dispatcher special-cased them to
+  the `version` verb) and instead produced "unknown flag" wrapped in
+  `ux.Render`'s "this is unexpected, it is our bug" fallback. A command
+  typo, the single most common beginner mistake, got the same fallback
+  instead of a usage message. `TestRunRejectsUnknownCommandWithUsageError`,
+  which pinned the old dispatcher's version of this, was deleted with the
+  rest of `commands.go` and nothing cobra-shaped replaced it, which is
+  exactly how both shipped.
+- **`main.go` gained `renderableError(err) error`.** Every verb's own
+  `RunE` in this codebase already returns either `nil` or a `*ux.Error`, by
+  convention; `renderableError` uses that as the signal: an error that is
+  not already a `*ux.Error` can only have come from cobra's own argument
+  parsing, so it gets wrapped in one, `err.Error()` as the message and
+  "Run `shellforge help` to see the available commands." as the
+  remediation, before ever reaching `ux.Render`. `ux.Render`'s "unexpected,
+  our bug" fallback now only fires for a genuine programming error, which
+  is the case it was written for.
+- **`root.go` restores the `-v`/`--version` alias**, not via cobra's own
+  `Command.Version` field, which prints a different, single-line format,
+  but a local `-v`/`--version` bool flag on the root command plus a `RunE`
+  that checks it and calls the same `printVersion` the `version` verb uses,
+  falling back to `cmd.Help()` for a bare `shellforge`. Local, not
+  persistent: `-v` on a subcommand still means whatever that subcommand
+  defines, matching the old dispatcher, which only ever recognized the
+  alias as the first argument.
+- Five new tests in `commands_test.go`: the two flag spellings
+  (`TestVersionFlagAliasesStillWork`), a bare invocation still printing
+  usage and exiting clean (`TestBareInvocationShowsHelp`), an unknown
+  command and an unknown flag each rendering without the words
+  "unexpected" or "bug-report" and pointing at `shellforge help`
+  (`TestUnknownCommandAndFlagAreUserFacing`), and `renderableError` leaving
+  an already-wrapped `*ux.Error` alone rather than double-wrapping it
+  (`TestRenderableErrorPassesThroughAnExistingUxError`).
+- Verified against the built binary, matching exactly what review reported
+  reproducing against `main`: `shellforge -v`, `shellforge --version`,
+  `shellforge nope`, and `shellforge --bogus` all now behave correctly, and
+  `shellforge version` and a bare `shellforge` are unchanged.
+- Gates rerun locally, all green: `gofmt -s -w .`, `go vet ./...`,
+  `go build -o bin/shellforge ./cmd/shellforge`, `go build -v ./...`,
+  `go test ./...`, `go test -race ./...`, `go test ./internal/archtest/...`,
+  `./scripts/check-punctuation.sh`, `./scripts/check-allowlist-regexp.sh`,
+  `./scripts/check-links.sh`, `./scripts/check-cli-package.sh`,
+  `python3 scripts/check-ci-gates.py`, `python3 -m pytest scripts/tests -q`,
+  `go mod tidy` (stable), and a local `gosec -quiet -exclude-dir=docs
+  ./...`, clean.
+
 ---
 
 ### Day 1, 2026-08-12: fail the build if the CLI entry point vanishes again

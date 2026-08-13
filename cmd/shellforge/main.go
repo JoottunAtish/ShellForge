@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/signal"
 	"syscall"
@@ -31,7 +32,23 @@ func main() {
 
 	root := NewRootCommand(VersionInfo{Version: version, Commit: commit, BuildDate: buildDate})
 	if err := root.ExecuteContext(ctx); err != nil {
-		ux.Render(os.Stderr, err)
+		ux.Render(os.Stderr, renderableError(err))
 		os.Exit(1)
 	}
+}
+
+// renderableError ensures every error reaching ux.Render is a *ux.Error.
+//
+// root.go sets SilenceErrors, so a parse-time failure cobra generates
+// itself, an unknown command or an unknown flag, reaches here as a plain
+// error rather than one already wrapped by a verb's own RunE. Left
+// unwrapped, ux.Render's own fallback treats it as "this is unexpected,
+// which means it is our bug", which misdirects a learner into filing a bug
+// report over their own typo instead of telling them what to try next.
+func renderableError(err error) error {
+	var uxErr *ux.Error
+	if errors.As(err, &uxErr) {
+		return err
+	}
+	return ux.Fail(err.Error(), nil, "Run `shellforge help` to see the available commands.", "")
 }
