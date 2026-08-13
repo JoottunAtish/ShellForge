@@ -1,9 +1,9 @@
 package setup
 
 import (
+	"bytes"
 	"path"
 	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/JoottunAtish/ShellForge/internal/content"
@@ -48,13 +48,9 @@ func TestFilesTwoExpectedValuesMatchTheGenerator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate %s: %v", target, err)
 	}
-	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
 
-	want := map[string]string{
-		"first-line": lines[0],
-		"last-lines": strings.Join(lines[len(lines)-3:], "\n"),
-		"line-count": strconv.Itoa(len(lines)),
-	}
+	want := generatorAnswers(t, data)
+	data = nil
 
 	for _, c := range lvl.Checks {
 		expected, named := want[c.ID]
@@ -72,5 +68,51 @@ func TestFilesTwoExpectedValuesMatchTheGenerator(t *testing.T) {
 
 	for id := range want {
 		t.Errorf("files-02 no longer has a check with id %q, so its expected value is unverified", id)
+	}
+}
+
+// generatorAnswers computes the three values files-02 asks the learner for:
+// the first line, the last three lines, and the line count.
+//
+// It scans rather than splitting the whole file into a slice. Four thousand
+// lines is four thousand string headers, and under the race detector the
+// shadow memory for that is enough to push this package past what
+// ThreadSanitizer will reserve on a Windows host. The scan holds three lines
+// and a counter.
+func generatorAnswers(t *testing.T, data []byte) map[string]string {
+	t.Helper()
+
+	body := bytes.TrimRight(data, "\n")
+	if len(body) == 0 {
+		t.Fatal("the generator produced nothing")
+	}
+
+	count := bytes.Count(body, []byte("\n")) + 1
+
+	first := body
+	if i := bytes.IndexByte(body, '\n'); i >= 0 {
+		first = body[:i]
+	}
+
+	// Walk back over three newlines. What follows the third one from the end
+	// is the last three lines; fewer than three newlines means the whole
+	// body is the answer.
+	tail, cut := body, len(body)
+	for i := 0; i < 3; i++ {
+		j := bytes.LastIndexByte(body[:cut], '\n')
+		if j < 0 {
+			cut = -1
+			break
+		}
+		cut = j
+	}
+	if cut >= 0 {
+		tail = body[cut+1:]
+	}
+
+	return map[string]string{
+		"first-line": string(first),
+		"last-lines": string(tail),
+		"line-count": strconv.Itoa(count),
 	}
 }

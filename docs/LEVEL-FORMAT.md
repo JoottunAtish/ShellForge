@@ -165,6 +165,8 @@ whether a level's world is already in place.
 | `id` matches `[a-z0-9][a-z0-9-]*`, first character alphanumeric | A leading hyphen makes the id flag-shaped; see the security skill |
 | Every check has a non-empty `on_fail` | Generic failure messages are the #1 quality killer |
 | Every `objectives[].id` has a matching check `id` and vice versa | Keeps the HUD checklist honest |
+| A `severity: warn` check needs no objective | It produces a note (§5), never a checklist line, so there is nothing to correspond to. An `optional: true` bonus check is still shown to the learner and still needs one. |
+| `optional`, `severity` and `id` appear only on the outermost check of an objective, never on a composition branch | They describe a whole objective; the engine evaluates a composite structurally, so on a branch they would be silently ignored |
 | `solution` present and non-empty | Golden tests need it |
 | ≥2 hints | One hint is a cliff |
 | `setup.root` under `/home/learner/` | Reset safety |

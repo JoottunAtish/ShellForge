@@ -2,6 +2,7 @@ package content
 
 import (
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -9,72 +10,46 @@ import (
 	"github.com/JoottunAtish/ShellForge/internal/platform/ux"
 )
 
-// workedExample is the complete level from docs/LEVEL-FORMAT.md section 6,
-// verbatim. It is the round trip fixture: if the document and the loader ever
-// disagree about a field, this is where it shows up.
-const workedExample = `id: pipe-05
-version: 1
-title: "The Log Sifter"
-act: act3
-boss: true
-difficulty: 4
-xp: 150
-par_commands: 6
-estimated_minutes: 15
-concepts: [pipes, grep, wc, redirection]
-prerequisites: [pipe-04]
+// workedExampleYAML returns the complete level from docs/LEVEL-FORMAT.md
+// section 6, read out of the document itself at test time.
+//
+// It is deliberately not a copy. A copy is what this test exists to catch: if
+// the document and the loader disagree about a field, a pasted duplicate that
+// has quietly drifted from the original proves nothing, and an abridged one
+// proves less than nothing because it looks like coverage. Reading the block
+// means the assertions below run against whatever section 6 actually says
+// today.
+func workedExampleYAML(t *testing.T) string {
+	t.Helper()
 
-briefing: |
-  ## 02:41 - Billing service
-  Errors are pouring in. Nobody knows how many.
+	const doc = "../../docs/LEVEL-FORMAT.md"
+	data, err := os.ReadFile(doc)
+	if err != nil {
+		t.Fatalf("read %s: %v", doc, err)
+	}
 
-objectives:
-  - id: obj1
-    text: "report.txt holds the total ERROR count"
-  - id: obj3
-    text: "Counted with a single pipeline"
-    optional: true
+	fence := "```yaml\n"
+	opener := fence + "id: pipe-05\n"
 
-setup:
-  root: /home/learner/quest
-  files:
-    - { path: logs/app-1.log, source: assets/app-1.log }
-  script: chown -R learner:learner .
+	start := strings.Index(string(data), opener)
+	if start < 0 {
+		t.Fatalf("%s no longer contains the section 6 worked example beginning %q", doc, "id: pipe-05")
+	}
+	start += len(fence)
 
-checks:
-  - id: obj1
-    type: file_content
-    path: /home/learner/quest/report.txt
-    match: trimmed_equals
-    value: "147"
-    on_fail: "report.txt is missing or the number is off."
-
-  - id: obj3
-    optional: true
-    type: command_matched
-    pattern: 'grep[^|]*\|\s*wc\s+-l'
-    scope: level
-    on_fail: "There is a one-liner hiding in this."
-
-hints:
-  - cost: 5
-    text: "grep can take a whole directory if you tell it to look inside."
-  - cost: 40
-    reveal_solution: true
-
-solution: |
-  grep -ri ERROR ~/quest/logs/ | wc -l > ~/quest/report.txt
-
-teardown: {}
-tags: [text-processing, must-know]
-`
+	end := strings.Index(string(data)[start:], "\n```")
+	if end < 0 {
+		t.Fatalf("%s section 6 example is not closed by a fence", doc)
+	}
+	return string(data)[start : start+end+1]
+}
 
 // TestWorkedExampleRoundTrips decodes the document's own complete example and
 // asserts every field arrived. A field that decodes to its zero value here is
 // a field the loader silently dropped.
 func TestWorkedExampleRoundTrips(t *testing.T) {
 	var lvl Level
-	if err := Unmarshal("pipe-05.yaml", []byte(workedExample), &lvl); err != nil {
+	if err := Unmarshal("pipe-05.yaml", []byte(workedExampleYAML(t)), &lvl); err != nil {
 		t.Fatalf("the worked example from docs/LEVEL-FORMAT.md section 6 does not load: %v", err)
 	}
 
@@ -102,21 +77,24 @@ func TestWorkedExampleRoundTrips(t *testing.T) {
 	if !strings.Contains(lvl.Solution, "grep -ri ERROR") {
 		t.Errorf("solution = %q", lvl.Solution)
 	}
-	if lvl.Setup.Root != "/home/learner/quest" || len(lvl.Setup.Files) != 1 {
+	if lvl.Setup.Root != "/home/learner/quest" || len(lvl.Setup.Files) != 3 {
 		t.Errorf("setup = %+v", lvl.Setup)
 	}
 	if lvl.Setup.Files[0].Source != "assets/app-1.log" {
 		t.Errorf("setup.files[0] = %+v", lvl.Setup.Files[0])
 	}
+	if lvl.Setup.Script == "" {
+		t.Error("setup.script did not decode")
+	}
 
-	if len(lvl.Objectives) != 2 || !lvl.Objectives[1].Optional {
+	if len(lvl.Objectives) != 3 || !lvl.Objectives[2].Optional {
 		t.Errorf("objectives = %+v", lvl.Objectives)
 	}
-	if len(lvl.Hints) != 2 || lvl.Hints[0].Cost != 5 || !lvl.Hints[1].RevealSolution {
+	if len(lvl.Hints) != 4 || lvl.Hints[0].Cost != 5 || !lvl.Hints[3].RevealSolution {
 		t.Errorf("hints = %+v", lvl.Hints)
 	}
 
-	if len(lvl.Checks) != 2 {
+	if len(lvl.Checks) != 4 {
 		t.Fatalf("checks = %+v", lvl.Checks)
 	}
 	first := lvl.Checks[0]
@@ -131,8 +109,43 @@ func TestWorkedExampleRoundTrips(t *testing.T) {
 	if first.Line == 0 {
 		t.Error("checks[0] has no line number, so a validation problem cannot name a place")
 	}
-	if !lvl.Checks[1].Optional || lvl.Checks[1].Params["scope"] != "level" {
-		t.Errorf("checks[1] = %+v", lvl.Checks[1])
+
+	// A double-quoted value carrying escaped newlines. This is the field
+	// most likely to be quietly mangled by a decoder, and codes.txt is the
+	// document's own example of one.
+	if got := lvl.Checks[1].Params["value"]; got != "E401\nE500\nE503" {
+		t.Errorf("checks[1].Params[\"value\"] = %q, want the three codes separated by real newlines", got)
+	}
+
+	if !lvl.Checks[2].Optional || lvl.Checks[2].Params["scope"] != "level" {
+		t.Errorf("checks[2] = %+v", lvl.Checks[2])
+	}
+	if lvl.Checks[3].ID != "nocheat" || lvl.Checks[3].Severity != SeverityWarn {
+		t.Errorf("checks[3] = %+v", lvl.Checks[3])
+	}
+}
+
+// TestWorkedExampleValidates is the other half, and the one that would have
+// caught this document contradicting its own validator: the canonical example
+// an author copies must pass the rules the same document states.
+//
+// Section 6's nocheat check is a severity: warn anti-pattern warning with no
+// objective of its own, which is exactly the shape the check-needs-an-objective
+// rule has to leave alone.
+func TestWorkedExampleValidates(t *testing.T) {
+	acts := "  - id: act3\n    title: \"Plumbing\"\n    levels: [pipe-04, pipe-05]\n"
+	fsys := fixturePack(acts)
+	fsys["levels/05-pipe-05.yaml"] = &fstest.MapFile{Data: []byte(workedExampleYAML(t))}
+	fsys["assets/app-1.log"] = &fstest.MapFile{Data: []byte("2026-03-14T02:00:00Z api ERROR E401\n")}
+	fsys["assets/app-2.log"] = &fstest.MapFile{Data: []byte("2026-03-14T02:00:01Z api ERROR E500\n")}
+	fsys["assets/billing.log"] = &fstest.MapFile{Data: []byte("2026-03-14T02:00:02Z billing ERROR E503\n")}
+
+	report := validateFixture(t, fsys)
+
+	for _, p := range report.Problems {
+		if p.Level == ProblemError {
+			t.Errorf("the worked example in docs/LEVEL-FORMAT.md section 6 does not pass the validator that same document describes: %s", p.Error())
+		}
 	}
 }
 
@@ -141,7 +154,7 @@ func TestWorkedExampleRoundTrips(t *testing.T) {
 // not recognize.
 func TestCheckParamsExcludeCommonFields(t *testing.T) {
 	var lvl Level
-	if err := Unmarshal("pipe-05.yaml", []byte(workedExample), &lvl); err != nil {
+	if err := Unmarshal("pipe-05.yaml", []byte(workedExampleYAML(t)), &lvl); err != nil {
 		t.Fatalf("load: %v", err)
 	}
 	for key := range checkReservedKeys {

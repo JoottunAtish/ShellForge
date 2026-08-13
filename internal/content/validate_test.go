@@ -261,6 +261,166 @@ func TestValidateJournalChecksCannotGatePassing(t *testing.T) {
 	}
 }
 
+// TestValidateJournalChecksCannotHideInsideAComposite is the regression test
+// for the bypass the first review of this package found.
+//
+// Reading optional and severity node by node is not enough. Those fields
+// describe a whole objective, so a journal check nested inside a required
+// composite satisfies the per-node rule while the objective as a whole still
+// turns on a signal the learner can forge from inside the sandbox.
+func TestValidateJournalChecksCannotHideInsideAComposite(t *testing.T) {
+	t.Run("severity warn on the branch does not exempt the tree", func(t *testing.T) {
+		lvl := defaultLevel()
+		lvl.Checks = `checks:
+  - id: obj1
+    on_fail: "Outer composite."
+    all_of:
+      - type: command_matched
+        severity: warn
+        pattern: 'pwd'
+        on_fail: "Print the working directory first."
+`
+		report := validateFixture(t, fixturePack("", lvl))
+
+		requireProblem(t, report, "nav-01", "checks[0].all_of[0]", ProblemError, "must not decide whether a level is passed")
+		requireProblem(t, report, "nav-01", "checks[0].all_of[0].severity", ProblemError, "means nothing on a composition branch")
+		// The tree asserts nothing about state, so it cannot be the check
+		// that fails the level either. Both problems must surface together.
+		requireProblem(t, report, "nav-01", "checks", ProblemError, "a level you cannot fail is not a level")
+	})
+
+	t.Run("optional on the branch does not exempt the tree", func(t *testing.T) {
+		lvl := defaultLevel()
+		lvl.Checks = `checks:
+  - id: obj1
+    on_fail: "Outer composite."
+    all_of:
+      - type: command_matched
+        optional: true
+        pattern: 'pwd'
+        on_fail: "Print the working directory first."
+`
+		report := validateFixture(t, fixturePack("", lvl))
+
+		requireProblem(t, report, "nav-01", "checks[0].all_of[0]", ProblemError, "must not decide whether a level is passed")
+		requireProblem(t, report, "nav-01", "checks[0].all_of[0].optional", ProblemError, "means nothing on a composition branch")
+	})
+
+	t.Run("nested two deep is still caught", func(t *testing.T) {
+		lvl := defaultLevel()
+		lvl.Checks = `checks:
+  - id: obj1
+    on_fail: "Outer composite."
+    all_of:
+      - on_fail: "Inner composite."
+        any_of:
+          - type: command_matched
+            pattern: 'pwd'
+            on_fail: "Print the working directory first."
+`
+		report := validateFixture(t, fixturePack("", lvl))
+		requireProblem(t, report, "nav-01", "checks[0].all_of[0].any_of[0]", ProblemError, "must not decide whether a level is passed")
+	})
+
+	t.Run("a journal check under an optional objective is legal", func(t *testing.T) {
+		lvl := defaultLevel()
+		lvl.Objectives += "  - id: bonus\n    text: \"Did it the short way\"\n    optional: true\n"
+		lvl.Checks += `  - id: bonus
+    optional: true
+    on_fail: "There is a shorter way."
+    any_of:
+      - type: command_matched
+        pattern: 'pwd'
+        on_fail: "Print the working directory first."
+`
+		report := validateFixture(t, fixturePack("", lvl))
+
+		requireNoProblem(t, report, "nav-01", "checks[1].any_of[0]")
+		if !report.OK() {
+			t.Errorf("a journal check inside an optional objective should be legal:\n%s", formatReport(report))
+		}
+	})
+
+	t.Run("a composite mixing a state check and a journal check still gates", func(t *testing.T) {
+		lvl := defaultLevel()
+		lvl.Checks = `checks:
+  - id: obj1
+    on_fail: "Outer composite."
+    all_of:
+      - type: file_exists
+        path: /home/learner/quest/answer.txt
+        on_fail: "No answer.txt yet."
+      - type: command_matched
+        pattern: 'pwd'
+        on_fail: "Print the working directory first."
+`
+		report := validateFixture(t, fixturePack("", lvl))
+
+		// The state branch means the tree is a legitimate required check, so
+		// the "nothing can fail this level" rule must stay quiet. The journal
+		// branch is still refused, because it is inside a gating tree.
+		requireProblem(t, report, "nav-01", "checks[0].all_of[1]", ProblemError, "must not decide whether a level is passed")
+		requireNoProblem(t, report, "nav-01", "checks")
+	})
+}
+
+// TestValidateBranchOnlyFieldsAreRefused covers the fields that mean nothing
+// on a composition branch. Ignoring them silently is how an author ends up
+// believing a branch is a bonus when the objective still gates on it.
+func TestValidateBranchOnlyFieldsAreRefused(t *testing.T) {
+	lvl := defaultLevel()
+	lvl.Checks = `checks:
+  - id: obj1
+    on_fail: "Outer composite."
+    any_of:
+      - id: inner
+        type: file_exists
+        path: /home/learner/quest/a.txt
+        on_fail: "No a.txt."
+      - type: file_exists
+        path: /home/learner/quest/b.txt
+        on_fail: "No b.txt."
+`
+	report := validateFixture(t, fixturePack("", lvl))
+	requireProblem(t, report, "nav-01", "checks[0].any_of[0].id", ProblemError, "means nothing on a composition branch")
+	requireNoProblem(t, report, "nav-01", "checks[0].any_of[1].id")
+}
+
+// TestValidateWarnCheckNeedsNoObjective is the regression test for the second
+// blocking finding: the document's own worked example uses a severity: warn
+// anti-pattern check with no objective, and the correspondence rule must
+// leave it alone. A warn result is a note, not a checklist line.
+func TestValidateWarnCheckNeedsNoObjective(t *testing.T) {
+	lvl := defaultLevel()
+	lvl.Checks += `  - id: nocheat
+    severity: warn
+    type: command_not_matched
+    pattern: '^\s*echo\s'
+    on_fail: "Hardcoding works today, not at 3 AM."
+`
+	report := validateFixture(t, fixturePack("", lvl))
+
+	requireNoProblem(t, report, "nav-01", "checks[1].id")
+	if !report.OK() {
+		t.Errorf("a severity: warn check with no objective should be legal:\n%s", formatReport(report))
+	}
+}
+
+// TestValidateOptionalCheckStillNeedsAnObjective is the other side of that
+// exemption. A bonus objective is shown to the learner, so it still needs its
+// checklist line; only a warn note is exempt.
+func TestValidateOptionalCheckStillNeedsAnObjective(t *testing.T) {
+	lvl := defaultLevel()
+	lvl.Checks += `  - id: bonus
+    optional: true
+    type: command_matched
+    pattern: '^\s*pwd\s*$'
+    on_fail: "There is a shorter way."
+`
+	report := validateFixture(t, fixturePack("", lvl))
+	requireProblem(t, report, "nav-01", "checks[1].id", ProblemError, "has no objective with the same id")
+}
+
 // TestValidateObjectiveCorrespondence covers both directions. An objective
 // with no check is a promise nothing verifies; a check with no objective is
 // work the learner was never told to do.

@@ -137,22 +137,22 @@ func TestShippedLevelsHaveDistinctRoots(t *testing.T) {
 
 // walkChecks flattens a level's check tree, so a test can reason about every
 // check regardless of how deeply it is composed.
+//
+// It recurses through CheckSpec.Branches rather than reaching into AnyOf,
+// AllOf and Not by hand. An earlier version did the latter and missed a
+// not: wrapping another not:, which is the kind of gap that makes a test
+// pass by not looking rather than by finding nothing.
 func walkChecks(checks []CheckSpec) []*CheckSpec {
 	var out []*CheckSpec
-	var walk func(cs []CheckSpec)
-	walk = func(cs []CheckSpec) {
-		for i := range cs {
-			c := &cs[i]
-			out = append(out, c)
-			walk(c.AnyOf)
-			walk(c.AllOf)
-			if c.Not != nil {
-				out = append(out, c.Not)
-				walk(c.Not.AnyOf)
-				walk(c.Not.AllOf)
-			}
+	var walk func(c *CheckSpec)
+	walk = func(c *CheckSpec) {
+		out = append(out, c)
+		for _, b := range c.Branches() {
+			walk(b)
 		}
 	}
-	walk(checks)
+	for i := range checks {
+		walk(&checks[i])
+	}
 	return out
 }
