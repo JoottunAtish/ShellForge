@@ -7,7 +7,7 @@
 # Usage: _sf-request <verb> [args...]
 set -euo pipefail
 
-SF_STATE="${SF_STATE:-/opt/shellforge/state}"
+SF_STATE="${SF_STATE:-/home/learner/.shellforge}"
 REQ="${SF_STATE}/control.req"
 RES="${SF_STATE}/control.res"
 

@@ -247,7 +247,7 @@ func TestHandleControlVerbReportsABrokenRuntime(t *testing.T) {
 // existing path.
 func TestPrepareControlChannelRecreatesTheFifos(t *testing.T) {
 	s := &fakeSession{}
-	const req, res = "/opt/shellforge/state/control.req", "/opt/shellforge/state/control.res"
+	const req, res = "/home/learner/.shellforge/control.req", "/home/learner/.shellforge/control.res"
 
 	if err := prepareControlChannel(context.Background(), s, req, res); err != nil {
 		t.Fatalf("prepareControlChannel: %v", err)

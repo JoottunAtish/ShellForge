@@ -25,7 +25,7 @@ func TestSnapshotsEnv(t *testing.T) {
 	t.Run("pass, ordinary values", func(t *testing.T) {
 		raw := joinNulRecords("FOO=bar", "PWD=/home/learner/quest")
 		sess := verifytest.NewSession(verifytest.Const(runtime.ExecResult{Stdout: raw, ExitCode: 0}, nil))
-		got, err := Snapshots{Dir: "/opt/shellforge/state"}.Env(context.Background(), sess)
+		got, err := Snapshots{Dir: "/home/learner/.shellforge"}.Env(context.Background(), sess)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -64,9 +64,9 @@ func TestSnapshotsEnv(t *testing.T) {
 	t.Run("missing snapshot: cat reports no such file", func(t *testing.T) {
 		sess := verifytest.NewSession(verifytest.Const(runtime.ExecResult{
 			ExitCode: 1,
-			Stderr:   []byte("cat: /opt/shellforge/state/env.snapshot: No such file or directory\n"),
+			Stderr:   []byte("cat: /home/learner/.shellforge/env.snapshot: No such file or directory\n"),
 		}, nil))
-		_, err := Snapshots{Dir: "/opt/shellforge/state"}.Env(context.Background(), sess)
+		_, err := Snapshots{Dir: "/home/learner/.shellforge"}.Env(context.Background(), sess)
 		if !errors.Is(err, ErrSnapshotMissing) {
 			t.Fatalf("got %v, want an error wrapping ErrSnapshotMissing", err)
 		}
