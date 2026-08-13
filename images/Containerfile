@@ -122,11 +122,27 @@ RUN set -eux; \
     chmod 0440 /etc/sudoers.d/learner; \
     groupadd --gid 1100 logistics
 
+# SF_STATE: the journal, the snapshots, the sentinels, and the control
+# channel FIFOs, all inside the learner's own home rather than under
+# /opt/shellforge. /opt/shellforge is not a host bind mount on this backend
+# today, but CLAUDE.md's non-negotiable number 2 says it is the one host
+# mount and it is read-only, and the WSL backend plus the Day 3 decision
+# make that literally true. A state directory living there would stop being
+# writable the day that happens. Mode 0755, not 0700: the security skill's
+# 0700 rule governs a HOST state directory under internal/platform, where
+# other users of the machine exist; inside this sandbox the learner is the
+# only human, and a directory in a home tree that PushFiles might otherwise
+# touch is honestly 0755 rather than pretending to be 0700.
+RUN set -eux; \
+    mkdir -p /home/learner/.shellforge; \
+    chown -R learner:learner /home/learner/.shellforge; \
+    chmod 0755 /home/learner/.shellforge
+
 # Game mount point. Bind-mounted read-only at run time and holding the
 # instrumentation rc file, the in-sandbox shims, and the level payload.
 # This is the ONLY host path visible inside the sandbox.
 RUN set -eux; \
-    mkdir -p /opt/shellforge/bin /opt/shellforge/rc /opt/shellforge/state; \
+    mkdir -p /opt/shellforge/bin /opt/shellforge/rc; \
     chown -R root:root /opt/shellforge; \
     chmod 0755 /opt/shellforge
 
@@ -135,8 +151,7 @@ COPY bin/ /opt/shellforge/bin/
 
 RUN set -eux; \
     chmod 0644 /opt/shellforge/rc/instrument.bash; \
-    chmod 0755 /opt/shellforge/bin/*; \
-    chown -R learner:learner /opt/shellforge/state
+    chmod 0755 /opt/shellforge/bin/*
 
 # WSL reads this on import. It is written again by WslRuntime after import
 # because the values matter enough to verify rather than assume, but baking it

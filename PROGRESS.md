@@ -24,6 +24,7 @@ formally cut.
 | Sandbox image | `Containerfile` written, not yet built |
 | Shell instrumentation | `instrument.bash` written, not yet exercised |
 | Content pack | `pack.yaml` with six acts declared. Zero levels written. |
+| Level setup and teardown runner | Done in `internal/content/setup` (issue #50). `Runner.Setup`, `Teardown`, and `IsSetUp` materialize and remove a level's world inside the sandbox: teardown-first idempotency, a `loglines` content generator behind a registered kind, CRLF stripping on the host side before a `runtime.FileEntry` is built, rollback on any failure via `context.WithoutCancel`, and a `SETUP_OK` sentinel written under the state directory rather than the level root. Not wired into the game orchestrator or the CLI: no caller constructs a `Runner` yet outside its own tests. That wiring, plus the pack loader and validator that produce a real `content.Level`, is #52, #53, and #54. |
 | Runtimes | `Runtime` and `Session` interfaces plus their value types and sentinel errors are defined in `internal/runtime`, the reusable contract suite is in `internal/runtime/runtimetest`, and `internal/runtime/docker` implements both by shelling out to the `docker` CLI. The contract suite is green against it on Windows with Docker Desktop's Linux engine, except one subtest documented below. `WslRuntime` is not started. |
 | PTY multiplexer and OSC parser | Both done. Parser: streaming OSC 133 and OSC 7 state machine, fuzzed, with a recorded vim session passing through byte-identical. Multiplexer (`internal/pty/mux.go`): host stdin forwarded to the sandbox verbatim including Ctrl-C, host terminal raw mode restored across every exit path including a panic, initial resize plus SIGWINCH on unix, and CommandEvent assembly from the marker stream. `CommandEvent.Raw` is always empty pending #51. Windows resize watching is a Day 3 stub. |
 | Verification engine | Not started |
@@ -1654,6 +1655,152 @@ fails if a non-test file imports the fake.
 `docs/LEVEL-FORMAT.md` is again untouched. Requiring an absolute `dir_tree`
 path is implementation validation of what the catalogue already implies, not
 a new documented shape.
+
+### Day 2, 2026-08-13: transactional setup and teardown runner
+
+Issue #50. New package `internal/content/setup`, layer 3, plus the minimum
+`content.Level` typed surface it needs.
+
+Works:
+
+- `internal/content/setupspec.go` declares `Level`, `Setup`, `FileSpec`,
+  `GenerateSpec`, and `Teardown`, the four fields issue #50's runner reads.
+  This is a deliberate minimum, not the full level type: issue #53 owns
+  `pack.go`, `level.go`, `check.go`, `load.go`, `embed.go`, and `validate.go`,
+  and is expected to extend this `Level` declaration in place rather than
+  redeclare it. A follow-up ratification issue against #53 is needed for this
+  contract; not opened from this session, since this run does not touch
+  GitHub state.
+- `Runner.Setup`, `Runner.Teardown`, and `Runner.IsSetUp` in
+  `internal/content/setup/runner.go`. Setup always tears down first, so it is
+  idempotent on a dirty root or a repeat call. Teardown validates and
+  resolves `setup.root` inside the sandbox with `readlink -m` before removing
+  anything, refuses a root outside `/home/learner/`, refuses one that a
+  symlink resolves elsewhere, and refuses one that equals, contains, or is
+  contained by the state directory, a case the ticket's own seven required
+  refusals do not cover and that this package adds a test for regardless.
+  The final `rm -rf` runs as the learner, not root: the container drops
+  `CAP_DAC_OVERRIDE`, so a root `rm -rf` on a learner-owned tree fails with
+  Permission denied, exactly the behavior already measured and reproduced
+  from `internal/sandbox/demo_level.go`, the reviewed prior art for this
+  containment problem.
+- A failure anywhere after the root is resolved rolls the whole setup back
+  through `Runner.rollback`, which reruns `Teardown` on a
+  `context.WithoutCancel` copy of the caller's context with its own bounded
+  timeout, so a Ctrl-C at the moment of failure still cleans up. A rollback
+  that itself fails is attached to the original error with `errors.Join`
+  rather than swallowed.
+- The `SETUP_OK` sentinel lives at `<stateDir>/levels/<level-id>/SETUP_OK`,
+  written and removed by `mkdir -p` and `touch`/`rm -f` as the learner, never
+  through `PushFiles`. That matters: the docker backend's `buildPushTar`
+  writes every ancestor directory as uid 0, so pushing the sentinel would
+  silently reassign the state directory to root and every later journal
+  write would fail. The level id is validated against
+  `platform.ValidIdentifier` before it becomes a path element.
+- A `loglines` generator behind a package-level registry
+  (`RegisterGenerator`, `Generate`), seeded with `rand.New(rand.NewSource(seed))`
+  for cross-platform determinism, refusing `lines` outside 1 to 200000 rather
+  than truncating, with a golden sha256 digest pinned in
+  `generate_test.go` so a future change to the generator, or a
+  platform-dependent one, fails a test instead of quietly shipping a
+  different asset on Linux and Windows.
+- The host-side staging step (`Runner.buildManifest`, `buildFileEntry`)
+  validates a `FileSpec`'s `path`, exactly-one-of `source`/`content`/`generate`,
+  `mode` (parsed as octal, so an unquoted `0644` is a load error rather than
+  a silently wrong permission bit), and `owner`, reads `source` through
+  `fs.ValidPath` against the pack's own `fs.FS`, strips `\r\n` to `\n` before
+  the content ever reaches a `runtime.FileEntry` (a backstop, not a
+  replacement: `Session.PushFiles` keeps its own strip), and refuses a
+  manifest whose total staged size exceeds 64 MiB rather than truncating it.
+  Everything here is host memory only; nothing is staged to a host path on
+  disk, which is what `TestNoHostFilesystemRemovalInPackage` pins by parsing
+  the package's own source for `os.Remove`, `os.RemoveAll`, `os.Mkdir`, and
+  similar calls, alongside a second parser test banning the whole `net`
+  family of imports from this package and from `internal/content`.
+- Every user-facing error is a `*ux.Error` from `ux.Fail`, with three new
+  doc anchors, `unsafe-level-root`, `level-pack-invalid`, and
+  `setup-script-failed`, each with a heading in
+  `docs/05-troubleshooting.md` added in this same commit, and one existing
+  anchor's body, `level-state-corrupted`, extended with a `reset` is not
+  yet built fallback. `docs/LEVEL-FORMAT.md` gained a "Setup and teardown
+  execution" section and a "The state directory and the SETUP_OK marker"
+  section in the same commit, covering the script semantics (root's working
+  directory, root's user, the missing `set -e`, the 30 second default
+  timeout) and the sentinel's location.
+- `internal/archtest/layers_test.go` gained
+  `"internal/content/setup": 3`: it is layer 3 because it is exactly the
+  same kind of thing `internal/content` and `internal/verify` already are,
+  pack-supplied data turned into sandbox actions, and it imports
+  `internal/content` (same layer, one-way: `internal/content` must never
+  import `internal/content/setup`, a rule the layer numbers cannot catch
+  since both sit at 3, so it is stated in prose in both packages'
+  `doc.go` files instead), `internal/runtime` (L1), and
+  `internal/platform`/`internal/platform/ux` (L0).
+- **`SF_STATE`'s default moved from `/opt/shellforge/state` to
+  `/home/learner/.shellforge`.** `/opt/shellforge` is not a real bind mount
+  on the Docker backend today, which is why writing to
+  `/opt/shellforge/state` has worked so far, but `CLAUDE.md`'s non-negotiable
+  number 2 says it is the one host mount and it is read-only, and the WSL
+  backend plus the Day 3 decision are expected to make that literally true.
+  This move fixes a latent defect before it can bite rather than after:
+  `internal/runtime/runtimetest/contract.go` has asserted against
+  `/home/learner/.shellforge` as `contractStateDir` since Day 1, so the
+  runtime contract suite was already living with this default while the
+  image and the demo level used the old one. Everything that named the old
+  path moved with it in this same commit: `images/rc/instrument.bash`,
+  `images/bin/_sf-request`, the `Containerfile` (which now creates
+  `/home/learner/.shellforge` as `learner:learner` 0755 instead of creating
+  and chowning `/opt/shellforge/state`), `internal/sandbox/demo_level.go`'s
+  `demoStateDir`, and the CI image smoke assertion, which now also checks
+  the new directory exists, is learner-owned, and is writable by learner.
+  Two test-data updates are not a loosened assertion, and are recorded here
+  as such: the literal path in `cmd/shellforge/cmd_run_test.go`'s
+  `TestPrepareControlChannelRecreatesTheFifos` and in
+  `internal/verify/shell_checks_test.go`'s fixture data are arbitrary
+  strings that only needed to be internally consistent with themselves, and
+  now read as the new default instead of the old one, matching the
+  deliberate contract change rather than working around a test that was
+  actually right.
+- **`docs/design/ARCHITECTURE.md` was not touched**, on purpose, per
+  `CLAUDE.md`'s rule that the design record describes intent and the code is
+  right when the two disagree. Its lines describing `/opt/shellforge/state`
+  are now stale prose, not a bug; recorded here so it is discoverable rather
+  than silently drifting.
+
+Not done, deliberately:
+
+- No wiring into `internal/game`, `cmd/shellforge`, or the pack loader.
+  Nothing outside this package's own tests constructs a `Runner` yet. That
+  is #52 (orchestrator), #53 (the full `Level` type and the pack loader),
+  and #54 (check wiring against a real level).
+- No `reset --hard`, no sandbox rebuild, no snapshot or rewind, and no
+  generator kind beyond `loglines`.
+- No fix for `Session.PushFiles` corrupting a binary asset containing the
+  literal bytes `0d 0a`; recorded as `// TODO(v0.2)` in `runner.go` with a
+  `binary` flag on `FileSpec` as the intended shape, matching what
+  `internal/runtime/runtimetest` already flags as gap F3.
+- `TestCRLFScriptRunsInsideTheSandbox` is a `t.Skip` placeholder rather than
+  a real Docker-backed test: this package has no `runtime.Session` fixture
+  wired to a live sandbox yet, so proving a CRLF-authored `.sh` executes
+  inside a real container end to end is left for whichever ticket first
+  gives this package (or its caller) that fixture, most likely #52.
+- The follow-up ratification issue against #53 for the `Level` type
+  contract is not opened: this session implements code on an existing
+  branch and does not touch GitHub issues, labels, or pull requests.
+
+Gates run locally, all green: `gofmt -s -w .`, `go vet ./...`,
+`go test ./...`, `go test -race ./...`,
+`go test ./internal/archtest/...`, `./scripts/check-punctuation.sh`,
+`./scripts/check-links.sh`, `./scripts/check-allowlist-regexp.sh` (run after
+staging the new files, since it enumerates with `git ls-files` and cannot
+see an unstaged file), and `python3 scripts/check-ci-gates.py`. Docker is not
+running in this environment, so `TestCRLFScriptRunsInsideTheSandbox` skips
+cleanly rather than running for real, and the `Containerfile` and CI image
+smoke assertion changes are unverified locally; CI is authoritative for
+both. `govulncheck` and `gosec` are not installed here and were not run;
+`pytest` is not installed either, so `scripts/tests/` did not run locally,
+though `check-ci-gates.py` itself, a plain script rather than a pytest
+suite, did.
 
 ---
 

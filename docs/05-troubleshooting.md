@@ -339,6 +339,88 @@ platform.
 shellforge reset --hard
 ```
 
+If that does not help, or if `reset` is not available yet, remove the sandbox and
+let the next run build a clean one:
+
+```
+docker rm -f shellforge-sandbox
+```
+
+---
+
+## unsafe-level-root
+
+**You'll see:** "refusing to use ... as a level root", when starting or resetting
+a level.
+
+**What it means:** Every level declares a `root` in its YAML, and that folder is
+what the game deletes when it sets the level up or tears it down. Shellforge only
+ever deletes inside your sandbox home, `/home/learner/`, and it refuses anything
+else rather than guessing. Two things cause this: a level whose `root` is written
+wrongly, and a shortcut (a symlink) somewhere on that path pointing at a different
+folder.
+
+**Fix:** If you are playing a level from a pack you wrote or edited, check its
+`setup.root`. It must be a folder strictly inside `/home/learner/`, and
+`/home/learner` on its own is not allowed. Run:
+
+```
+shellforge author validate packs/core-linux-basics
+```
+
+If you created a symlink inside your sandbox home during a level, remove it and
+start the level again. If you are stuck, remove the sandbox and let the next run
+build a clean one:
+
+```
+docker rm -f shellforge-sandbox
+```
+
+---
+
+## level-pack-invalid
+
+**You'll see:** "read the level definition", "read the level assets", or
+"generate the level assets", followed by the name of a file or a field.
+
+**What it means:** The level pack declares something Shellforge cannot build. The
+usual causes are a `source:` naming a file that is not in the pack, a `mode:`
+written without quotes (it must be `"0644"`, not `0644`), an `owner:` that is not
+a user or a user and group pair, a file that sets more than one of `source`,
+`content`, and `generate`, and a `generate.kind` that does not exist. In v0.1 the
+only generator kind is `loglines`.
+
+**Fix:** The error names the file and the field. Correct it, then check the whole
+pack before playing again:
+
+```
+shellforge author validate packs/core-linux-basics
+```
+
+---
+
+## setup-script-failed
+
+**You'll see:** "run the level setup script" or "run the level teardown script",
+with an exit code or a timeout.
+
+**What it means:** A level can run a short script to finish setting its world up,
+or to clean up after itself. That script failed, so Shellforge removed everything
+it had built rather than leaving you a half-made level. Nothing on your computer
+was touched: the script runs inside the sandbox.
+
+**Fix:** This is a bug in the level, not in what you typed. If the level is one of
+yours, look at `setup.script` or `teardown.script` in its YAML and run the level's
+own test:
+
+```
+shellforge author test <level-id>
+```
+
+A timeout means the script ran longer than the level allows. The limit is
+`setup.timeout_seconds`, which defaults to 30. If the level is not yours, please
+report it with `shellforge bug-report`.
+
 ---
 
 ## permission-denied-in-sandbox

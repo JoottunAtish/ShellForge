@@ -29,7 +29,7 @@
 # ---------------------------------------------------------------------------
 # State locations. SF_STATE is injected by the runtime and is per level.
 # ---------------------------------------------------------------------------
-: "${SF_STATE:=/opt/shellforge/state}"
+: "${SF_STATE:=/home/learner/.shellforge}"
 SF_JOURNAL="${SF_STATE}/journal.tsv"
 SF_ENV="${SF_STATE}/env.snapshot"
 SF_ALIASES="${SF_STATE}/alias.snapshot"

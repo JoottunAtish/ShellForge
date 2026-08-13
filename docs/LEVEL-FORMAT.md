@@ -92,7 +92,7 @@ setup:                         # R
   script: |                    # O  runs as root AFTER files, inside sandbox
     touch -d "2 days ago" logs/app-1.log
     chown -R learner:learner .
-  timeout_seconds: 30          # O  default 30
+  timeout_seconds: 30          # O  default 30, bounds setup.script
 
 # ── verification ──────────────────────────────────────────
 checks: [ ... ]                  # R  see §3
@@ -115,6 +115,48 @@ teardown:                      # O  default: rm -rf setup.root
 
 tags: [text-processing, must-know]   # O
 ```
+
+### Setup and teardown execution
+
+`setup.script` runs as `root`, inside the sandbox, after every file in
+`setup.files` is materialized, with the working directory set to the resolved
+`setup.root`, under `setup.timeout_seconds` (default 30 seconds). It is passed
+to the sandbox as a single argument to `bash -c`, never concatenated into a host
+command line. No `set -e` is injected: adding it silently would change the
+meaning of every example in this document, so the author decides. A non-zero
+exit, or a timeout, rolls the whole setup back, exactly as if `setup.files` had
+failed to materialize: nothing is left half-built.
+
+`teardown.script` runs as `root` too, but with the working directory
+`/home/learner`, not `setup.root`: the root is not guaranteed to exist when
+teardown runs, since teardown also runs before every setup to keep it
+idempotent.
+
+Setup always tears down first, unconditionally, before staging anything. This
+is what makes it safe to run a level's setup twice in a row, or against a level
+root a previous run left dirty.
+
+Every level's world lives under `setup.root`, and `setup.root` must resolve
+under `/home/learner/`. The engine also refuses a `setup.root` that equals,
+contains, or is contained by the state directory (below), because a level whose
+root reached that far would let its own reset delete the journal, the command
+history, and every other level's progress marker.
+
+### The state directory and the SETUP_OK marker
+
+`SF_STATE`, the directory the shell instrumentation and the level engine share
+for the journal, the environment snapshots, and the control channel, defaults to
+`/home/learner/.shellforge`. It lives inside the sandbox user's own home, not
+under `/opt/shellforge`: `/opt/shellforge` is the one host mount, and it is
+read-only, so nothing that needs to be written at play time can live there.
+
+Once a level's setup finishes every step successfully, the engine writes a
+marker file at `<SF_STATE>/levels/<level-id>/SETUP_OK`. That marker never lives
+inside `setup.root`: a marker inside the level's own world would show up in
+`ls -a ~/quest`, could be deleted by the learner, and would be counted by any
+level that checks how many files are under its root. Authors do not create,
+read, or rely on this file directly; it exists only so the engine can tell
+whether a level's world is already in place.
 
 ### Authoring invariants (validator-enforced)
 

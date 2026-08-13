@@ -13,7 +13,7 @@ func init() {
 }
 
 func runShellCheck(c Check, sess *verifytest.Session) Result {
-	return c.Run(context.Background(), Env{Session: sess, Snapshots: Snapshots{Dir: "/opt/shellforge/state"}})
+	return c.Run(context.Background(), Env{Session: sess, Snapshots: Snapshots{Dir: "/home/learner/.shellforge"}})
 }
 
 func TestEnvVarCheck(t *testing.T) {
@@ -57,7 +57,7 @@ func TestEnvVarCheck(t *testing.T) {
 	t.Run("error: snapshot missing, distinct from fail", func(t *testing.T) {
 		c := mustFactory(t, "env_var", Spec{ID: "o", OnFail: "not set", Params: map[string]any{"name": "ATLAS_ENV"}})
 		sess := verifytest.NewSession(verifytest.Const(runtime.ExecResult{
-			ExitCode: 1, Stderr: []byte("cat: /opt/shellforge/state/env.snapshot: No such file or directory\n"),
+			ExitCode: 1, Stderr: []byte("cat: /home/learner/.shellforge/env.snapshot: No such file or directory\n"),
 		}, nil))
 		r := runShellCheck(c, sess)
 		if r.Status != StatusError {
@@ -97,7 +97,7 @@ func TestCwdIsCheck(t *testing.T) {
 	t.Run("error: snapshot missing, distinct from fail", func(t *testing.T) {
 		c := mustFactory(t, "cwd_is", Spec{ID: "o", OnFail: "wrong directory", Params: map[string]any{"path": "/home/learner"}})
 		sess := verifytest.NewSession(verifytest.Const(runtime.ExecResult{
-			ExitCode: 1, Stderr: []byte("cat: /opt/shellforge/state/env.snapshot: No such file or directory\n"),
+			ExitCode: 1, Stderr: []byte("cat: /home/learner/.shellforge/env.snapshot: No such file or directory\n"),
 		}, nil))
 		r := runShellCheck(c, sess)
 		if r.Status != StatusError {

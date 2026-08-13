@@ -25,6 +25,7 @@ var layers = map[string]int{
 	"internal/game": 4,
 
 	"internal/content":           3,
+	"internal/content/setup":     3,
 	"internal/verify":            3,
 	"internal/verify/verifytest": 3,
 

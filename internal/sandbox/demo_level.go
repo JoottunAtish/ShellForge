@@ -42,8 +42,13 @@ const (
 	// instrumentation writes its journal and snapshots, and where the
 	// control channel FIFOs live. It matches the default in
 	// images/rc/instrument.bash and images/bin/_sf-request, and the
-	// directory the Containerfile creates and chowns to learner.
-	demoStateDir = "/opt/shellforge/state"
+	// directory the Containerfile creates and chowns to learner. It lives
+	// under /home/learner/, not /opt/shellforge: /opt/shellforge is the
+	// one host mount CLAUDE.md's non-negotiable number 2 requires to stay
+	// read-only, and issue #50's setup runner moved the default here so
+	// that promise holds once a real bind mount is in the picture. See
+	// internal/content/setup.DefaultStateDir, the same value.
+	demoStateDir = "/home/learner/.shellforge"
 
 	// demoUser is the sandbox user the learner plays as.
 	demoUser = "learner"
