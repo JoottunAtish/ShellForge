@@ -385,9 +385,13 @@ jobs:
             man ls >/dev/null 2>&1 || { echo "MISSING: man pages for ls"; exit 1; }
             id learner >/dev/null || { echo "MISSING: learner user"; exit 1; }
             # SF_STATE default: writable by learner, not under /opt/shellforge.
-            su - learner -c "test -d /home/learner/.shellforge" || { echo "MISSING: /home/learner/.shellforge"; exit 1; }
-            su - learner -c "test -O /home/learner/.shellforge" || { echo "WRONG OWNER: /home/learner/.shellforge is not learner-owned"; exit 1; }
-            su - learner -c "touch /home/learner/.shellforge/probe && rm /home/learner/.shellforge/probe" || { echo "NOT WRITABLE: /home/learner/.shellforge"; exit 1; }
+            # This shell is already the learner: the image declares USER
+            # learner and learner has no password, so su would only ever
+            # produce an authentication failure here.
+            test -d /home/learner/.shellforge || { echo "MISSING: /home/learner/.shellforge"; exit 1; }
+            test -O /home/learner/.shellforge || { echo "WRONG OWNER: /home/learner/.shellforge is not owned by the sandbox user"; exit 1; }
+            touch /home/learner/.shellforge/probe && rm /home/learner/.shellforge/probe || { echo "NOT WRITABLE: /home/learner/.shellforge"; exit 1; }
+            test ! -e /opt/shellforge/state || { echo "STALE: /opt/shellforge/state still exists"; exit 1; }
             echo "OK: image contents verified"
           '
 
