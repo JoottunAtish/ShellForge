@@ -8,11 +8,12 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/JoottunAtish/ShellForge/internal/platform"
 	"github.com/JoottunAtish/ShellForge/internal/platform/ux"
 
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
 )
 
 // Doc anchors for every user-facing failure this package can produce. Each
@@ -23,6 +24,7 @@ const (
 	anchorCorrupt         = "progress-db-corrupt"
 	anchorTooNew          = "progress-db-too-new"
 	anchorMigrationFailed = "progress-db-migration-failed"
+	anchorInUse           = "progress-db-in-use"
 )
 
 // Pragmas are literal constant strings, never built with fmt.Sprintf: a
@@ -34,6 +36,38 @@ const (
 	pragmaBusyTimeout       = "PRAGMA busy_timeout=5000"
 	pragmaSynchronousNormal = "PRAGMA synchronous=NORMAL"
 )
+
+// sqliteResultCodeMask isolates SQLite's primary result code from a code
+// that also carries extended result code detail in the higher bits (for
+// example SQLITE_BUSY_SNAPSHOT, which is SQLITE_BUSY with extra detail
+// packed above the low byte). The modernc driver turns extended result
+// codes on for every connection it opens, so a code read from
+// (*sqlite.Error).Code() must be masked before it is compared against a
+// primary code. See https://www.sqlite.org/rescode.html.
+//
+// sqliteBusy and sqliteLocked are declared here as our own named constants,
+// not imported from modernc.org/sqlite/lib, which is a machine generated
+// package not meant as a stable public surface. SQLite's numeric result
+// codes are effectively part of its C ABI and have never been renumbered.
+const (
+	sqliteResultCodeMask = 0xff
+	sqliteBusy           = 5 // SQLITE_BUSY
+	sqliteLocked         = 6 // SQLITE_LOCKED
+)
+
+// pragmaRetries bounds how many times execPragmaWithRetry retries a pragma
+// that fails with SQLITE_BUSY or SQLITE_LOCKED before giving up. The one
+// pragma this actually protects in practice is journal_mode=WAL: converting
+// a fresh delete-mode database to WAL needs a brief exclusive lock that
+// pragmaBusyTimeout's own busy handler does not cover, so two Shellforge
+// processes launched together can contend for it. A short bounded retry
+// loop makes that race disappear without risking an unbounded wait.
+const pragmaRetries = 8
+
+// pragmaRetryDelay is the pause between retries of a busy or locked pragma.
+// pragmaRetries * pragmaRetryDelay bounds the total wait to well under a
+// second, which is unnoticeable next to everything else Open already does.
+const pragmaRetryDelay = 25 * time.Millisecond
 
 // Store is a handle to the Shellforge progress database.
 type Store struct {
@@ -77,7 +111,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	db.SetConnMaxLifetime(0)
 
 	for _, pragma := range []string{pragmaJournalModeWAL, pragmaBusyTimeout, pragmaSynchronousNormal} {
-		if _, err := db.ExecContext(ctx, pragma); err != nil {
+		if err := execPragmaWithRetry(ctx, db, pragma); err != nil {
 			_ = db.Close() // best effort: the pragma failure is what the caller needs to see
 			return nil, classifyOpenError(path, fmt.Errorf("apply %s: %w", pragma, err))
 		}
@@ -119,10 +153,69 @@ func (s *Store) DB() *sql.DB {
 	return s.db
 }
 
-// classifyOpenError decides between the unwritable and corrupt doc anchors
-// without string matching a driver error message. It opens path itself
-// with os.O_RDWR and no os.O_CREATE, so the classification attempt itself
-// creates or modifies nothing.
+// execPragmaWithRetry runs pragma through db, retrying up to pragmaRetries
+// times, with a pragmaRetryDelay pause between attempts, whenever the
+// failure is SQLITE_BUSY or SQLITE_LOCKED. Any other failure, or ctx being
+// cancelled or timing out, returns immediately: this is a short bounded
+// wait for a one-off transition another process is finishing, never an
+// unbounded sleep.
+//
+// This is what makes two Shellforge processes starting at the same moment
+// converge instead of one of them failing: the first process to reach
+// journal_mode=WAL holds a brief exclusive lock while it rewrites the file
+// header, and pragmaBusyTimeout's own busy handler does not cover that one
+// statement. See classifyOpenError for what happens if every retry is
+// exhausted.
+func execPragmaWithRetry(ctx context.Context, db *sql.DB, pragma string) error {
+	var err error
+	for attempt := 0; attempt < pragmaRetries; attempt++ {
+		if _, err = db.ExecContext(ctx, pragma); err == nil {
+			return nil
+		}
+		if !isBusyOrLocked(err) {
+			return err
+		}
+		if attempt == pragmaRetries-1 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(pragmaRetryDelay):
+		}
+	}
+	return err
+}
+
+// isBusyOrLocked reports whether err is a *sqlite.Error whose primary
+// result code is SQLITE_BUSY or SQLITE_LOCKED. It reaches the driver's own
+// error type with errors.As rather than matching any part of Error(), so a
+// wording change in the driver can never silently break this check.
+func isBusyOrLocked(err error) bool {
+	var se *sqlite.Error
+	if !errors.As(err, &se) {
+		return false
+	}
+	switch se.Code() & sqliteResultCodeMask {
+	case sqliteBusy, sqliteLocked:
+		return true
+	default:
+		return false
+	}
+}
+
+// classifyOpenError decides between the in-use, unwritable, and corrupt doc
+// anchors without string matching a driver error message.
+//
+// In-use is decided first, straight from the driver's own result code: if
+// cause unwraps to a *sqlite.Error reporting SQLITE_BUSY or SQLITE_LOCKED,
+// another process still holds the file after every retry in
+// execPragmaWithRetry, and that is not corruption. Nothing about the file
+// is wrong, so the remediation never suggests renaming or deleting it.
+//
+// Otherwise this opens path itself with os.O_RDWR and no os.O_CREATE, so
+// the classification attempt itself creates or modifies nothing, and tells
+// an unwritable path apart from a genuinely corrupt file.
 //
 // The probe closes its handle immediately, and that close is load bearing
 // rather than tidiness. Discarding the *os.File leaked a descriptor on every
@@ -141,6 +234,15 @@ func (s *Store) DB() *sql.DB {
 // create or destroy anything; it exists only to read the errno that tells a
 // permission problem apart from a corrupt file.
 func classifyOpenError(path string, cause error) *ux.Error {
+	if isBusyOrLocked(cause) {
+		return ux.Fail(
+			"open the file where Shellforge records your progress",
+			cause,
+			fmt.Sprintf("Another copy of Shellforge, or something else, is using %s. Close it, then run: shellforge doctor", path),
+			anchorInUse,
+		)
+	}
+
 	probe, err := os.OpenFile(path, os.O_RDWR, 0o600)
 	if err == nil {
 		_ = probe.Close() // nothing was read from it; the errno was the answer

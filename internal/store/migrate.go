@@ -105,6 +105,18 @@ func (s *Store) SchemaVersion(ctx context.Context) (int, error) {
 // use. It takes a *sql.DB directly, rather than a *Store, so that a test can
 // probe an empty database that was opened with a plain sql.Open rather than
 // this package's own Open.
+//
+// It tells apart the two different states that would otherwise both read as
+// version 0: the schema_version table does not exist yet, a genuinely fresh
+// database, versus the table exists but holds no rows, which this package's
+// own writes never produce (the migration that creates it inserts its
+// version row in the same transaction) but an external tool or a future
+// migration touching the table could. The second state is reported as an
+// error rather than silently treated like the first, because treating it
+// like the first would make Migrate re-run 001_init.sql's CREATE TABLE
+// schema_version against a database where that table already exists,
+// failing with a "table already exists" error that names the wrong problem
+// and leaves the database permanently unopenable.
 func schemaVersion(ctx context.Context, db *sql.DB) (int, error) {
 	var name string
 	err := db.QueryRowContext(ctx,
@@ -117,9 +129,15 @@ func schemaVersion(ctx context.Context, db *sql.DB) (int, error) {
 		return 0, fmt.Errorf("check for schema_version table: %w", err)
 	}
 
+	var count int
 	var version int
-	if err := db.QueryRowContext(ctx, "SELECT COALESCE(MAX(version), 0) FROM schema_version").Scan(&version); err != nil {
+	if err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*), COALESCE(MAX(version), 0) FROM schema_version",
+	).Scan(&count, &version); err != nil {
 		return 0, fmt.Errorf("read schema_version: %w", err)
+	}
+	if count == 0 {
+		return 0, errors.New("schema_version table exists but records no version")
 	}
 	return version, nil
 }

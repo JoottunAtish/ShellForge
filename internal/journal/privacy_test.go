@@ -196,3 +196,81 @@ func TestEntryGoStringRedactsRaw(t *testing.T) {
 		t.Errorf("%%#v does not say redacted: %s", out)
 	}
 }
+
+// exportedWrapper embeds an Entry in an exported field, the shape a caller
+// outside this package is likeliest to reach for. wrapperWithUnexported
+// embeds one in an unexported field instead: see TestEntryRedactionHoleIsExactlyTheUnexportedFieldCase.
+type exportedWrapper struct {
+	E Entry
+}
+
+type wrapperWithUnexported struct {
+	e Entry
+}
+
+// TestEntryRedactionMatrix is TestEntryStringRedactsRaw and
+// TestEntryGoStringRedactsRaw's replacement: the same claim, verified over
+// every shape fmt can reach a *Entry or Entry through, crossed with every
+// verb that formats a struct. Every case here must redact; the one shape
+// that cannot is pinned separately, deliberately unredacted, by
+// TestEntryRedactionHoleIsExactlyTheUnexportedFieldCase below, so this table
+// stays a guarantee rather than papering over the gap.
+func TestEntryRedactionMatrix(t *testing.T) {
+	raw := "curl -u admin:hunter2 https://example.com"
+	e := Entry{Seq: 1, LevelID: "pipes-03", Cwd: "/home/learner", Raw: raw}
+
+	values := []struct {
+		name string
+		v    any
+	}{
+		{"Entry", e},
+		{"*Entry", &e},
+		{"[]Entry", []Entry{e}},
+		{"[]*Entry", []*Entry{&e}},
+		{"map[string]Entry", map[string]Entry{"k": e}},
+		{"exported-field wrapper", exportedWrapper{E: e}},
+		{"fmt.Errorf(%v)", fmt.Errorf("attempt failed: %v", e)},
+	}
+	verbs := []string{"%v", "%s", "%q", "%#v", "%+v"}
+
+	for _, val := range values {
+		for _, verb := range verbs {
+			t.Run(val.name+"/"+verb, func(t *testing.T) {
+				// %s and %q on a bare error value from fmt.Errorf call
+				// Error(), not a formatter on the Entry inside it: this is
+				// still a legitimate case for the matrix, since Error()
+				// itself is built from the already-redacted %v of e.
+				out := fmt.Sprintf(verb, val.v)
+				if strings.Contains(out, raw) {
+					t.Errorf("%s leaked Raw in full: %s", verb, out)
+				}
+				if strings.Contains(out, "hunter2") {
+					t.Errorf("%s leaked a substring of Raw: %s", verb, out)
+				}
+			})
+		}
+	}
+}
+
+// TestEntryRedactionHoleIsExactlyTheUnexportedFieldCase pins the one shape
+// where Entry's redaction cannot run, documented on Entry and in doc.go: an
+// Entry (or *Entry) reached only through an unexported field of another
+// type. reflect marks a value obtained through an unexported field as
+// read-only, so fmt.CanInterface returns false and fmt never calls String
+// or GoString here, falling back to printing every field, Raw included.
+//
+// This test asserts the LEAK, not a redaction: if it starts failing because
+// Raw is no longer visible in the output, either Go's reflect semantics
+// changed underneath this package or the wrapper below stopped being an
+// unexported-field case, and either way the doc comments this test is
+// pinned against need a second look before declaring the gap closed.
+func TestEntryRedactionHoleIsExactlyTheUnexportedFieldCase(t *testing.T) {
+	raw := "curl -u admin:hunter2 https://example.com"
+	w := wrapperWithUnexported{e: Entry{Seq: 1, LevelID: "pipes-03", Cwd: "/home/learner", Raw: raw}}
+
+	out := fmt.Sprintf("%+v", w)
+	if !strings.Contains(out, raw) {
+		t.Fatalf("expected the known unexported-field gap to leak Raw in %%+v, but it did not: %s\n"+
+			"if this is a genuine fix, update Entry's doc comment, journal.go's String doc comment, and doc.go, which all currently describe this as an open gap", out)
+	}
+}

@@ -57,6 +57,7 @@ func TestJournalSatisfiesVerifyJournalReader(t *testing.T) {
 			t.Fatalf("Append: %v", err)
 		}
 	}
+	j.SetLevel("pipes-03", 0)
 
 	r := reader{j: j}
 
@@ -121,6 +122,19 @@ func TestJournalScopeMirrorsVerifyScope(t *testing.T) {
 		{"ScopeLastN", verify.ScopeLastN, journal.ScopeLastN},
 		{"ScopeLast", verify.ScopeLast, journal.ScopeLast},
 	}
+
+	// wantScopeKinds pins the set SIZE, not just the members listed above.
+	// Update this alongside adding the new kind to both journal.ScopeKind
+	// and journal.commands' switch before bumping it: a scope kind that
+	// exists in verify but falls through journal.commands' default arm
+	// degrades silently (an empty command list, never an error a check can
+	// see), which is exactly the failure mode this whole file exists to
+	// catch.
+	const wantScopeKinds = 3
+	if len(pairs) != wantScopeKinds {
+		t.Fatalf("this test enumerates %d scope kinds, want %d; a new verify.ScopeKind was added without updating this pairs table", len(pairs), wantScopeKinds)
+	}
+
 	for _, p := range pairs {
 		if string(p.v) != string(p.j) {
 			t.Errorf("%s: verify has %q, journal has %q; see issue #51 plan section 2", p.name, string(p.v), string(p.j))

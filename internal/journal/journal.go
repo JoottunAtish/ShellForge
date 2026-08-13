@@ -15,6 +15,21 @@ import (
 )
 
 // Entry is one recorded command.
+//
+// Raw is redacted by String and GoString wherever fmt can reach either
+// method: on an Entry value, a *Entry, a slice or map holding either, a
+// struct with an Entry in an EXPORTED field, and inside fmt.Errorf. There
+// is exactly one hole no method on Entry can close: an Entry (or *Entry)
+// reached only through an UNEXPORTED field of some other type. Go's
+// reflect package marks a value read through an unexported field as
+// read-only, so fmt's CanInterface check fails for it and fmt falls back to
+// printing the struct field by field instead of calling String, which
+// prints Raw in full under %v, %+v, and %#v. No change to Entry, including
+// giving Raw its own named string type with its own String method, closes
+// this: the read-only flag propagates to every subfield reflect walks into.
+// The rule this leaves for every caller: never embed an Entry or *Entry as
+// an unexported field of a type you might format with fmt. Give it an
+// exported field instead, or do not format the containing type at all.
 type Entry struct {
 	Seq         int64
 	TS          time.Time
@@ -33,6 +48,11 @@ type Entry struct {
 // and strconv rather than fmt.Sprintf so that this package's own privacy
 // guard, which forbids calling any fmt function but fmt.Errorf, holds even
 // here.
+//
+// This redaction only ever runs when fmt actually calls String, which it
+// cannot do for an Entry sitting behind an unexported field of some other
+// type: see Entry's own doc comment for that one gap and the rule callers
+// must follow instead.
 func (e Entry) String() string {
 	var b strings.Builder
 	b.WriteString("Entry{Seq: ")
@@ -74,13 +94,22 @@ func (e Entry) GoString() string {
 type ScopeKind string
 
 const (
-	// ScopeLevel is every command run since the level started.
+	// ScopeLevel is every command recorded for the level and attempt
+	// SetLevel most recently named: every events row whose level_id equals
+	// the stored level and whose id is strictly greater than the stored
+	// boundary, ordered oldest first. Before SetLevel has ever been
+	// called, Commands answers with no commands rather than guessing a
+	// level from the newest row, and Err explains why.
 	ScopeLevel ScopeKind = "level"
 
-	// ScopeLastN is the most recent N commands.
+	// ScopeLastN is the most recent N commands, globally, regardless of
+	// which level SetLevel names. It does not stop at a level boundary:
+	// see this package's doc.go for why that is a deliberate decision and
+	// not an oversight left over from ScopeLevel's fix.
 	ScopeLastN ScopeKind = "last_n"
 
-	// ScopeLast is only the most recent command.
+	// ScopeLast is only the most recent command, globally, with the same
+	// deliberate lack of a level boundary as ScopeLastN.
 	ScopeLast ScopeKind = "last"
 )
 
@@ -97,18 +126,56 @@ type Scope struct {
 // from stalling verification indefinitely.
 const commandsTimeout = 2 * time.Second
 
+// errNoLevelSet is what ScopeLevel answers through Err when Commands is
+// asked for ScopeLevel before SetLevel has ever been called. It is
+// deliberately not a guess: see SetLevel and the ScopeLevel doc comment.
+var errNoLevelSet = errors.New("journal: no level set; call SetLevel before verifying")
+
 // Journal records and replays the learner's commands, backed by a
 // store.Store.
 type Journal struct {
 	s *store.Store
 
-	mu  sync.Mutex
-	err error // last error swallowed by Commands
+	mu       sync.Mutex
+	err      error  // last error swallowed by Commands
+	levelID  string // set by SetLevel; meaningless unless levelSet
+	sinceID  int64  // set by SetLevel; the events.id boundary for ScopeLevel
+	levelSet bool   // whether SetLevel has ever been called
 }
 
 // New returns a Journal backed by s. s must already be open and migrated.
 func New(s *store.Store) *Journal {
 	return &Journal{s: s}
+}
+
+// SetLevel tells the Journal which level is under verification and where
+// its attempt begins. Layer 4 calls this when a level starts or resets,
+// before any check runs: levelID is the level whose commands ScopeLevel
+// should answer with, and sinceID is the events.id boundary, exclusive, so
+// a command recorded before this attempt started (an earlier attempt at
+// the same level, or a different level entirely) never appears in
+// ScopeLevel's answer. Passing the highest events.id recorded at the
+// moment the level starts is what gives a fresh attempt a clean boundary;
+// passing 0 includes every row ever recorded for levelID.
+//
+// SetLevel is the only way ScopeLevel learns which level it is answering
+// for: Journal never infers it from the newest row in the table, because
+// the newest row can belong to a different level than the one currently
+// being verified.
+func (j *Journal) SetLevel(levelID string, sinceID int64) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.levelID = levelID
+	j.sinceID = sinceID
+	j.levelSet = true
+}
+
+// currentLevel returns the level and boundary SetLevel most recently
+// recorded, and whether SetLevel has ever been called at all.
+func (j *Journal) currentLevel() (levelID string, sinceID int64, ok bool) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.levelID, j.sinceID, j.levelSet
 }
 
 // Append records one entry with a single parameterized INSERT.
@@ -213,15 +280,13 @@ func (j *Journal) Err() error {
 func (j *Journal) commands(ctx context.Context, scope Scope) ([]string, error) {
 	switch scope.Kind {
 	case ScopeLevel:
-		levelID, err := j.newestLevelID(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if levelID == "" {
-			return []string{}, nil
+		levelID, sinceID, ok := j.currentLevel()
+		if !ok {
+			return nil, errNoLevelSet
 		}
 		rows, err := j.s.DB().QueryContext(ctx,
-			"SELECT raw FROM events WHERE level_id = ? ORDER BY seq ASC, id ASC", levelID)
+			"SELECT raw FROM events WHERE level_id = ? AND id > ? ORDER BY seq ASC, id ASC",
+			levelID, sinceID)
 		if err != nil {
 			return nil, fmt.Errorf("query scope level: %w", err)
 		}
@@ -262,23 +327,6 @@ func (j *Journal) commands(ctx context.Context, scope Scope) ([]string, error) {
 	default:
 		return nil, fmt.Errorf("unknown scope kind %q", scope.Kind)
 	}
-}
-
-// newestLevelID returns the level_id of the most recently recorded event,
-// or "" with no error when the events table is empty. Ordered by id, the
-// row's global insertion order, for the same reason ScopeLastN and
-// ScopeLast are: seq alone has no cross-level meaning.
-func (j *Journal) newestLevelID(ctx context.Context) (string, error) {
-	var levelID string
-	err := j.s.DB().QueryRowContext(ctx,
-		"SELECT level_id FROM events ORDER BY id DESC LIMIT 1").Scan(&levelID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("find newest level: %w", err)
-	}
-	return levelID, nil
 }
 
 func scanCommands(rows *sql.Rows) ([]string, error) {

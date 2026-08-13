@@ -371,6 +371,14 @@ func TestOpenClassifiesAnUnreadableFileAsUnwritable(t *testing.T) {
 	}
 }
 
+// TestConcurrentStoresOnOneFileDoNotDeadlock covers the steady state: both
+// Open calls below happen after the database is already in WAL mode, since
+// s1's Open finishes the delete-to-WAL conversion before s2's Open ever
+// begins, so neither one contends for the exclusive lock that conversion
+// needs. It does not exercise that contended moment; see
+// TestOpenOnAContendedConversionReportsInUseAndRetries for the test that
+// creates the database in delete mode first and holds a write transaction
+// on it, so a second Open genuinely contends for the conversion.
 func TestConcurrentStoresOnOneFileDoNotDeadlock(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "progress.db")
 
@@ -424,6 +432,74 @@ func TestConcurrentStoresOnOneFileDoNotDeadlock(t *testing.T) {
 	for err := range errs {
 		t.Errorf("concurrent operation failed: %v", err)
 	}
+}
+
+// TestOpenOnAContendedConversionReportsInUseAndRetries reproduces the exact
+// contention classifyOpenError misclassified before this fix: a second
+// connection holds a write transaction on a plain, non-WAL database, which
+// makes the first connection's journal_mode=WAL pragma fail with
+// SQLITE_BUSY. Before this fix that landed on the corrupt anchor, whose
+// remediation tells the learner to rename their progress file and lose
+// every level they finished, even though nothing is actually wrong with the
+// file. Here it must land on the in-use anchor instead, whose remediation
+// must never mention renaming or deleting anything, and then, once the
+// blocking transaction is released, a second Open must succeed because
+// execPragmaWithRetry retries rather than failing once and giving up.
+func TestOpenOnAContendedConversionReportsInUseAndRetries(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "progress.db")
+
+	blocker, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open blocker: %v", err)
+	}
+	t.Cleanup(func() { blocker.Close() })
+	blocker.SetMaxOpenConns(1)
+
+	if _, err := blocker.ExecContext(context.Background(), "CREATE TABLE t (x INTEGER)"); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+
+	tx, err := blocker.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("begin blocking transaction: %v", err)
+	}
+	if _, err := tx.ExecContext(context.Background(), "INSERT INTO t (x) VALUES (1)"); err != nil {
+		t.Fatalf("insert inside blocking transaction: %v", err)
+	}
+	// tx is left open and uncommitted on purpose: this is what holds the
+	// exclusive lock the delete-to-WAL conversion needs, for as long as
+	// this first Open call is exercised below.
+
+	if _, err := Open(context.Background(), dbPath); err == nil {
+		t.Fatal("Open succeeded while a write transaction held the file")
+	} else {
+		var uerr *ux.Error
+		if !errors.As(err, &uerr) {
+			t.Fatalf("error is not a *ux.Error: %v", err)
+		}
+		if uerr.DocAnchor != anchorInUse {
+			t.Errorf("DocAnchor = %q, want %q (not %q)", uerr.DocAnchor, anchorInUse, anchorCorrupt)
+		}
+		lower := strings.ToLower(uerr.Remediation)
+		if strings.Contains(lower, "rename") || strings.Contains(lower, "delete") {
+			t.Errorf("Remediation tells the learner to rename or delete a file that is not wrong: %q", uerr.Remediation)
+		}
+	}
+
+	// Release the blocking transaction from another goroutine after a
+	// delay comfortably inside the retry budget (pragmaRetries *
+	// pragmaRetryDelay), then prove the retry loop is what makes the
+	// simultaneous-start race disappear: Open must now succeed.
+	go func() {
+		time.Sleep(3 * pragmaRetryDelay)
+		_ = tx.Rollback()
+	}()
+
+	s, err := Open(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("Open after the blocking transaction released: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
 }
 
 func TestDatabasePathIsNotUnderCacheDir(t *testing.T) {

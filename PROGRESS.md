@@ -1993,30 +1993,45 @@ confirmed by their absence from `git status` after this branch's own work.
   refused with `ErrSchemaTooNew`, wrapped in a `*ux.Error`: nothing is
   written, no migration runs, and the file is left exactly as it was. There
   are no down migrations.
-- **Only `schema_version` and `events` ship in `001_init.sql`.**
-  `docs/design/ARCHITECTURE.md` section 4.11 describes a singular `event`
-  table with `attempt_id`, `kind`, and an opaque `payload_json`, plus five
-  more tables (`profile`, `pack`, `level_state`, `attempt`,
-  `concept_mastery`, `achievement`) this ticket does not need. `Entry` has
-  flat typed fields and no `attempt_id` and no `kind`, and the acceptance
-  criterion demands an appended `Entry` read back with every field intact,
-  which an opaque JSON payload cannot satisfy without inventing an encoding
-  nobody specified. So the table is `events`, plural, flat, one column per
-  `Entry` field, and the other five tables wait for Day 4's `002_*.sql`.
-  This is drift against the design record, recorded here rather than
-  silently reconciled in either direction; `docs/design/` describes intent,
-  and the code is right per CLAUDE.md when the two disagree.
+- **Only `schema_version` and `events` ship in `001_init.sql`, and this
+  conforms to `docs/design/ARCHITECTURE.md` section 4.7, the section issue
+  #51's own acceptance criterion names.** 4.7 already specifies "Stored in
+  SQLite (`events` table)" with a flat journal record carrying `seq`, `ts`,
+  `level`, `cwd`, `raw`, `exit`, `duration_ms`, `used_tab`, `used_history`,
+  which is exactly the shape `Entry` and the `events` table both have,
+  modulo two column renames (`level_id` for 4.7's `level`, `exit_code` for
+  `exit`) and three fields 4.7 lists but this ticket defers with output
+  capture (`output_sha256`, `output_head`, `output_bytes`, absent from
+  `Entry`). What actually conflicts is section 4.11 elsewhere in the same
+  design record, which describes an unrelated, later-stage persistence
+  layer: a singular `event` table with `attempt_id`, `kind`, and an opaque
+  `payload_json`, plus five more tables (`profile`, `pack`, `level_state`,
+  `attempt`, `concept_mastery`, `achievement`) this ticket does not need.
+  `Entry` has flat typed fields and no `attempt_id` and no `kind`, and the
+  acceptance criterion demands an appended `Entry` read back with every
+  field intact, which an opaque JSON payload cannot satisfy without
+  inventing an encoding nobody specified. An earlier version of this entry
+  described this as the code drifting from the design record; that framing
+  was backwards; the drift is between 4.7 and 4.11 inside
+  `docs/design/ARCHITECTURE.md` itself, the code matches the section this
+  ticket cites, and reconciling 4.7 against 4.11 is its own follow-up,
+  tracked in issue #87, not a reason to move the schema toward 4.11's
+  `payload_json` later. `docs/design/` describes intent, and the code is
+  right per CLAUDE.md when parts of the design record disagree with each
+  other, not only when the record disagrees with the code.
 - **Four new doc anchors, four new headings in `docs/05-troubleshooting.md`
   in this same commit:** `progress-db-unwritable`, `progress-db-corrupt`,
   `progress-db-too-new`, `progress-db-migration-failed`. Every remediation
   tells the learner to rename their progress file, never to delete it,
   matching the destructive-safety skill's stance that this package destroys
   nothing belonging to a learner; the only `DELETE` anywhere is the one
-  inside a migration's own transaction, on the two-column `schema_version`
-  table this package owns. `classifyOpenError` picks between the unwritable
-  and corrupt anchors by attempting `os.OpenFile` with `O_RDWR` and no
-  `O_CREATE` and checking `errors.Is(err, fs.ErrPermission)`, never by
-  string-matching a driver message.
+  inside a migration's own transaction, on the single-column
+  `schema_version` table this package owns. `classifyOpenError` picks
+  between the unwritable and corrupt anchors by attempting `os.OpenFile`
+  with `O_RDWR` and no `O_CREATE` and checking `errors.Is(err,
+  fs.ErrPermission)`, never by string-matching a driver message. A fifth
+  anchor, `progress-db-in-use`, followed in a later review-fix commit: see
+  below.
 - **`TestOpenRejectsAnUnwritableDirectory` is replaced, not merely edited.**
   The ticket requires `Open` to create parent directories, which makes that
   test's premise (a path inside a nonexistent directory must fail) provably
@@ -2187,6 +2202,241 @@ not running in this environment and this ticket needed nothing from it.
 `govulncheck` and `gosec` are not installed here, and `pytest` is not
 installed either, so `scripts/tests/` did not run; CI is authoritative for
 all three, same gap as every session above that noted it.
+
+### Day 2 follow-up, 2026-08-13: close a descriptor leak in classifyOpenError, caught by Windows CI
+
+Second commit on issue #51, `09a80ce`, not recorded here at the time; added
+now rather than left silent. `classifyOpenError`'s permission probe opened
+the progress database with `os.OpenFile` and discarded the returned
+`*os.File` without closing it, leaking a descriptor on every failed `Open`
+that classified as corrupt. Unix tolerates this: an unlinked file with an
+open handle still goes away, so the whole suite passed locally on Linux.
+`windows-latest` does not tolerate it, and its Test job failed `t.TempDir`
+cleanup on both `TestOpenOnACorruptFileFails` and
+`TestOpenOnACorruptFileLeavesItUntouched` with "The process cannot access
+the file because it is being used by another process". A Linux-only local
+gate run cannot substitute for the Windows job for exactly this reason: the
+platform difference hid the leak, it did not cause it, and the fix belongs
+in the code rather than in a skip.
+
+The probe now captures the handle and closes it immediately; nothing is
+read from it, since the errno alone answers permission versus corrupt.
+`TestOpenOnACorruptFileLeaksNoDescriptor` is the new regression guard,
+counting `/proc/self/fd` across twenty failed `Open` calls so this fails on
+Linux too rather than only on a Windows runner; it was mutation-verified
+before that commit landed (descriptors grew 8 to 28 with the close removed,
+flat with it in place), and it skips off Linux deliberately, stated in its
+own doc comment. The same line was the Security job's only `gosec` finding,
+`G304` (potential file inclusion via variable), and now carries a `#nosec`
+with a written justification in the house style: the path is the progress
+database path this package was handed, already opened by the sqlite driver
+by the time this runs, and the open carries neither `os.O_CREATE` nor
+`os.O_TRUNC`, so it cannot create or destroy anything.
+
+### Day 2 follow-up, 2026-08-13: review fixes on #51, a wrong-lock diagnosis and a wrong-level answer
+
+Third commit on issue #51, addressing an independent review's 15 findings:
+two blocking, both real defects with a learner-visible failure mode, plus
+suggestions triaged one by one.
+
+- **Blocking: `classifyOpenError` misclassified a locked database as a
+  corrupt one.** Two Shellforge processes starting together race to convert
+  a fresh database from delete mode to WAL, which needs a brief exclusive
+  lock that `pragmaBusyTimeout`'s own busy handler does not cover, and the
+  loser saw `SQLITE_BUSY` land in the corrupt bucket, whose remediation
+  told the learner to rename their progress file and lose every level they
+  had finished, even though nothing was wrong with the file. Fixed on the
+  driver's own result code, not a string match:
+  `errors.As(cause, &*sqlite.Error)` and `Code() & 0xff` compared against
+  SQLite's own numeric `SQLITE_BUSY` (5) and `SQLITE_LOCKED` (6), verified
+  against a real contended conversion in a scratch program before relying
+  on it in the fix. `internal/store` now imports `modernc.org/sqlite` by
+  name, not only as a blank driver import; `TestConfinedDependenciesStayConfined`
+  still passes, since the confinement table restricts the import path to
+  this package, not the import form, and this adds no new dependency, since
+  the module was already required. A new anchor, `progress-db-in-use`, with
+  a matching `docs/05-troubleshooting.md` heading, tells the learner to
+  close the other copy of Shellforge rather than rename or delete anything.
+  `execPragmaWithRetry` retries a busy or locked pragma up to 8 times with a
+  25 ms pause between attempts (a 200 ms bound, well under anything a
+  learner would notice) honouring `ctx` cancellation, which is what makes
+  the simultaneous-start race resolve instead of fail.
+  `TestOpenOnAContendedConversionReportsInUseAndRetries` holds a write
+  transaction on a plain, non-WAL database, asserts `Open` reports
+  `progress-db-in-use` (never mentioning rename or delete) rather than
+  `progress-db-corrupt`, then releases the transaction from a goroutine and
+  asserts a second `Open` succeeds, which is what proves the retry loop
+  works rather than merely compiling.
+  `TestConcurrentStoresOnOneFileDoNotDeadlock` is unchanged and stays as the
+  steady-state case: its two `Open` calls both land after the database is
+  already in WAL, so it never contended for the conversion in the first
+  place, stated now in its own doc comment; the new test is what exercises
+  the contended moment.
+- **Blocking: `journal.Journal.ScopeLevel` answered with the wrong level's
+  history.** It inferred the level from the newest row in the whole
+  `events` table, so a learner who finishes one level, starts the next, and
+  runs `check` before typing anything got the previous level's commands
+  back, and a replay saw every earlier attempt's commands forever, since
+  the table is persistent. `internal/verify/journal_checks.go` already
+  defaults an empty `scope` to `ScopeLevel`, so `command_matched` could pass
+  wrongly and `command_not_matched` could fail a learner for a command they
+  ran on a different level: exactly the "level accepts a wrong answer"
+  failure mode CLAUDE.md singles out. Fixed with a new `SetLevel(levelID
+  string, sinceID int64)` method, mutex-guarded like the existing `err`
+  field, that layer 4 calls when a level starts or resets; `New`'s
+  signature is untouched. `ScopeLevel` now queries `WHERE level_id = ? AND
+  id > ?` against the stored level and boundary, ordered `seq ASC, id ASC`
+  as before. Before `SetLevel` is ever called, `Commands` returns an empty
+  slice and records an error retrievable through `Err`, rather than
+  guessing from the newest row; the guess (`newestLevelID`) is deleted
+  outright, not kept as a fallback. `ScopeLevel`'s doc comment now states
+  the exact boundary it implements.
+  `TestCommandsForEveryScopeKind` now appends `nav-01` rows after the
+  `pipes-03` rows it verifies, so a fixture where the newer level's rows
+  have higher `events.id` than the level under verification is exactly what
+  proves the newest-row guess is gone; a new
+  `TestCommandsScopeLevelWithNoLevelSetReturnsEmptyAndErr` covers the
+  no-level-set state. `verifycontract_test.go`'s behavioural test now calls
+  `SetLevel` before exercising `ScopeLevel` through the adapter, since it no
+  longer works without it. **Decision on `ScopeLastN` and `ScopeLast`:
+  left with their existing global, level-agnostic semantics, deliberately,
+  not silently.** Their exposure to the same wrong-level window is far
+  smaller and self-correcting: a learner sees at most one stale command
+  from the level they just left, and it ages out the moment they type their
+  own first command in the new level, rather than persisting for the whole
+  attempt the way the `ScopeLevel` bug did. Scoping them to the level
+  boundary too is reasonable future work, stated in `journal.go` and
+  `doc.go`, but it is not this ticket's fix and needs its own pass over
+  every level using `last` or `last_n:N` scope today.
+- **The 4.7 versus 4.11 framing, corrected.** `docs/design/ARCHITECTURE.md`
+  section 4.7, the section issue #51's own acceptance criterion names,
+  already specifies "Stored in SQLite (`events` table)" with the same flat
+  journal record this package ships, modulo `level_id`/`level` and
+  `exit_code`/`exit` naming and three deferred output-capture fields. The
+  earlier entry above framed the shipped schema as drifting from the
+  design record; that was backwards. The real drift is that section 4.11
+  elsewhere in the same document describes an unrelated, later-stage
+  persistence layer with a singular `event` table and an opaque
+  `payload_json`, which contradicts 4.7 and was never implemented, is not
+  implementable against this ticket's "reads back with every field intact"
+  criterion, and is not evidence of this package being off-spec. Corrected
+  in `internal/journal/doc.go` and in the Day 2 entry above; reconciling
+  4.7 against 4.11 is tracked in issue #87, as a change to the design
+  record, not to this package.
+- **`internal/journal/tsv.go` per-line bound.** `bufio.Reader.ReadString`
+  grows without limit, so a `journal.tsv` a learner filled with `yes >>
+  journal.tsv`, or whose last line never terminates, could pull the whole
+  thing into one Go string and exhaust host memory. A `TODO(v0.2)` marker
+  was claimed in the Day 2 entry above but never existed in the code; since
+  the bound is contained and cheap, it is implemented rather than the
+  marker added. `readBoundedLine` reads with `br.ReadSlice('\n')`, not
+  `ReadString`, specifically because `ReadString` would already have pulled
+  an unbounded line fully into memory before this function ever saw its
+  length; `ReadSlice` returns `bufio.ErrBufferFull` a few KiB at a time
+  instead, so an over-long line is detected and its fragments discarded
+  without ever holding more than one buffer's worth in memory. An over-long
+  line is skipped the same way a malformed line already was. Two new table
+  cases: an over-long record in the middle of a file (surrounding records
+  still returned) and a file consisting of one unterminated over-long line
+  (nothing returned).
+- **A tab inside `PWD`, documented rather than fixed.** `instrument.bash`
+  emits `PWD` unescaped as field three, so a working directory containing a
+  literal tab truncates `Cwd` and leaves a garbage prefix on `Raw`, unlike a
+  tab inside the command, which the four-field `SplitN` bound already
+  handles safely. Fixing the producer is out of scope here: it would need
+  the same percent-encoding `instrument.bash` already does for the OSC 7
+  marker, kept consistent with issue #25's OSC 7 work rather than done
+  twice differently. `parseTSVLine` and `ReadTSV`'s doc comments now name
+  the limitation precisely, and a new table case pins the current,
+  undesirable-but-documented behaviour.
+- **`internal/store/migrate.go`'s empty `schema_version` table.**
+  `schemaVersion` used to collapse "table does not exist" (a fresh
+  database) and "table exists but holds no row" (not reachable from this
+  package's own writes, but reachable from an external tool or a future
+  migration touching the table) into the same "version 0", which made
+  `Migrate` re-run `001_init.sql`'s `CREATE TABLE schema_version` against a
+  database where that table already exists, failing with a "table already
+  exists" error naming the wrong problem and leaving the database
+  permanently unopenable. `schemaVersion` now counts rows explicitly and
+  returns a distinct error naming the empty table, which `Migrate` already
+  wraps through the existing `progress-db-migration-failed` anchor, no new
+  anchor needed. `TestSchemaVersionOnAnEmptySchemaVersionTableIsAnError`
+  deletes the row, reopens, and asserts the error names the empty table
+  rather than "already exists", and that nothing was written.
+- **`verifycontract_test.go` now pins the scope-kind set size, not only its
+  known members.** `TestJournalScopeMirrorsVerifyScope` previously could not
+  see a new `verify.ScopeKind` constant being added: it would stay green
+  while `journal.commands`' `default` arm silently answered with no
+  commands for the new kind. A `wantScopeKinds = 3` assertion with a
+  comment pointing at `journal.commands`' switch now fails loudly instead.
+- **Both packages' filesystem-removal guards closed three evasions.**
+  `bannedFilesystemRemoval`/`journalBannedFilesystemRemoval` matched only
+  the literal identifier `"os"`, only when a banned function was a
+  `CallExpr`'s `Fun`, and had no entry for `os.OpenFile` or
+  `syscall.Unlink`/`syscall.Ftruncate`. `import osx "os"; osx.Remove(p)`
+  and `var rm = os.Remove` followed by `rm(path)` both passed the guard
+  green, and a future `os.OpenFile(path, os.O_RDWR|os.O_TRUNC, 0o600)`
+  would have truncated the learner's progress database undetected. Fixed by
+  resolving each file's own import alias for `"os"`, `"os/exec"`, and
+  `"syscall"` from its own `f.Imports` rather than matching the string
+  `"os"`; by matching on bare `*ast.SelectorExpr` nodes rather than only a
+  `CallExpr`'s `Fun`, so a banned function taken as a value is caught the
+  same walk catches a direct call; by giving `os.OpenFile` a flag-aware
+  check (`openFileRequestsTruncateOrCreate`) that permits the existing
+  read-only probe and blocks a flag list mentioning `O_TRUNC` or
+  `O_CREATE`; and by adding `syscall.Unlink` and `syscall.Ftruncate` to the
+  banned set. Applied identically to both `internal/store/guards_test.go`
+  and `internal/journal/guards_test.go`. Mutation-verified for all four new
+  arms in both packages before committing: a scratch file exercising each
+  evasion (`os.OpenFile` with `O_TRUNC`, the import-alias form, the
+  function-value form, and `syscall.Unlink`) was added, confirmed to fail
+  the guard, then removed, in each package.
+- **`internal/journal/privacy_test.go`'s redaction matrix, expanded, and
+  the one hole it cannot close, documented.** The existing tests covered
+  only `%v`, `%s`, and `%#v` on a bare `Entry`. `TestEntryRedactionMatrix`
+  now crosses `{Entry, *Entry, []Entry, []*Entry, map[string]Entry, an
+  exported-field wrapper, fmt.Errorf("%v", e)}` against `{%v, %s, %q, %#v,
+  %+v}` and asserts every combination redacts. The one shape that cannot
+  redact, an `Entry` reached only through an unexported field of another
+  type, is pinned as a known, asserted leak by
+  `TestEntryRedactionHoleIsExactlyTheUnexportedFieldCase` rather than
+  pretended closed, because reflect marks a value read through an
+  unexported field as read-only, so `fmt` never calls `String` or
+  `GoString` on it; no change to `Entry` closes this, including giving
+  `Raw` its own named type. The rule this leaves is written on `Entry`'s
+  doc comment, on `String`'s doc comment, and in `doc.go`: never embed a
+  `journal.Entry` or `*journal.Entry` as an unexported field of anything
+  formatted with `fmt`.
+- **Two nits fixed:** `internal/store/doc.go`,
+  `internal/store/guards_test.go`, and the Day 2 entry above all called
+  `schema_version` a two-column table; `001_init.sql` declares it with one
+  column, `version INTEGER NOT NULL`, matching ARCHITECTURE 4.11's own
+  version of that table. All three corrected to "single-column".
+- **Declined or deferred, with reasons:**
+  - `internal/store/store.go:99`, `Open` writing into a foreign SQLite
+    file it was not handed by `platform.DatabasePath`: deferred, not
+    implemented. It has no caller today, the intended path is the fixed
+    `platform.DatabasePath()`, and a refusal with its own anchor and
+    refusal tests is a self-contained piece of work that deserves its own
+    ticket rather than growing this branch further; flagged for the main
+    session to file as a follow-up.
+  - `internal/store/store_test.go:374`'s concurrency test not reaching the
+    contended moment: subsumed by
+    `TestOpenOnAContendedConversionReportsInUseAndRetries` above; the
+    existing test is kept as the steady-state case, stated in its own doc
+    comment now, rather than rewritten to do something it was never
+    designed to do.
+
+Gates re-run locally, all green: `gofmt -s -w .`, `go vet ./...`, `go build
+./...`, `go test ./...`, `go test -race ./...`, `go test
+./internal/archtest/...`, `./scripts/check-punctuation.sh`,
+`./scripts/check-links.sh`, `python3 scripts/check-ci-gates.py`, and
+`./scripts/check-allowlist-regexp.sh` (run after `git add`). Docker is
+still not running here, `govulncheck` and `gosec` are still not installed,
+and `pytest` is still not installed, so `scripts/tests/` still did not run;
+CI remains authoritative for all three. `go.mod` and `go.sum` are
+byte-identical to before this commit, confirmed by an empty `git diff --
+go.mod go.sum`.
 
 ---
 

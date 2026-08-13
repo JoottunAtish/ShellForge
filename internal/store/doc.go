@@ -36,9 +36,11 @@
 //
 // This package deletes nothing belonging to a learner. The only DELETE
 // anywhere in this package is DELETE FROM schema_version, inside a
-// migration's own transaction, on a two-column table this package owns and
-// immediately rewrites with a single row. Every user-facing failure's
+// migration's own transaction, on a single-column table this package owns
+// and immediately rewrites with a single row. Every user-facing failure's
 // remediation tells the learner to rename their progress file, never to
-// delete it: see the four doc anchors this package declares and their
-// headings in docs/05-troubleshooting.md.
+// delete it, except progress-db-in-use: the file is not wrong in that case,
+// so its remediation says to close the other process instead. See the five
+// doc anchors this package declares and their headings in
+// docs/05-troubleshooting.md.
 package store

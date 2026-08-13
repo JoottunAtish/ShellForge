@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/JoottunAtish/ShellForge/internal/platform/ux"
@@ -126,6 +127,82 @@ func TestSchemaVersionOnAnEmptyDatabaseIsZero(t *testing.T) {
 	if version != 0 {
 		t.Errorf("version = %d, want 0", version)
 	}
+}
+
+// TestSchemaVersionOnAnEmptySchemaVersionTableIsAnError pins the fix for a
+// database state schemaVersion used to collapse into version 0 alongside a
+// genuinely fresh database: the schema_version table exists but holds no
+// row, which this package's own writes never produce but an external tool
+// touching that table could. Before this fix, Migrate treated that state
+// exactly like a fresh database and re-ran 001_init.sql, whose first
+// statement is CREATE TABLE schema_version, which fails against a database
+// where that table already exists with a message naming the wrong problem,
+// and leaves the database permanently unopenable.
+func TestSchemaVersionOnAnEmptySchemaVersionTableIsAnError(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "progress.db")
+	s, err := Open(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	if _, err := s.DB().ExecContext(context.Background(), "DELETE FROM schema_version"); err != nil {
+		t.Fatalf("delete schema_version row: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	_, err = schemaVersionForTest(dbPath)
+	if err == nil {
+		t.Fatal("schemaVersion succeeded against an empty schema_version table")
+	}
+	if !strings.Contains(err.Error(), "schema_version table exists but records no version") {
+		t.Errorf("error = %q, want it to name the empty table", err.Error())
+	}
+	if strings.Contains(err.Error(), "already exists") {
+		t.Errorf("error = %q, still names the wrong problem (table already exists)", err.Error())
+	}
+
+	// Migrate must report the same thing through the migration-failed
+	// anchor, not a raw driver error, and must not have written anything:
+	// there is still exactly zero rows in schema_version afterward.
+	_, err = Open(context.Background(), dbPath)
+	if err == nil {
+		t.Fatal("Open succeeded against an empty schema_version table")
+	}
+	var uerr *ux.Error
+	if !errors.As(err, &uerr) {
+		t.Fatalf("error is not a *ux.Error: %v", err)
+	}
+	if uerr.DocAnchor != anchorMigrationFailed {
+		t.Errorf("DocAnchor = %q, want %q", uerr.DocAnchor, anchorMigrationFailed)
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("plain sql.Open: %v", err)
+	}
+	defer db.Close()
+	var count int
+	if err := db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM schema_version").Scan(&count); err != nil {
+		t.Fatalf("count schema_version rows: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("schema_version row count = %d, want 0 (unchanged, refused rather than repaired)", count)
+	}
+}
+
+// schemaVersionForTest opens dbPath with a plain sql.Open, unrelated to this
+// package's own Open, and returns what schemaVersion reports for it. This
+// keeps the assertion about schemaVersion's own error text independent of
+// however Migrate happens to wrap it.
+func schemaVersionForTest(dbPath string) (int, error) {
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return 0, err
+	}
+	defer db.Close()
+	return schemaVersion(context.Background(), db)
 }
 
 func TestOpenRefusesANewerSchemaVersion(t *testing.T) {

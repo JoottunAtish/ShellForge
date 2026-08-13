@@ -397,6 +397,32 @@ one, keep `progress.db.broken` and mention it in a bug report.
 
 ---
 
+## progress-db-in-use
+
+**You'll see:** an error while Shellforge tries to open the file where it
+records your progress, telling you the file is in use.
+
+**What it means:** another copy of Shellforge, most often one you already
+have open in a different window, has this file open right now. SQLite only
+lets one process finish a certain quick internal setup step on the file at a
+time, and this one lost that race. Nothing is wrong with the file itself,
+and Shellforge does not touch it when this happens.
+
+**Fix:**
+
+Close the other copy of Shellforge, or the other window running it, then run:
+
+```
+shellforge doctor
+```
+
+If nothing else is open, run `shellforge doctor` again anyway: an antivirus
+scanner or a backup tool can briefly hold the same kind of lock. If it keeps
+happening, check that only one antivirus or backup process watches your
+Shellforge data folder.
+
+---
+
 ## progress-db-too-new
 
 **You'll see:** an error while Shellforge tries to open the file where it

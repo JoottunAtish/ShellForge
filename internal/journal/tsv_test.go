@@ -131,6 +131,34 @@ func TestReadTSV(t *testing.T) {
 			},
 		},
 		{
+			// Pins the documented limitation on parseTSVLine: a tab inside
+			// PWD is not representable in this format, unlike a tab inside
+			// the command, which is always safe. This is not the desired
+			// behaviour; it is the current one, recorded so a future
+			// change to it is a deliberate decision rather than an
+			// unnoticed side effect.
+			name:  "tab inside PWD truncates Cwd and leaves a garbage prefix on Raw",
+			input: "1765432100.000000\t0\t/home/learner/a\tb\tls\n",
+			want: []Entry{
+				{Seq: 1, TS: time.Unix(1765432100, 0).UTC(), Exit: 0, Cwd: "/home/learner/a", Raw: "b\tls"},
+			},
+		},
+		{
+			name: "over-long line in the middle is skipped like a malformed line",
+			input: "1765432100.000000\t0\t/home/learner\tone\n" +
+				"1765432101.000000\t0\t/home/learner\t" + strings.Repeat("a", maxTSVLine) + "\n" +
+				"1765432102.000000\t0\t/home/learner\tthree\n",
+			want: []Entry{
+				{Seq: 1, TS: time.Unix(1765432100, 0).UTC(), Exit: 0, Cwd: "/home/learner", Raw: "one"},
+				{Seq: 2, TS: time.Unix(1765432102, 0).UTC(), Exit: 0, Cwd: "/home/learner", Raw: "three"},
+			},
+		},
+		{
+			name:  "file consisting of one unterminated over-long line",
+			input: "1765432100.000000\t0\t/home/learner\t" + strings.Repeat("a", maxTSVLine),
+			want:  nil,
+		},
+		{
 			name:  "level id is left empty",
 			input: "1765432100.000000\t0\t/home/learner\techo hi\n",
 			want: []Entry{
