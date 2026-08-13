@@ -137,8 +137,9 @@ func checkInteractiveShellSupported() error {
 
 // parseRunArgs reads the level id and the one flag `run` understands today.
 //
-// This is a hand-rolled parser because the dispatcher it plugs into is also
-// hand-rolled. Day 1 Session A replaces both with cobra.
+// This stays a hand-rolled parser under cobra too: newRunCommand in root.go
+// sets DisableFlagParsing so this function keeps owning --log-level, rather
+// than #48 rewriting and re-testing logic it was not asked to touch.
 func parseRunArgs(args []string) (runOptions, error) {
 	var opts runOptions
 

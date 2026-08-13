@@ -199,6 +199,13 @@ jobs:
           rm -f go.mod.bak go.sum.bak
           echo "OK: modules tidy"
 
+      - name: Build cmd/shellforge
+        # A module with no main package still builds -v ./... cleanly, which
+        # is exactly what let this directory go untracked and uncompiled
+        # until #11. Building the main package by name fails loudly if it
+        # ever goes missing again, rather than passing by omission.
+        run: go build -o bin/shellforge ./cmd/shellforge
+
       - name: Build
         run: go build -v ./...
 
