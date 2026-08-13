@@ -44,7 +44,11 @@ type statInfo struct {
 // built on that would tell a learner they solved file_absent when the real
 // state is unknown.
 func statPath(ctx context.Context, sess runtime.Session, path string) (info statInfo, missing bool, err error) {
-	res, execErr := sess.Exec(ctx, []string{"stat", "-c", "%F|%a|%U|%G", path}, runtime.ExecOpts{})
+	// The "--" is not decoration: path comes from level YAML, and without an
+	// end-of-options terminator a path beginning with a hyphen is read by
+	// stat as an option rather than as an operand. An argv vector stops shell
+	// interpretation; only "--" stops flag injection.
+	res, execErr := sess.Exec(ctx, []string{"stat", "-c", "%F|%a|%U|%G", "--", path}, runtime.ExecOpts{})
 	if execErr != nil {
 		return statInfo{}, false, execErr
 	}
@@ -167,9 +171,18 @@ func newFileContentCheck(s Spec) (Check, error) {
 	if err != nil {
 		return nil, factoryError("file_content", s.ID, err)
 	}
-	value, err := paramString(s.Params, "value", true)
+	// value is read through paramStringPresence rather than paramString's
+	// required form, which rejects an explicitly empty string: match "exact"
+	// with an empty value is the natural way to assert that a file is empty,
+	// and a level author must be able to write it. Only an absent key is an
+	// error here. Each match mode below applies its own validation to
+	// whatever value it was handed.
+	value, valuePresent, err := paramStringPresence(s.Params, "value")
 	if err != nil {
 		return nil, factoryError("file_content", s.ID, err)
+	}
+	if !valuePresent {
+		return nil, factoryError("file_content", s.ID, fmt.Errorf("missing required param %q", "value"))
 	}
 	ignoreCase, err := paramBool(s.Params, "ignore_case")
 	if err != nil {
@@ -209,7 +222,7 @@ func (c *fileContentCheck) ID() string { return c.id }
 
 func (c *fileContentCheck) Run(ctx context.Context, env Env) Result {
 	start := time.Now()
-	res, err := env.Session.Exec(ctx, []string{"cat", c.path}, runtime.ExecOpts{})
+	res, err := env.Session.Exec(ctx, []string{"cat", "--", c.path}, runtime.ExecOpts{})
 	if err != nil {
 		r := probeError(c.id, "read", c.path, err)
 		r.Duration = time.Since(start)
@@ -331,7 +344,41 @@ func newDirTreeCheck(s Spec) (Check, error) {
 	if mode != dirTreeNamesOnly && mode != dirTreeNamesAndHashes {
 		return nil, factoryError("dir_tree", s.ID, fmt.Errorf("unknown mode %q: want names_only or names_and_hashes", modeRaw))
 	}
-	return &dirTreeCheck{id: s.ID, path: path, compareTo: compareTo, onFail: s.OnFail, mode: mode}, nil
+
+	// Both roots must be absolute, and this is a security rule, not a style
+	// preference. GNU find has no "--" end-of-options terminator: it reads
+	// "--" as a predicate and fails. The other filesystem checks close the
+	// flag injection hole with "--" before their path operand; dir_tree
+	// cannot, so it closes it here instead, at Factory time. A value that
+	// starts with "/" can never be read by find as an option, and every path
+	// in the docs/LEVEL-FORMAT.md catalogue is absolute already, so this
+	// rejects nothing a level would legitimately write.
+	if !strings.HasPrefix(path, "/") {
+		return nil, factoryError("dir_tree", s.ID, fmt.Errorf("param %q must be an absolute path, got %q", "path", path))
+	}
+	if !strings.HasPrefix(compareTo, "/") {
+		return nil, factoryError("dir_tree", s.ID, fmt.Errorf("param %q must be an absolute path, got %q", "compare_to", compareTo))
+	}
+
+	return &dirTreeCheck{
+		id:        s.ID,
+		path:      trimTrailingSlashes(path),
+		compareTo: trimTrailingSlashes(compareTo),
+		onFail:    s.OnFail,
+		mode:      mode,
+	}, nil
+}
+
+// trimTrailingSlashes normalizes a dir_tree root so that the argv find is
+// handed and the prefix hashRelativeFiles strips agree on one spelling. A
+// root of nothing but slashes normalizes to "/", which TrimRight alone would
+// flatten to the empty string.
+func trimTrailingSlashes(p string) string {
+	trimmed := strings.TrimRight(p, "/")
+	if trimmed == "" {
+		return "/"
+	}
+	return trimmed
 }
 
 func (c *dirTreeCheck) ID() string { return c.id }
@@ -339,17 +386,26 @@ func (c *dirTreeCheck) ID() string { return c.id }
 func (c *dirTreeCheck) Run(ctx context.Context, env Env) Result {
 	start := time.Now()
 
-	namesA, err := listRelativeEntries(ctx, env.Session, c.path)
+	// A root that does not exist is the ordinary not-yet-solved state, not a
+	// probe failure, and it reports as a fail carrying the authored on_fail,
+	// exactly as statPath's missing case does for every other filesystem
+	// check. Both roots are treated identically: the learner's own artifact
+	// is usually c.path, but a level may compare in either direction, and a
+	// missing compare_to still means the two trees do not match.
+	namesA, missingA, err := listRelativeEntries(ctx, env.Session, c.path)
 	if err != nil {
 		r := probeError(c.id, "list", c.path, err)
 		r.Duration = time.Since(start)
 		return r
 	}
-	namesB, err := listRelativeEntries(ctx, env.Session, c.compareTo)
+	namesB, missingB, err := listRelativeEntries(ctx, env.Session, c.compareTo)
 	if err != nil {
 		r := probeError(c.id, "list", c.compareTo, err)
 		r.Duration = time.Since(start)
 		return r
+	}
+	if missingA || missingB {
+		return Result{ID: c.id, Status: StatusFail, Message: c.onFail, Duration: time.Since(start)}
 	}
 
 	if !equalStringSets(namesA, namesB) {
@@ -380,13 +436,26 @@ func (c *dirTreeCheck) Run(ctx context.Context, env Env) Result {
 // listRelativeEntries lists every entry under root, relative to root, using
 // `find`'s own %P: the path with root's own prefix removed. The root itself
 // prints as an empty string and is dropped.
-func listRelativeEntries(ctx context.Context, sess runtime.Session, root string) ([]string, error) {
+//
+// missing reports that root does not exist, distinguished from every other
+// non-zero exit by find's own "No such file or directory" message, so that
+// the caller can tell "the learner has not made this directory yet" apart
+// from a probe that could not answer. This mirrors statPath.
+//
+// There is no "--" before root: GNU find has no end-of-options terminator
+// and reads "--" as an unknown predicate. newDirTreeCheck requires an
+// absolute root instead, which find can never mistake for an option.
+func listRelativeEntries(ctx context.Context, sess runtime.Session, root string) (entries []string, missing bool, err error) {
 	res, err := sess.Exec(ctx, []string{"find", root, "-printf", "%P\n"}, runtime.ExecOpts{})
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if res.ExitCode != 0 {
-		return nil, fmt.Errorf("find %s: %s", root, strings.TrimSpace(string(res.Stderr)))
+		stderr := string(res.Stderr)
+		if strings.Contains(strings.ToLower(stderr), "no such file or directory") {
+			return nil, true, nil
+		}
+		return nil, false, fmt.Errorf("find %s: %s", root, strings.TrimSpace(stderr))
 	}
 	var out []string
 	for _, line := range strings.Split(strings.TrimRight(string(res.Stdout), "\n"), "\n") {
@@ -395,11 +464,13 @@ func listRelativeEntries(ctx context.Context, sess runtime.Session, root string)
 		}
 		out = append(out, line)
 	}
-	return out, nil
+	return out, false, nil
 }
 
 // hashRelativeFiles sha256-hashes every regular file under root and returns
-// a map from the file's path relative to root to its hex digest.
+// a map from the file's path relative to root to its hex digest. It has no
+// missing case: it runs only after both roots have already listed
+// successfully, so a non-zero exit here is a genuine probe failure.
 func hashRelativeFiles(ctx context.Context, sess runtime.Session, root string) (map[string]string, error) {
 	res, err := sess.Exec(ctx, []string{"find", root, "-type", "f", "-exec", "sha256sum", "{}", "+"}, runtime.ExecOpts{})
 	if err != nil {
@@ -408,6 +479,11 @@ func hashRelativeFiles(ctx context.Context, sess runtime.Session, root string) (
 	if res.ExitCode != 0 {
 		return nil, fmt.Errorf("find %s -exec sha256sum: %s", root, strings.TrimSpace(string(res.Stderr)))
 	}
+	// TrimSuffix before appending the separator, so that a root of "/" makes
+	// the prefix "/" rather than "//", which would match nothing find
+	// printed. newDirTreeCheck already normalizes away a trailing slash;
+	// this keeps the helper correct on its own terms as well.
+	prefix := strings.TrimSuffix(root, "/") + "/"
 	out := make(map[string]string)
 	for _, line := range strings.Split(strings.TrimRight(string(res.Stdout), "\n"), "\n") {
 		if line == "" {
@@ -418,7 +494,7 @@ func hashRelativeFiles(ctx context.Context, sess runtime.Session, root string) (
 			continue
 		}
 		hash, full := fields[0], fields[1]
-		rel := strings.TrimPrefix(full, root+"/")
+		rel := strings.TrimPrefix(full, prefix)
 		out[rel] = hash
 	}
 	return out, nil
@@ -444,7 +520,12 @@ func equalStringMaps(a, b map[string]string) bool {
 		return false
 	}
 	for k, v := range a {
-		if b[k] != v {
+		// Membership, not just equality: a missing key in b reads back as
+		// the zero string, so comparing values alone would call a and b
+		// equal when b is missing a key whose value in a happens to be
+		// empty.
+		v2, ok := b[k]
+		if !ok || v2 != v {
 			return false
 		}
 	}
@@ -593,7 +674,7 @@ func (c *symlinkTargetCheck) Run(ctx context.Context, env Env) Result {
 		return Result{ID: c.id, Status: StatusFail, Message: c.onFail, Duration: time.Since(start)}
 	}
 
-	res, err := env.Session.Exec(ctx, []string{"readlink", c.path}, runtime.ExecOpts{})
+	res, err := env.Session.Exec(ctx, []string{"readlink", "--", c.path}, runtime.ExecOpts{})
 	if err != nil {
 		r := probeError(c.id, "read the link target of", c.path, err)
 		r.Duration = time.Since(start)

@@ -3,8 +3,11 @@
 // daemon and no real bash.
 //
 // Layer L3, alongside internal/verify itself. It may import internal/runtime
-// and below, and only a _test.go file may import it: it imports testing, so
-// linking it into the product binary would be a bug.
+// and below, and only a _test.go file may import it: linking a fake session
+// into the product binary would be a bug. The Go toolchain cannot enforce
+// that on its own, since this package has no _test.go suffix of its own and
+// does not import testing, so the rule is enforced by a source-parsing test,
+// TestVerifytestIsImportedOnlyByTests in internal/verify.
 //
 // Every check in internal/verify only ever calls Session.Exec: Attach,
 // PushFiles, and PullFile exist to serve the learner's interactive shell and

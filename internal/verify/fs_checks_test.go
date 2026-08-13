@@ -215,6 +215,28 @@ func TestFileContentCheck(t *testing.T) {
 		}
 	})
 
+	t.Run("exact with an empty value asserts the file is empty", func(t *testing.T) {
+		c := newCheck(t, map[string]any{"path": "/f", "match": "exact", "value": ""})
+		sess := verifytest.NewSession(verifytest.Const(runtime.ExecResult{ExitCode: 0, Stdout: []byte("")}, nil))
+		if r := runCheck(c, sess); r.Status != StatusPass {
+			t.Fatalf("an empty file must satisfy match: exact with an empty value: got %+v", r)
+		}
+	})
+
+	t.Run("exact with an empty value fails on a non-empty file", func(t *testing.T) {
+		c := newCheck(t, map[string]any{"path": "/f", "match": "exact", "value": ""})
+		sess := verifytest.NewSession(verifytest.Const(runtime.ExecResult{ExitCode: 0, Stdout: []byte("x")}, nil))
+		if r := runCheck(c, sess); r.Status != StatusFail {
+			t.Fatalf("got %+v", r)
+		}
+	})
+
+	t.Run("factory: absent value param", func(t *testing.T) {
+		if _, err := newFileContentCheck(Spec{ID: "o", Params: map[string]any{"path": "/f", "match": "exact"}}); err == nil {
+			t.Fatal("expected an error when the value param is absent entirely")
+		}
+	})
+
 	t.Run("factory: unknown match mode", func(t *testing.T) {
 		if _, err := newFileContentCheck(Spec{ID: "o", Params: map[string]any{"path": "/f", "match": "sparkles", "value": "x"}}); err == nil {
 			t.Fatal("expected an error for an unknown match mode")
@@ -326,7 +348,21 @@ func TestDirTreeCheck(t *testing.T) {
 		}
 	})
 
-	t.Run("error: missing compare_to target", func(t *testing.T) {
+	t.Run("fail: the path has not been created yet", func(t *testing.T) {
+		c := mustFactory(t, "dir_tree", Spec{ID: "o", OnFail: "mismatch", Params: map[string]any{
+			"path": "/config.bak", "compare_to": "/config", "mode": "names_only",
+		}})
+		sess := verifytest.NewSession(
+			verifytest.Const(runtime.ExecResult{ExitCode: 1, Stderr: []byte("find: '/config.bak': No such file or directory\n")}, nil),
+			verifytest.Const(runtime.ExecResult{ExitCode: 0, Stdout: []byte("a.txt\n")}, nil),
+		)
+		r := runCheck(c, sess)
+		if r.Status != StatusFail || r.Message != "mismatch" {
+			t.Fatalf("a directory the learner has not made yet is the ordinary unsolved state and must be StatusFail with the on_fail text: got %+v", r)
+		}
+	})
+
+	t.Run("fail: missing compare_to target", func(t *testing.T) {
 		c := mustFactory(t, "dir_tree", Spec{ID: "o", OnFail: "mismatch", Params: map[string]any{
 			"path": "/config.bak", "compare_to": "/config", "mode": "names_only",
 		}})
@@ -334,8 +370,39 @@ func TestDirTreeCheck(t *testing.T) {
 			verifytest.Const(runtime.ExecResult{ExitCode: 0, Stdout: []byte("a.txt\n")}, nil),
 			verifytest.Const(runtime.ExecResult{ExitCode: 1, Stderr: []byte("find: '/config': No such file or directory\n")}, nil),
 		)
-		if r := runCheck(c, sess); r.Status != StatusError {
+		r := runCheck(c, sess)
+		if r.Status != StatusFail || r.Message != "mismatch" {
 			t.Fatalf("got %+v", r)
+		}
+	})
+
+	t.Run("error: permission denied while listing", func(t *testing.T) {
+		c := mustFactory(t, "dir_tree", Spec{ID: "o", OnFail: "mismatch", Params: map[string]any{
+			"path": "/config.bak", "compare_to": "/config", "mode": "names_only",
+		}})
+		sess := verifytest.NewSession(
+			verifytest.Const(runtime.ExecResult{ExitCode: 1, Stderr: []byte("find: '/config.bak': Permission denied\n")}, nil),
+		)
+		if r := runCheck(c, sess); r.Status != StatusError {
+			t.Fatalf("a probe that could not answer must stay StatusError: got %+v", r)
+		}
+	})
+
+	t.Run("a trailing slash on path does not break hash comparison", func(t *testing.T) {
+		c := mustFactory(t, "dir_tree", Spec{ID: "o", OnFail: "mismatch", Params: map[string]any{
+			"path": "/config.bak/", "compare_to": "/config", "mode": "names_and_hashes",
+		}})
+		sess := verifytest.NewSession(
+			verifytest.Const(runtime.ExecResult{ExitCode: 0, Stdout: []byte("a.txt\n")}, nil),
+			verifytest.Const(runtime.ExecResult{ExitCode: 0, Stdout: []byte("a.txt\n")}, nil),
+			verifytest.Const(runtime.ExecResult{ExitCode: 0, Stdout: []byte("deadbeef  /config.bak/a.txt\n")}, nil),
+			verifytest.Const(runtime.ExecResult{ExitCode: 0, Stdout: []byte("deadbeef  /config/a.txt\n")}, nil),
+		)
+		if r := runCheck(c, sess); r.Status != StatusPass {
+			t.Fatalf("got %+v", r)
+		}
+		if got := sess.Calls()[0].Argv[1]; got != "/config.bak" {
+			t.Fatalf("find received %q, want the normalized root %q", got, "/config.bak")
 		}
 	})
 
@@ -344,6 +411,50 @@ func TestDirTreeCheck(t *testing.T) {
 			t.Fatal("expected an error for an unknown mode")
 		}
 	})
+
+	// find has no "--" end-of-options terminator, so an absolute path is
+	// what keeps a flag-shaped value out of find's option parser.
+	t.Run("factory: relative path", func(t *testing.T) {
+		if _, err := newDirTreeCheck(Spec{ID: "o", Params: map[string]any{"path": "config.bak", "compare_to": "/b", "mode": "names_only"}}); err == nil {
+			t.Fatal("expected an error for a relative path")
+		}
+	})
+
+	t.Run("factory: flag-shaped path", func(t *testing.T) {
+		if _, err := newDirTreeCheck(Spec{ID: "o", Params: map[string]any{"path": "-delete", "compare_to": "/b", "mode": "names_only"}}); err == nil {
+			t.Fatal("expected an error for a path find would read as a predicate")
+		}
+	})
+
+	t.Run("factory: relative compare_to", func(t *testing.T) {
+		if _, err := newDirTreeCheck(Spec{ID: "o", Params: map[string]any{"path": "/a", "compare_to": "config", "mode": "names_only"}}); err == nil {
+			t.Fatal("expected an error for a relative compare_to")
+		}
+	})
+}
+
+func TestEqualStringMaps(t *testing.T) {
+	tests := []struct {
+		name string
+		a, b map[string]string
+		want bool
+	}{
+		{"both empty", map[string]string{}, map[string]string{}, true},
+		{"identical", map[string]string{"a.txt": "dead"}, map[string]string{"a.txt": "dead"}, true},
+		{"same key, different digest", map[string]string{"a.txt": "dead"}, map[string]string{"a.txt": "cafe"}, false},
+		{"different sizes", map[string]string{"a.txt": "dead"}, map[string]string{}, false},
+		// Same size, disjoint keys, and a's value is the empty string: a
+		// value-only comparison reads b's missing key back as "" and calls
+		// the two maps equal.
+		{"same size, disjoint keys, empty value", map[string]string{"a.txt": ""}, map[string]string{"b.txt": "dead"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := equalStringMaps(tt.a, tt.b); got != tt.want {
+				t.Fatalf("equalStringMaps(%v, %v) = %v, want %v", tt.a, tt.b, got, tt.want)
+			}
+		})
+	}
 }
 
 func TestFileModeCheck(t *testing.T) {

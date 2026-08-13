@@ -1623,6 +1623,38 @@ the real `SF_STATE` fix from a different ticket.
   this ticket needed the Docker daemon, which is confirmed not running
   here regardless. CI is authoritative for all three.
 
+### Day 2 follow-up, 2026-08-13: review fixes on #49
+
+Ten review findings on PR #81, all fixed on the same branch. Four were
+argument injection: a level-supplied `path` reached `stat`, `cat`, and
+`readlink` with no `--`, so a path beginning with a hyphen would have been
+read as an option rather than as an operand. Passing an argv vector stops a
+shell from interpreting the value; only `--` stops the option parser. GNU
+find has no such terminator and fails on `--` as an unknown predicate, so
+`dir_tree` rejects a non-absolute `path` or `compare_to` in its `Factory`
+instead, which closes the same hole for the one command that cannot be
+fixed the same way. `argv_injection_test.go` gained the `dir_tree` and
+`symlink_target` cases it had claimed to cover and did not, plus a second
+test asserting the terminator is present before every path operand and
+absent from find's.
+
+Also: `file_content` reads `value` through `paramStringPresence`, so
+`match: exact` with an empty value, the natural way to assert that a file is
+empty, is authorable again; `dir_tree` reports a root that does not exist as
+`Status: fail` with the authored `on_fail` rather than `Status: error`,
+matching what `statPath` already does for every other filesystem check, so a
+learner who has not created the directory yet is not told the check broke;
+`dir_tree` normalizes a trailing slash on either root, which previously made
+every hash comparison fail; `equalStringMaps` checks membership rather than
+reading a missing key back as the empty string; and `verifytest/doc.go` no
+longer claims a compiler-enforced guardrail that did not exist. That claim
+is now true instead: `check_test.go` walks every `.go` file in the module and
+fails if a non-test file imports the fake.
+
+`docs/LEVEL-FORMAT.md` is again untouched. Requiring an absolute `dir_tree`
+path is implementation validation of what the catalogue already implies, not
+a new documented shape.
+
 ---
 
 ## Day 1: the spike

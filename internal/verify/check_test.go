@@ -1,6 +1,7 @@
 package verify
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -188,4 +189,73 @@ func TestPackageDoesNotImportJournal(t *testing.T) {
 func importPath(imp *ast.ImportSpec) string {
 	v := imp.Path.Value
 	return strings.Trim(v, `"`)
+}
+
+// --- verifytest is test-only, enforced rather than asserted in a comment ---
+
+const verifytestImportPath = "github.com/JoottunAtish/ShellForge/internal/verify/verifytest"
+
+// TestVerifytestIsImportedOnlyByTests walks every .go file in the module and
+// fails if a non-test file imports internal/verify/verifytest. Nothing in the
+// toolchain enforces this: verifytest is an ordinary package that happens to
+// contain a fake, and a stray import would link a Session whose Attach,
+// PushFiles, PullFile, and Close all panic into the shipped binary. Its
+// doc.go says the package is test-only, and this is what makes that true.
+func TestVerifytestIsImportedOnlyByTests(t *testing.T) {
+	root := moduleRoot(t)
+	fset := token.NewFileSet()
+
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if name := d.Name(); path != root && (name == ".git" || name == "bin") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		name := d.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			return nil
+		}
+		f, perr := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
+		if perr != nil {
+			return fmt.Errorf("parsing %s: %w", path, perr)
+		}
+		for _, imp := range f.Imports {
+			if importPath(imp) == verifytestImportPath {
+				rel, rerr := filepath.Rel(root, path)
+				if rerr != nil {
+					rel = path
+				}
+				t.Errorf("%s imports %q from a non-test file: verifytest is test-only, see its doc.go", filepath.ToSlash(rel), verifytestImportPath)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking %s: %v", root, err)
+	}
+}
+
+// moduleRoot returns the directory holding this module's go.mod, found by
+// walking up from this source file.
+func moduleRoot(t *testing.T) string {
+	t.Helper()
+	_, thisFile, _, ok := goruntime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller(0) failed to report this file's path")
+	}
+	dir := filepath.Dir(thisFile)
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatalf("no go.mod found above %s", filepath.Dir(thisFile))
+		}
+		dir = parent
+	}
 }
