@@ -102,6 +102,7 @@ Approved set, and nothing else:
 | `fatih/color` | Output styling | Must honour `NO_COLOR`. |
 | `stretchr/testify` | Assertions | `require`, not `assert`, for anything that invalidates the rest of the test. |
 | `golang.org/x/term` | Host raw mode and window size | Go team maintained golang.org/x module; approved for #10, the standard answer for raw mode since Go has no stdlib termios API. |
+| `charmbracelet/glamour` | Level briefings, markdown to ANSI | Approved for #55. **Pin to v0.10.0.** v1.0.0 declares `go 1.24.0` and would raise this module's floor; v0.10.0 and its whole direct tree stay at or below `go 1.23.0`. Imported only by `cmd/shellforge`, never below L5. Use the project's own `briefingStyle`, not `WithStandardStyle`: every standard style leaves the `##` heading marker in the output, and `dark` inflates a 352 byte briefing to 5,698 bytes of per-space padding escapes. Honours `NO_COLOR` through `ux.ColorEnabled`, and emits no attributes at all, bold included, when colour is off. |
 
 **Ask before adding anything else.** The answer is usually the standard library.
 

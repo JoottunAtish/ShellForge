@@ -5,25 +5,30 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path"
 	goruntime "runtime"
 	"strings"
 	"time"
 
+	"github.com/JoottunAtish/ShellForge/internal/content"
+	"github.com/JoottunAtish/ShellForge/internal/game"
 	"github.com/JoottunAtish/ShellForge/internal/platform/ux"
 	"github.com/JoottunAtish/ShellForge/internal/pty"
 	"github.com/JoottunAtish/ShellForge/internal/runtime"
 	"github.com/JoottunAtish/ShellForge/internal/runtime/docker"
 	"github.com/JoottunAtish/ShellForge/internal/sandbox"
+	"github.com/JoottunAtish/ShellForge/internal/verify"
+	"github.com/JoottunAtish/ShellForge/packs"
 )
 
-// The `run` verb. On Day 1 it plays exactly one hardcoded level, `demo`, and
-// exists to demonstrate the go/no-go gate: real bash in a real container, with
-// the game watching every command and verifying real state.
+// The `run` verb: play one level, from the embedded YAML pack, end to end.
 //
-// Day 2 replaces the hardcoded level with YAML and this file grows a level
-// loader. Nothing here is designed to be the permanent shape of `run`.
+// The flow is the one #11 proved for a single hardcoded level, generalised to
+// any level in the pack. Every ordering comment below was load bearing then and
+// still is; where one explains a defect that was measured rather than reasoned
+// about, it says so.
 
 const (
 	// sandboxName is the container's identity and sandboxImage is the image
@@ -48,17 +53,38 @@ const (
 	// has run.
 	sandboxHome = "/home/learner"
 
-	// demoLevelID is the only level id `run` accepts on Day 1.
+	// sandboxUser is the unprivileged user a learner plays as. It matches the
+	// Containerfile's USER and setup.DefaultOwner.
+	sandboxUser = "learner"
+
+	// demoLevelID is the Day 1 hardcoded level, kept reachable alongside the
+	// pack.
+	//
+	// TODO(v0.2): delete this, internal/sandbox/demo_level.go, and the demo
+	// adapter below, once the golden harness and a YAML isolation test have
+	// been green in CI. demo_golden_test.go currently holds the repository's
+	// only live filesystem purity check and its only host-isolation test, and
+	// removing them in the same change that introduces a generic level runner
+	// would drop safety coverage while enlarging the surface. Tracked as a
+	// follow-up issue named in that file's header.
 	demoLevelID = "demo"
 
 	// controlReplyTimeout bounds a write to the response FIFO.
 	//
 	// The shim opens the response FIFO for reading immediately after
-	// writing its request, so a write normally rendezvouses at once. If the
-	// learner kills the shim in between, nothing ever opens the read end
-	// and the write would block forever, wedging the control loop for the
-	// rest of the session. A bounded write turns that into one skipped
-	// reply instead.
+	// writing its request, so a write normally rendezvouses at once. Two things
+	// can leave nobody reading. The learner can kill the shim, and, more
+	// commonly, the learner can press Ctrl-C during a slow check: raw mode
+	// means their 0x03 reaches the sandbox as a byte, the container's line
+	// discipline turns it into SIGINT for the foreground group, and `check`
+	// dies with its `_sf-request` child. Either way an unbounded write would
+	// block forever on open(2) and wedge the control loop for the rest of the
+	// session. A bounded write turns that into one skipped reply.
+	//
+	// TODO(v0.2): the cost of that bound is that a `check` typed immediately
+	// after an abandoned one can wait up to this long, because the shim's own
+	// write blocks until the host loops back to its read. One short line is
+	// well under PIPE_BUF so nothing is interleaved or lost, only late.
 	controlReplyTimeout = 10 * time.Second
 
 	// cleanupTimeout bounds teardown after the shell has exited.
@@ -78,6 +104,19 @@ const (
 	// back. One orphaned process in a disposable container is the smaller
 	// problem.
 	controlDrainTimeout = 5 * time.Second
+
+	// checkSlack is added to the engine's level budget to bound one `check`.
+	//
+	// The host cannot observe the learner's Ctrl-C, so it cannot cancel a run
+	// in flight; what it can do is refuse to keep working forever on a reply
+	// nobody will read. The engine's own level timeout does the real bounding
+	// and this is only the margin that keeps the two from racing.
+	checkSlack = 5 * time.Second
+
+	// docAnchorLevelNotFound explains an unknown level id.
+	//
+	// DocAnchor: "level-not-found"
+	docAnchorLevelNotFound = "level-not-found"
 )
 
 // runOptions is what `run` parsed out of its arguments.
@@ -86,24 +125,114 @@ type runOptions struct {
 	debug   bool
 }
 
+// controlResponder answers one control request from inside the sandbox.
+//
+// The interface exists so the control loop is level-agnostic: the same loop
+// serves a YAML level and the Day 1 demo, and will serve whatever replaces the
+// demo, without a second copy of the FIFO plumbing to keep in step.
+//
+// The reply is written verbatim to the learner's terminal by the shim, so an
+// implementation returns text that is already CRLF terminated.
+type controlResponder interface {
+	Reply(ctx context.Context, verb, args string) string
+}
+
+// playable is what the run flow needs of a level, whether it came from YAML or
+// from the Day 1 hardcoded demo.
+//
+// Setup and Teardown take no session: an implementation closes over the one it
+// was built with, which keeps the flow below from having to know that the two
+// kinds of level get at the sandbox differently.
+type playable interface {
+	LevelID() string
+	Root() string
+	StateDir() string
+	Setup(ctx context.Context) error
+	Teardown(ctx context.Context) error
+	Responder(color bool) controlResponder
+	PrintBriefing(w io.Writer, color bool)
+}
+
 // cmdRun implements `shellforge run <level-id>`.
+//
+// The order here is deliberate and pinned by a test: the pack is loaded and the
+// level looked up BEFORE the platform guard, so an unknown level is reported as
+// an unknown level on every host rather than being masked by the Windows
+// refusal. Both steps run on the host with no Docker and no platform
+// dependency, so neither can fail for an unrelated reason.
 func cmdRun(ctx context.Context, args []string) error {
-	opts, err := parseRunArgs(args)
+	pack, err := content.Embedded()
+	if err != nil {
+		// content.LoadPack already returns a *ux.Error with the
+		// level-pack-invalid anchor.
+		return err
+	}
+
+	order := levelOrder(pack)
+	if len(order) == 0 {
+		return ux.Fail(
+			"find a level to play",
+			nil,
+			"The content pack in this build has no levels. This is a packaging bug rather than anything you did: please run `shellforge bug-report`.",
+			docAnchorLevelNotFound,
+		)
+	}
+
+	opts, err := parseRunArgs(args, order[0])
 	if err != nil {
 		return err
 	}
-	if opts.levelID != demoLevelID {
-		return ux.Fail(
-			fmt.Sprintf("play level %q", opts.levelID),
-			nil,
-			"Only `shellforge run demo` works today. Levels load from YAML on Day 2 of the build plan; see PROGRESS.md.",
-			"",
-		)
+
+	if opts.levelID == demoLevelID {
+		if err := checkInteractiveShellSupported(opts.levelID); err != nil {
+			return err
+		}
+		return runDemo(ctx, opts)
 	}
-	if err := checkInteractiveShellSupported(); err != nil {
+
+	level, ok := pack.Level(opts.levelID)
+	if !ok {
+		return unknownLevel(opts.levelID, order)
+	}
+
+	if err := checkInteractiveShellSupported(opts.levelID); err != nil {
 		return err
 	}
-	return runDemo(ctx, opts)
+	return runLevel(ctx, opts, level)
+}
+
+// levelOrder returns the pack's level ids in campaign order.
+//
+// Pack.Order sorts by act and then by the prerequisite DAG, which is the order a
+// learner should meet them in and therefore the right order to list. Its only
+// error is a prerequisite cycle; on one, fall back to load order rather than
+// give up. A malformed pack must not turn a helpful message into a failure to
+// name any level at all.
+func levelOrder(pack *content.Pack) []string {
+	if order, err := pack.Order(); err == nil {
+		return order
+	}
+	ids := make([]string, 0, len(pack.Levels))
+	for i := range pack.Levels {
+		ids = append(ids, pack.Levels[i].ID)
+	}
+	return ids
+}
+
+// unknownLevel reports a level id that is not in the pack, naming the ids that
+// are.
+//
+// The demo is never listed. It is not a campaign level, and offering it to
+// somebody who mistyped a real one would send them somewhere that teaches them
+// nothing about what they were trying to do.
+func unknownLevel(id string, order []string) error {
+	return ux.Fail(
+		fmt.Sprintf("play level %q", id),
+		nil,
+		fmt.Sprintf("There is no level called %q. This pack has %s, in campaign order: %s. Run `shellforge run %s` to start at the beginning.",
+			id, plural(len(order), "level"), strings.Join(order, ", "), order[0]),
+		docAnchorLevelNotFound,
+	)
 }
 
 // checkInteractiveShellSupported refuses, up front, on a host that cannot give
@@ -111,10 +240,10 @@ func cmdRun(ctx context.Context, args []string) error {
 //
 // The Docker backend attaches by allocating a pseudo terminal on the HOST with
 // creack/pty, and that package's Windows implementation returns ErrUnsupported
-// unconditionally: there is no ConPTY path in it. So `run demo` on a Windows
-// host gets all the way through an image build and a level setup and then fails
-// at the last step with "docker exec -it: unsupported", which reads like a
-// Docker problem and is not one.
+// unconditionally: there is no ConPTY path in it. So `run` on a Windows host
+// gets all the way through an image build and a level setup and then fails at
+// the last step with "docker exec -it: unsupported", which reads like a Docker
+// problem and is not one.
 //
 // The runtime contract suite does not catch this, because it has no Attach
 // assertion at all, which is why it passes on Windows.
@@ -123,24 +252,32 @@ func cmdRun(ctx context.Context, args []string) error {
 // before an error the user cannot act on. Windows gets a real answer on Day 3
 // with WslRuntime; until then, running from inside WSL is the way, and Docker
 // Desktop's WSL integration puts the same daemon on both sides.
-func checkInteractiveShellSupported() error {
+//
+// TODO(v0.2): this tests goruntime.GOOS rather than asking
+// Runtime.Capabilities(), which is issue #77. The refusal is correct today and
+// the fix touches runtime.Caps, a code-owner path.
+func checkInteractiveShellSupported(levelID string) error {
 	if goruntime.GOOS != "windows" {
 		return nil
 	}
 	return ux.Fail(
 		"open an interactive sandbox shell on Windows",
 		nil,
-		"Run this from inside WSL instead: open your WSL distribution, `cd` to this repository, then `go build -o bin/shellforge ./cmd/shellforge && ./bin/shellforge run demo`. Docker Desktop's WSL integration shares the same daemon, so the sandbox image is not rebuilt.",
+		fmt.Sprintf("Run this from inside WSL instead: open your WSL distribution, `cd` to this repository, then `go build -o bin/shellforge ./cmd/shellforge && ./bin/shellforge run %s`. Docker Desktop's WSL integration shares the same daemon, so the sandbox image is not rebuilt.", levelID),
 		"windows-needs-wsl",
 	)
 }
 
 // parseRunArgs reads the level id and the one flag `run` understands today.
 //
-// This stays a hand-rolled parser under cobra too: newRunCommand in root.go
-// sets DisableFlagParsing so this function keeps owning --log-level, rather
-// than #48 rewriting and re-testing logic it was not asked to touch.
-func parseRunArgs(args []string) (runOptions, error) {
+// This stays a hand-rolled parser under cobra: newRunCommand in root.go sets
+// DisableFlagParsing so this function keeps owning --log-level, rather than a
+// later ticket rewriting and re-testing logic it was not asked to touch.
+//
+// firstLevel is the id to suggest in an error, which is the first level in
+// campaign order. Passing it in is what removed the three hardcoded references
+// to the demo level that used to be here: the suggestion now follows the pack.
+func parseRunArgs(args []string, firstLevel string) (runOptions, error) {
 	var opts runOptions
 
 	badFlag := func(a string) error {
@@ -169,7 +306,7 @@ func parseRunArgs(args []string) (runOptions, error) {
 			return opts, ux.Fail(
 				"work out which level to play",
 				nil,
-				fmt.Sprintf("You named more than one level (%q and %q). Run `shellforge run demo`.", opts.levelID, a),
+				fmt.Sprintf("You named more than one level (%q and %q). Name just one, as in `shellforge run %s`.", opts.levelID, a, firstLevel),
 				"",
 			)
 		default:
@@ -181,55 +318,126 @@ func parseRunArgs(args []string) (runOptions, error) {
 		return opts, ux.Fail(
 			"work out which level to play",
 			nil,
-			"Name a level: `shellforge run demo`.",
+			fmt.Sprintf("Name a level: `shellforge run %s`.", firstLevel),
 			"",
 		)
 	}
 	return opts, nil
 }
 
-// runDemo provisions the sandbox, materializes the demo level, hands the
-// learner a real bash, and serves `check` until they exit.
-//
-// Every exit path closes the session and tears the level world down. The
-// ordering is load bearing and is documented inline at each step.
-func runDemo(ctx context.Context, opts runOptions) error {
-	level := sandbox.Demo()
+// runLevel plays one level loaded from the pack.
+func runLevel(ctx context.Context, opts runOptions, level *content.Level) error {
+	packFS, err := packFilesystem()
+	if err != nil {
+		return err
+	}
 
+	rt, sess, cleanupSession, err := openSandbox(ctx, opts.levelID)
+	if err != nil {
+		return err
+	}
+	_ = rt
+	defer cleanupSession()
+
+	session, err := game.NewSession(game.Config{
+		Level:    level,
+		Sess:     sess,
+		PackFS:   packFS,
+		Verifier: verify.NewEngine(),
+	})
+	if err != nil {
+		return err
+	}
+
+	return play(ctx, opts, sess, &gameLevel{session: session, level: level})
+}
+
+// runDemo plays the Day 1 hardcoded level. See demoLevelID for why it is still
+// here.
+func runDemo(ctx context.Context, opts runOptions) error {
+	_, sess, cleanupSession, err := openSandbox(ctx, opts.levelID)
+	if err != nil {
+		return err
+	}
+	defer cleanupSession()
+
+	return play(ctx, opts, sess, &demoLevel{level: sandbox.Demo(), sess: sess})
+}
+
+// packFilesystem returns the embedded pack, rooted AT the pack directory.
+//
+// This is load bearing and the reason it is its own function with this comment.
+// setup.Runner reads a level's assets with fs.ReadFile(packFS, spec.Source) and
+// joins no pack root of its own, while packs.FS is rooted one level higher with
+// paths beginning "core-linux-basics/". Handing it packs.FS directly makes every
+// `source:` in every level fail to resolve. No shipped level used `source:`
+// before pipe-05, so nothing caught this until a level needed it.
+func packFilesystem() (fs.FS, error) {
+	packFS, err := fs.Sub(packs.FS, packs.CoreLinuxBasics)
+	if err != nil {
+		return nil, ux.Fail(
+			"read the level assets built into this binary",
+			err,
+			"This is a packaging bug rather than anything you did: please run `shellforge bug-report`.",
+			docAnchorPackInvalid,
+		)
+	}
+	return packFS, nil
+}
+
+// openSandbox provisions the sandbox and opens a session on it.
+//
+// The returned function closes the session and is safe to defer immediately.
+func openSandbox(ctx context.Context, levelID string) (runtime.Runtime, runtime.Session, func(), error) {
 	rt, err := docker.New(sandboxName, sandboxImage)
 	if err != nil {
 		// docker.New already returns a ux.Error for a missing binary.
-		return err
+		return nil, nil, nil, err
 	}
 
 	fmt.Fprintln(os.Stdout, "Preparing the sandbox. The first run builds the image, which takes a few minutes.")
 	if err := rt.Provision(ctx, runtime.ImageSpec{Name: sandboxImage}); err != nil {
-		return ux.Fail(
+		return nil, nil, nil, ux.Fail(
 			"provision the sandbox",
 			err,
-			"Run `docker info` to confirm the daemon is running, then run `shellforge run demo` again.",
+			fmt.Sprintf("Run `docker info` to confirm the daemon is running, then run `shellforge run %s` again.", levelID),
 			"sandbox-unhealthy",
 		)
 	}
 
 	sess, err := rt.StartSession(ctx, runtime.SessionSpec{
-		User:     level.User(),
+		User:     sandboxUser,
 		WorkDir:  sandboxHome,
-		StateDir: level.StateDir(),
-		Env:      map[string]string{"SF_STATE": level.StateDir()},
+		StateDir: setupStateDir(),
+		Env:      map[string]string{"SF_STATE": setupStateDir()},
 	})
 	if err != nil {
-		return ux.Fail(
+		return nil, nil, nil, ux.Fail(
 			"open a session on the sandbox",
 			err,
-			"Run `docker ps` to see whether the sandbox container is running, then run `shellforge run demo` again.",
+			fmt.Sprintf("Run `docker ps` to see whether the sandbox container is running, then run `shellforge run %s` again.", levelID),
 			"sandbox-missing",
 		)
 	}
-	defer func() {
+
+	return rt, sess, func() {
 		// Close is documented idempotent and safe to call more than once.
 		_ = sess.Close()
-	}()
+	}, nil
+}
+
+// play is the level-agnostic run flow: set up, brief, attach, serve `check`,
+// tear down.
+//
+// Every exit path tears the level down, through the SAME code as the normal
+// exit. A cleanup path that only runs on the happy path is not a cleanup path,
+// which is why the teardown defer is registered before Setup and runs on a
+// context that cannot already be cancelled.
+func play(ctx context.Context, opts runOptions, sess runtime.Session, lvl playable) error {
+	// Colour is decided once, here, on the host's own stdout, and threaded into
+	// every renderer. By the time a check reply is built there is no host file
+	// to ask: the bytes are about to be handed to the sandbox.
+	color := ux.ColorEnabled(os.Stdout)
 
 	// Teardown runs on every exit path from here, including a panic, and on a
 	// context that cannot already be cancelled. Using ctx directly would mean
@@ -242,48 +450,60 @@ func runDemo(ctx context.Context, opts runOptions) error {
 	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 		defer cancel()
-		if err := level.Teardown(cleanupCtx, sess); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not remove the level world at %s: %v\n", level.Root, err)
+		if err := lvl.Teardown(cleanupCtx); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not remove the level world at %s: %v\n", lvl.Root(), err)
 			return
 		}
-		fmt.Fprintf(os.Stdout, "Removed the level world at %s.\n", level.Root)
+		fmt.Fprintf(os.Stdout, "Removed the level world at %s.\n", lvl.Root())
 	}()
 
-	if err := level.Setup(ctx, sess); err != nil {
+	if err := lvl.Setup(ctx); err != nil {
+		// Setup errors already carry the right doc anchor: setup.Runner
+		// attaches unsafe-level-root, setup-script-failed, level-pack-invalid
+		// or sandbox-unhealthy depending on what actually went wrong.
+		// Re-wrapping them all as level-state-corrupted, which this function
+		// used to do, sent the learner to a page about a corrupt level when the
+		// real problem was a bad path or a failing script. A wrong link is
+		// worse than no link.
+		var uxErr *ux.Error
+		if errors.As(err, &uxErr) {
+			return err
+		}
 		return ux.Fail(
-			"set the demo level up",
+			fmt.Sprintf("set the level %q up", lvl.LevelID()),
 			err,
-			"Run `shellforge run demo` again. Setup tears the level world down before rebuilding it, so a half-finished attempt cannot wedge it.",
+			fmt.Sprintf("Run `shellforge run %s` again. Setup tears the level world down before rebuilding it, so a half-finished attempt cannot wedge it.", lvl.LevelID()),
 			"level-state-corrupted",
 		)
 	}
 
-	reqPath := path.Join(level.StateDir(), "control.req")
-	resPath := path.Join(level.StateDir(), "control.res")
+	reqPath := path.Join(lvl.StateDir(), "control.req")
+	resPath := path.Join(lvl.StateDir(), "control.res")
 	if err := prepareControlChannel(ctx, sess, reqPath, resPath); err != nil {
 		return ux.Fail(
 			"open the control channel into the sandbox",
 			err,
-			"Run `shellforge run demo` again. If it keeps failing, run `docker rm -f shellforge-sandbox` and let the next run rebuild it.",
+			fmt.Sprintf("Run `shellforge run %s` again. If it keeps failing, run `docker rm -f shellforge-sandbox` and let the next run rebuild it.", lvl.LevelID()),
 			"sandbox-unhealthy",
 		)
 	}
 
 	// The briefing prints before the prompt appears, and before the host
 	// terminal goes into raw mode, so a plain newline is still a newline
-	// here. Anything written after Run starts needs a carriage return too.
-	printBriefing(os.Stdout, level)
+	// here. Anything written after Run starts needs a carriage return too,
+	// which is what crlf in render_check.go is for.
+	lvl.PrintBriefing(os.Stdout, color)
 
 	sandboxPTY, err := sess.Attach(ctx, runtime.AttachOpts{
-		User:    level.User(),
-		WorkDir: level.Root,
-		Env:     map[string]string{"SF_STATE": level.StateDir()},
+		User:    sandboxUser,
+		WorkDir: lvl.Root(),
+		Env:     map[string]string{"SF_STATE": lvl.StateDir()},
 	})
 	if err != nil {
 		return ux.Fail(
 			"start a shell inside the sandbox",
 			err,
-			"Run `docker ps` to confirm the sandbox container is running, then run `shellforge run demo` again.",
+			fmt.Sprintf("Run `docker ps` to confirm the sandbox container is running, then run `shellforge run %s` again.", lvl.LevelID()),
 			"sandbox-unhealthy",
 		)
 	}
@@ -303,7 +523,7 @@ func runDemo(ctx context.Context, opts runOptions) error {
 	served := make(chan struct{})
 	go func() {
 		defer close(served)
-		serveControlRequests(runCtx, sess, level, reqPath, resPath)
+		serveControlRequests(runCtx, sess, lvl.Responder(color), reqPath, resPath)
 	}()
 	go logCommandEvents(runCtx, mux.Events(), os.Stderr, opts.debug)
 
@@ -321,24 +541,15 @@ func runDemo(ctx context.Context, opts runOptions) error {
 			return nil
 		}
 		return ux.Fail(
-			"run the demo level",
+			fmt.Sprintf("run the level %q", lvl.LevelID()),
 			runErr,
-			"If your terminal is behaving oddly, run `reset`. Then run `shellforge run demo` again.",
+			"If your terminal is behaving oddly, run `reset`. Then run `shellforge run "+lvl.LevelID()+"` again.",
 			"terminal-no-vt",
 		)
 	}
 
 	fmt.Fprintln(os.Stdout, "Shell exited.")
 	return nil
-}
-
-// printBriefing writes the level briefing and objective.
-//
-// Deliberately plain. Making `check` and the briefing pretty is out of scope
-// for the gate; being correct is not.
-func printBriefing(w io.Writer, level sandbox.DemoLevel) {
-	const rule = "----------------------------------------------------------------------"
-	fmt.Fprintf(w, "\n%s\n%s\n%s\n\n", rule, level.Briefing, rule)
 }
 
 // prepareControlChannel creates the request and response FIFOs the in-sandbox
@@ -370,7 +581,7 @@ func run1(ctx context.Context, s runtime.Session, what string, argv []string) er
 	return nil
 }
 
-// serveControlRequests answers `check` from inside the sandbox until runCtx is
+// serveControlRequests answers `check` from inside the sandbox until ctx is
 // cancelled.
 //
 // This is the host half of the control channel that images/bin/_sf-request
@@ -379,12 +590,15 @@ func run1(ctx context.Context, s runtime.Session, what string, argv []string) er
 // has to run on the host, outside the learner's shell, so no game logic lives
 // somewhere a learner could break during a permissions level.
 //
+// The loop returns ONLY when ctx is done. A failed reply is a skipped reply, not
+// a reason to stop serving: the commonest cause is a learner pressing Ctrl-C
+// during a check, and a loop that gave up then would leave `check` dead for the
+// rest of the session.
+//
 // TODO(v0.2): a FIFO pair plus one blocking `docker exec` per direction is the
 // simplest thing that works against the shims as written. It costs two
 // sandbox-side processes per request and cannot serve two requests at once.
-// Day 2 owns the real control channel; if it needs concurrency or a richer
-// message than one tab-separated line, this is the piece to replace.
-func serveControlRequests(ctx context.Context, s runtime.Session, level sandbox.DemoLevel, reqPath, resPath string) {
+func serveControlRequests(ctx context.Context, s runtime.Session, responder controlResponder, reqPath, resPath string) {
 	for {
 		if ctx.Err() != nil {
 			return
@@ -392,7 +606,7 @@ func serveControlRequests(ctx context.Context, s runtime.Session, level sandbox.
 
 		// No timeout on the read: waiting is the normal state, because the
 		// next request only arrives when the learner decides to type
-		// `check`. Cancelling runCtx is what ends this.
+		// `check`. Cancelling ctx is what ends this.
 		res, err := s.Exec(ctx, []string{"cat", "--", reqPath}, runtime.ExecOpts{})
 		if err != nil || res.ExitCode != 0 {
 			// The session is going away, or the FIFO is gone. Either way
@@ -406,12 +620,17 @@ func serveControlRequests(ctx context.Context, s runtime.Session, level sandbox.
 			continue
 		}
 
-		reply := handleControlVerb(ctx, s, level, verb, args)
-		replyCtx, cancel := context.WithTimeout(ctx, controlReplyTimeout)
+		reply := responder.Reply(ctx, verb, args)
+
+		replyCtx, cancelReply := context.WithTimeout(ctx, controlReplyTimeout)
 		// tee opens resPath and copies stdin into it, so the reply travels
 		// as an argv operand plus stdin with no shell anywhere in the path.
 		_, err = s.Exec(replyCtx, []string{"tee", "--", resPath}, runtime.ExecOpts{Stdin: []byte(reply)})
-		cancel()
+		cancelReply()
+
+		// Deliberately NOT a return on err. A write that timed out means the
+		// shim went away, which is what Ctrl-C during a check looks like from
+		// here. Only a cancelled run ends the loop.
 		if err != nil && ctx.Err() != nil {
 			return
 		}
@@ -422,7 +641,7 @@ func serveControlRequests(ctx context.Context, s runtime.Session, level sandbox.
 // reports whether it did.
 //
 // Its own function so the bound is testable without a Docker daemon and a host
-// pseudo terminal, neither of which runDemo can do without.
+// pseudo terminal, neither of which the run flow can do without.
 func waitForControlLoop(served <-chan struct{}, budget time.Duration) bool {
 	timer := time.NewTimer(budget)
 	defer timer.Stop()
@@ -447,28 +666,6 @@ func parseControlRequest(line string) (verb, args string) {
 	return strings.TrimSpace(verb), strings.TrimSpace(args)
 }
 
-// handleControlVerb answers one request. The reply is written verbatim to the
-// learner's terminal by the shim, so it ends in a newline.
-func handleControlVerb(ctx context.Context, s runtime.Session, level sandbox.DemoLevel, verb, _ string) string {
-	switch verb {
-	case "check":
-		passed, message, err := level.Check(ctx, s)
-		if err != nil {
-			return fmt.Sprintf("check could not run: %v\n", err)
-		}
-		if passed {
-			return fmt.Sprintf("PASS: %s\n", message)
-		}
-		return fmt.Sprintf("FAIL: %s\n", message)
-	case "brief":
-		return level.Briefing + "\n"
-	case "hint", "reset":
-		return fmt.Sprintf("`%s` is not built yet. It lands later in the build plan; see PROGRESS.md.\n", verb)
-	default:
-		return fmt.Sprintf("unknown request %q\n", verb)
-	}
-}
-
 // logCommandEvents drains the multiplexer's event channel for the whole
 // session, and prints each event only when --log-level=debug asked for it.
 //
@@ -478,11 +675,11 @@ func handleControlVerb(ctx context.Context, s runtime.Session, level sandbox.Dem
 //
 // Every line ends "\r\n". Run has the host terminal in raw mode, which turns
 // off the line discipline that would otherwise supply the carriage return, so
-// a bare "\n" renders as a staircase.
+// a bare "\n" renders as a corrupted staircase line.
 //
 // CommandEvent.Raw is deliberately NOT logged. It is always empty today,
-// pending #51, and it is the one field that would carry text the learner
-// typed: a password on a command line lands there. Logging it needs a
+// pending the journal wiring, and it is the one field that would carry text the
+// learner typed: a password on a command line lands there. Logging it needs a
 // redaction decision that belongs with the journal work, not here.
 func logCommandEvents(ctx context.Context, events <-chan pty.CommandEvent, w io.Writer, debug bool) {
 	for {
