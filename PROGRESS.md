@@ -2868,6 +2868,16 @@ docs/LEVEL-FORMAT.md's setup and teardown execution section, which said both
 scripts run as root, and section 7's golden contract list. Both changes plus the
 go floor move are on #98 for ratification.
 
+The script-user change takes something away, and #100 records it rather than
+letting it be rediscovered: a level can no longer set up state that genuinely
+needs root, such as a root-owned file a permissions level wants the learner to
+chmod. Act 5 is perm-01, perm-02, perm-03 and proc-01, so that is about three
+levels away. The likely answer is that setup.files with an explicit owner already
+covers it, since that path goes through docker cp and the daemon's own privilege
+rather than the container's capability set, which is exactly why a level's files
+were landing while its script was not. #100 asks for that to be checked against
+the real briefings before anything is designed.
+
 Separately, the Security job found three reachable vulnerabilities, all arriving
 with glamour. x/text's fix declares `go 1.25.0` and Go will not build a module
 whose dependency asks for a newer directive than it declares, so the fix and the
