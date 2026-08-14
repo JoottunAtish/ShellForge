@@ -89,9 +89,8 @@ setup:                         # R
         kind: loglines
         seed: 91731
         lines: 4000
-  script: |                    # O  runs as root AFTER files, inside sandbox
+  script: |                    # O  runs as the learner AFTER files, in sandbox
     touch -d "2 days ago" logs/app-1.log
-    chown -R learner:learner .
   timeout_seconds: 30          # O  default 30, bounds setup.script
 
 # ── verification ──────────────────────────────────────────
@@ -118,7 +117,7 @@ tags: [text-processing, must-know]   # O
 
 ### Setup and teardown execution
 
-`setup.script` runs as `root`, inside the sandbox, after every file in
+`setup.script` runs as **`learner`**, inside the sandbox, after every file in
 `setup.files` is materialized, with the working directory set to the resolved
 `setup.root`, under `setup.timeout_seconds` (default 30 seconds). It is passed
 to the sandbox as a single argument to `bash -c`, never concatenated into a host
@@ -127,10 +126,33 @@ meaning of every example in this document, so the author decides. A non-zero
 exit, or a timeout, rolls the whole setup back, exactly as if `setup.files` had
 failed to materialize: nothing is left half-built.
 
-`teardown.script` runs as `root` too, but with the working directory
+`teardown.script` runs as `learner` too, but with the working directory
 `/home/learner`, not `setup.root`: the root is not guaranteed to exist when
 teardown runs, since teardown also runs before every setup to keep it
 idempotent.
+
+**Do not chown in a setup script, and do not expect root.** Both scripts used to
+run as `root`, and the change is worth understanding because it is not a
+preference. The sandbox starts with `--cap-drop ALL` and adds back only `CHOWN`
+and `FOWNER`, so root inside it does not hold `CAP_DAC_OVERRIDE` and does not
+bypass ordinary permission checks. The level root has already been chowned to
+the learner by the time a script runs, mode 0755, which makes root *other* on
+it: a script doing `mkdir -p reports` as root fails with `EACCES`. The learner
+owns the tree, so the learner is the identity that can work in it. The runner
+chowns everything `setup.files` materialized before your script starts, so
+there is nothing left for a script to chown.
+
+This bit real levels. `files-03` and `files-04` both shipped with a
+`mkdir -p` in their setup script and both were silently missing that directory,
+because `setup.files` arrive through `docker cp` with daemon privilege and land
+regardless, and because both scripts ended with a `chown` that root *can*
+perform, so `bash -c` returned the chown's zero exit and discarded the failure
+before it. Setup reported success. The golden contract in section 7 is what
+found them, which is the argument for running it on every level.
+
+Since no `set -e` is injected, a script whose last command succeeds still
+reports success. If your script has more than one command and you want the
+first failure to fail the level, write `set -e` yourself at the top.
 
 Setup always tears down first, unconditionally, before staging anything. This
 is what makes it safe to run a level's setup twice in a row, or against a level

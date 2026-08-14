@@ -43,8 +43,6 @@ setup:
         Everything after that is easier.
 
                                                                   - Kofi
-  script: |
-    chown -R learner:learner .
 
 checks:
   - id: location

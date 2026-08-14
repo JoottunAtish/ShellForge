@@ -43,14 +43,18 @@ const (
 	sandboxName  = "shellforge-sandbox"
 	sandboxImage = "shellforge-sandbox"
 
-	// sandboxHome is the session's default working directory.
+	// sandboxHome is where the learner starts: the session's default working
+	// directory, the interactive shell's, and the golden harness's when it runs
+	// a level's own solution.
 	//
-	// It is deliberately NOT the level root. `docker exec -w` fails on a
-	// directory that does not exist, and the level root does not exist
-	// until Setup creates it, so a session defaulting to the level root
-	// could not run the very calls that create it. The interactive shell
-	// gets the level root through AttachOpts.WorkDir instead, once Setup
-	// has run.
+	// It is deliberately NOT the level root, for two separate reasons. The
+	// mechanical one: `docker exec -w` fails on a directory that does not
+	// exist, and the level root does not exist until Setup creates it, so a
+	// session defaulting to the level root could not run the very calls that
+	// create it. The one a learner can see: a login shell starts you in your
+	// home directory, and nav-01 teaches that by asking where you started, so
+	// a shell opening anywhere else would make the campaign's first lesson
+	// false.
 	sandboxHome = "/home/learner"
 
 	// sandboxUser is the unprivileged user a learner plays as. It matches the
@@ -494,9 +498,20 @@ func play(ctx context.Context, opts runOptions, sess runtime.Session, lvl playab
 	// which is what crlf in render_check.go is for.
 	lvl.PrintBriefing(os.Stdout, color)
 
+	// The learner starts in their home directory, not in the level root.
+	//
+	// A login shell puts you in your home directory, so that is where a
+	// learner's mental model already is, and nav-01 teaches exactly that by
+	// asking where you started. Starting in the level root instead would make
+	// the first thing the campaign teaches be false, and it would mean `cd ~`
+	// silently changed the answer to a question the level had already asked.
+	//
+	// Every level's own solution either uses a ~ path or cds first, so none of
+	// them depends on this, and the golden harness runs solutions from the same
+	// directory for the same reason.
 	sandboxPTY, err := sess.Attach(ctx, runtime.AttachOpts{
 		User:    sandboxUser,
-		WorkDir: lvl.Root(),
+		WorkDir: sandboxHome,
 		Env:     map[string]string{"SF_STATE": lvl.StateDir()},
 	})
 	if err != nil {

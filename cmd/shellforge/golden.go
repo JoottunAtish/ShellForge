@@ -242,9 +242,18 @@ func applySolution(ctx context.Context, sess runtime.Session, level *content.Lev
 
 	// The whole solution is ONE argv element handed to bash -lc, never
 	// concatenated into a host command line. -l for a login shell.
+	//
+	// WorkDir is the learner's home, NOT level.Setup.Root, and it has to match
+	// what runLevel's Attach uses or this harness stops testing the level a
+	// learner actually plays. That is not hypothetical: the first CI run of
+	// this test failed nav-01 because both started in the level root, so
+	// `pwd` answered /home/learner/quest while the level asks the learner
+	// where they started and expects /home/learner. A solution verified from
+	// a directory no learner is ever in is not a verified solution.
+	// TestEverySandboxWorkDirIsTheLearnersHome holds both call sites to it.
 	res, err := sess.Exec(ctx, []string{"bash", "-lc", solution}, runtime.ExecOpts{
 		User:    sandboxUser,
-		WorkDir: level.Setup.Root,
+		WorkDir: sandboxHome,
 		Env:     map[string]string{"SF_STATE": setupStateDir()},
 		Timeout: solutionTimeout,
 	})

@@ -71,8 +71,6 @@ setup:
         kind: loglines
         seed: 4102
         lines: 1200
-  script: |
-    chown -R learner:learner .
 
 checks:
   - id: hidden-name

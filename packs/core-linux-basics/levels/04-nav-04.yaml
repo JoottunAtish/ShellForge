@@ -68,12 +68,12 @@ setup:
         One file per day. Newest is not necessarily last in a plain listing:
         a plain listing sorts by name, not by time.
   script: |
+    set -e
     touch -d "2026-03-11T02:00:00Z" logs/app-2026-03-11.log
     touch -d "2026-03-12T02:00:00Z" logs/app-2026-03-12.log
     touch -d "2026-03-13T02:00:00Z" logs/app-2026-03-13.log
     touch -d "2026-03-14T02:00:00Z" logs/app-2026-03-14.log
     touch -d "2026-03-10T09:30:00Z" logs/README.txt
-    chown -R learner:learner .
 
 checks:
   - id: flags

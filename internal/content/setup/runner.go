@@ -286,14 +286,36 @@ func (r *Runner) Teardown(ctx context.Context, lvl *content.Level) error {
 	return nil
 }
 
-// runScript runs script as root via bash -c, as a single argv element,
+// runScript runs script as the learner via bash -c, as a single argv element,
 // never concatenated with anything else, with the given working directory
 // and timeout. err != nil means Exec itself could not run the call at all,
 // which is a sandbox problem rather than the script's fault. TimedOut is
 // checked before ExitCode, since ExecResult.ExitCode is -1 and not a real
 // process status when a call times out.
+//
+// It runs as the LEARNER, not as root, and that is load bearing rather than a
+// preference. The sandbox is started with --cap-drop ALL and adds back only
+// CHOWN and FOWNER, so root inside it does not hold CAP_DAC_OVERRIDE and does
+// not bypass ordinary permission checks. The level root is chowned to the
+// learner before this runs, mode 0755, so root is "other" on it and cannot
+// create an entry there at all. A script doing `mkdir -p filed` as root gets
+// EACCES.
+//
+// That failure was invisible for a long time, and the way it hid is worth
+// knowing. setup.files land through PushFiles, which is `docker cp` and runs in
+// the daemon with full host privilege, so a level's files appear normally and
+// only the script is affected. And every level's script ended with
+// `chown -R learner:learner .`, which root CAN do because CAP_CHOWN is one of
+// the two capabilities kept, so `bash -c` returned the chown's zero exit and
+// the failed mkdir before it vanished. Setup reported success, and the level
+// shipped missing a directory its own solution needed. files-03 and files-04
+// were both broken this way until the golden harness ran them.
+//
+// Running as the learner is also simply the smaller privilege, and it is what
+// internal/sandbox/demo_level.go already concluded for the same reason: the
+// identity that owns the tree is the one that can work in it.
 func (r *Runner) runScript(ctx context.Context, script, workDir string, timeout time.Duration, op string) error {
-	res, err := r.sess.Exec(ctx, []string{"bash", "-c", script}, runtime.ExecOpts{User: userRoot, WorkDir: workDir, Timeout: timeout})
+	res, err := r.sess.Exec(ctx, []string{"bash", "-c", script}, runtime.ExecOpts{User: userLearner, WorkDir: workDir, Timeout: timeout})
 	if err != nil {
 		return ux.Fail(op, err, remediationSandboxUnhealthy, "sandbox-unhealthy")
 	}

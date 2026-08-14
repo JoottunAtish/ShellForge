@@ -40,8 +40,6 @@ setup:
       source: assets/app-2.log
     - path: logs/billing.log
       source: assets/billing.log
-  script: |
-    chown -R learner:learner .
 
 checks:
   - id: obj1

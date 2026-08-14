@@ -441,10 +441,23 @@ func TestBuildManifestRefusesAnOversizedManifest(t *testing.T) {
 	}
 }
 
-// TestSetupScriptRunsAsRootAfterTheFiles pins criterion 4: the script step
-// runs as root, in the resolved root, as one argv element to bash -c, after
-// PushFiles.
-func TestSetupScriptRunsAsRootAfterTheFiles(t *testing.T) {
+// TestSetupScriptRunsAsTheLearnerAfterTheFiles pins criterion 4: the script step
+// runs as the learner, in the resolved root, as one argv element to bash -c,
+// after PushFiles.
+//
+// It said "as root" until the golden harness proved root cannot do the job. The
+// sandbox drops CAP_DAC_OVERRIDE, the level root is chowned to the learner
+// before the script runs, so root is "other" on a 0755 directory and a script
+// doing `mkdir -p filed` gets EACCES. runScript's doc comment has the full
+// mechanism, including why it stayed invisible: `docker cp` puts setup.files in
+// place with daemon privilege regardless, and every level's script used to end
+// with a chown that root CAN do, so bash returned that command's zero exit and
+// the failure before it was swallowed.
+//
+// Asserting the user here is what stops that being reintroduced by somebody
+// reading "the author's script runs as root" in an old comment and helpfully
+// restoring it.
+func TestSetupScriptRunsAsTheLearnerAfterTheFiles(t *testing.T) {
 	f := &fakeSession{}
 	r := NewRunner(f, nil)
 	lvl := &content.Level{ID: "nav-01", Setup: content.Setup{
@@ -463,8 +476,11 @@ func TestSetupScriptRunsAsRootAfterTheFiles(t *testing.T) {
 		if len(c.argv) == 3 && c.argv[0] == "bash" && c.argv[1] == "-c" && c.argv[2] == lvl.Setup.Script {
 			found = true
 			scriptIdx = i
-			if c.opts.User != "root" {
-				t.Errorf("script Exec User = %q, want root", c.opts.User)
+			if c.opts.User != "learner" {
+				t.Errorf("script Exec User = %q, want learner.\n"+
+					"A setup script writes into the level root, which the learner owns. The sandbox "+
+					"withholds CAP_DAC_OVERRIDE from root, so running the script as root makes every "+
+					"write into that root fail with EACCES. See runScript's doc comment.", c.opts.User)
 			}
 			if c.opts.WorkDir != lvl.Setup.Root {
 				t.Errorf("script Exec WorkDir = %q, want %q", c.opts.WorkDir, lvl.Setup.Root)

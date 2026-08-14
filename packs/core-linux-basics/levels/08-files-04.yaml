@@ -93,7 +93,6 @@ setup:
                                                                       - Kofi
   script: |
     mkdir -p scratch
-    chown -R learner:learner .
 
 checks:
   - id: temps-gone
