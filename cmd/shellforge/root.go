@@ -151,8 +151,7 @@ func newAuthorCommand() *cobra.Command {
 		newValidateCommand(),
 		stubCommand("shellforge author scaffold", "scaffold <level-id>", "",
 			"Generate a new level's YAML and asset skeleton", "Day 2"),
-		stubCommand("shellforge author test", "test [--all|level-id]", "",
-			"Run the golden test: setup, checks fail, solution, checks pass", "Day 2"),
+		newAuthorTestCommand(),
 		stubCommand("shellforge author record", "record <level-id>", "",
 			"Capture a golden recording for one level", "Day 2"),
 	)

@@ -180,7 +180,7 @@ func passSummary(res verify.LevelResult) string {
 
 	summary := fmt.Sprintf("%s done", plural(required, "objective"))
 	if bonusTotal > 0 {
-		summary += fmt.Sprintf(", %d of %s", bonusEarned, plural(bonusTotal, "bonus"))
+		summary += fmt.Sprintf(", %d of %s", bonusEarned, plural(bonusTotal, "bonus objective"))
 	}
 	return summary
 }

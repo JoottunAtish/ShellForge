@@ -1,0 +1,420 @@
+2026-03-14T02:00:11Z api INFO request completed in 42ms
+2026-03-14T02:00:14Z api ERROR ledger write rejected (E500)
+2026-03-14T02:00:15Z api INFO session token refreshed
+2026-03-14T02:00:28Z api DEBUG cache hit for key user:1204
+2026-03-14T02:00:40Z api WARN upstream latency 880ms
+2026-03-14T02:00:43Z api DEBUG heartbeat acknowledged
+2026-03-14T02:00:51Z api DEBUG health probe ok
+2026-03-14T02:00:53Z api DEBUG cache hit for key user:1204
+2026-03-14T02:01:08Z api WARN retry scheduled in 500ms
+2026-03-14T02:01:13Z api WARN request took 2.1s, above the 1s budget
+2026-03-14T02:01:30Z api DEBUG cache hit for key user:1204
+2026-03-14T02:01:34Z api DEBUG cache hit for key user:1204
+2026-03-14T02:01:35Z api INFO request completed in 42ms
+2026-03-14T02:01:55Z api ERROR database connection lost (E500)
+2026-03-14T02:02:10Z api DEBUG queue depth 12
+2026-03-14T02:02:15Z api INFO connection pool resized to 16
+2026-03-14T02:02:29Z api TRACE worker claimed job 4471
+2026-03-14T02:02:39Z api INFO request completed in 42ms
+2026-03-14T02:02:55Z api INFO session token refreshed
+2026-03-14T02:02:57Z api DEBUG queue depth 12
+2026-03-14T02:03:04Z api DEBUG heartbeat acknowledged
+2026-03-14T02:03:16Z api ERROR payment declined by processor (E401)
+2026-03-14T02:03:17Z api DEBUG health probe ok
+2026-03-14T02:03:37Z api INFO batch flushed, 240 rows
+2026-03-14T02:03:52Z api DEBUG heartbeat acknowledged
+2026-03-14T02:04:08Z api DEBUG cache hit for key user:1204
+2026-03-14T02:04:10Z api WARN upstream latency 880ms
+2026-03-14T02:04:29Z api INFO session token refreshed
+2026-03-14T02:04:32Z api INFO batch flushed, 240 rows
+2026-03-14T02:04:35Z api INFO connection pool resized to 16
+2026-03-14T02:04:48Z api WARN upstream latency 880ms
+2026-03-14T02:04:50Z api DEBUG heartbeat acknowledged
+2026-03-14T02:04:53Z api DEBUG health probe ok
+2026-03-14T02:05:04Z api INFO config reloaded from disk
+2026-03-14T02:05:23Z api INFO session token refreshed
+2026-03-14T02:05:38Z api INFO request completed in 42ms
+2026-03-14T02:05:49Z api INFO session token refreshed
+2026-03-14T02:06:05Z api INFO batch flushed, 240 rows
+2026-03-14T02:06:23Z api DEBUG cache hit for key user:1204
+2026-03-14T02:06:29Z api ERROR settlement batch unavailable (E503)
+2026-03-14T02:06:34Z api DEBUG health probe ok
+2026-03-14T02:06:36Z api ERROR settlement batch unavailable (E503)
+2026-03-14T02:06:44Z api ERROR database connection lost (E500)
+2026-03-14T02:06:56Z api WARN upstream latency 880ms
+2026-03-14T02:06:58Z api WARN upstream latency 880ms
+2026-03-14T02:07:02Z api WARN retry scheduled in 500ms
+2026-03-14T02:07:17Z api INFO request completed in 42ms
+2026-03-14T02:07:29Z api INFO connection pool resized to 16
+2026-03-14T02:07:37Z api WARN upstream latency 880ms
+2026-03-14T02:07:41Z api INFO shutdown signal handled cleanly
+2026-03-14T02:07:48Z api WARN retry scheduled in 500ms
+2026-03-14T02:07:49Z api DEBUG queue depth 12
+2026-03-14T02:08:08Z api INFO request completed in 42ms
+2026-03-14T02:08:12Z api WARN upstream latency 880ms
+2026-03-14T02:08:13Z api DEBUG cache hit for key user:1204
+2026-03-14T02:08:32Z api ERROR card tokenization failed (E401)
+2026-03-14T02:08:46Z api WARN upstream latency 880ms
+2026-03-14T02:08:55Z api WARN upstream latency 880ms
+2026-03-14T02:08:57Z api ERROR card tokenization failed (E401)
+2026-03-14T02:09:11Z api DEBUG heartbeat acknowledged
+2026-03-14T02:09:18Z api DEBUG cache hit for key user:1204
+2026-03-14T02:09:36Z api WARN retry scheduled in 500ms
+2026-03-14T02:09:52Z api INFO session token refreshed
+2026-03-14T02:10:03Z api INFO config reloaded from disk
+2026-03-14T02:10:17Z api INFO connection pool resized to 16
+2026-03-14T02:10:26Z api INFO request completed in 42ms
+2026-03-14T02:10:41Z api DEBUG health probe ok
+2026-03-14T02:10:42Z api DEBUG heartbeat acknowledged
+2026-03-14T02:10:48Z api INFO config reloaded from disk
+2026-03-14T02:10:57Z api DEBUG cache hit for key user:1204
+2026-03-14T02:11:15Z api INFO session token refreshed
+2026-03-14T02:11:25Z api DEBUG cache hit for key user:1204
+2026-03-14T02:11:40Z api DEBUG queue depth 12
+2026-03-14T02:11:55Z api WARN upstream latency 880ms
+2026-03-14T02:11:57Z api DEBUG queue depth 12
+2026-03-14T02:12:10Z api INFO request completed in 42ms
+2026-03-14T02:12:12Z api DEBUG cache hit for key user:1204
+2026-03-14T02:12:24Z api WARN request took 2.1s, above the 1s budget
+2026-03-14T02:12:28Z api DEBUG heartbeat acknowledged
+2026-03-14T02:12:31Z api INFO request completed in 42ms
+2026-03-14T02:12:41Z api WARN request took 2.1s, above the 1s budget
+2026-03-14T02:12:44Z api INFO request completed in 42ms
+2026-03-14T02:12:57Z api DEBUG queue depth 12
+2026-03-14T02:13:00Z api ERROR settlement batch unavailable (E503)
+2026-03-14T02:13:12Z api TRACE worker claimed job 4471
+2026-03-14T02:13:16Z api INFO connection pool resized to 16
+2026-03-14T02:13:20Z api DEBUG queue depth 12
+2026-03-14T02:13:36Z api ERROR upstream timeout on /v1/charges (E503)
+2026-03-14T02:13:51Z api DEBUG heartbeat acknowledged
+2026-03-14T02:13:57Z api DEBUG queue depth 12
+2026-03-14T02:14:09Z api INFO config reloaded from disk
+2026-03-14T02:14:26Z api WARN request took 2.1s, above the 1s budget
+2026-03-14T02:14:42Z api INFO request completed in 42ms
+2026-03-14T02:14:51Z api ERROR card tokenization failed (E401)
+2026-03-14T02:15:06Z api INFO batch flushed, 240 rows
+2026-03-14T02:15:08Z api DEBUG queue depth 12
+2026-03-14T02:15:27Z api INFO request completed in 42ms
+2026-03-14T02:15:46Z api INFO request completed in 42ms
+2026-03-14T02:16:02Z api INFO config reloaded from disk
+2026-03-14T02:16:09Z api ERROR ledger write rejected (E500)
+2026-03-14T02:16:23Z api INFO connection pool resized to 16
+2026-03-14T02:16:32Z api INFO request completed in 42ms
+2026-03-14T02:16:41Z api ERROR card tokenization failed (E401)
+2026-03-14T02:17:00Z api INFO session token refreshed
+2026-03-14T02:17:05Z api INFO config reloaded from disk
+2026-03-14T02:17:15Z api WARN retry scheduled in 500ms
+2026-03-14T02:17:25Z api INFO batch flushed, 240 rows
+2026-03-14T02:17:38Z api INFO connection pool resized to 16
+2026-03-14T02:17:42Z api INFO config reloaded from disk
+2026-03-14T02:18:02Z api DEBUG health probe ok
+2026-03-14T02:18:09Z api DEBUG cache hit for key user:1204
+2026-03-14T02:18:13Z api ERROR database connection lost (E500)
+2026-03-14T02:18:23Z api DEBUG cache hit for key user:1204
+2026-03-14T02:18:31Z api INFO batch flushed, 240 rows
+2026-03-14T02:18:45Z api WARN request took 2.1s, above the 1s budget
+2026-03-14T02:19:01Z api DEBUG health probe ok
+2026-03-14T02:19:17Z api INFO config reloaded from disk
+2026-03-14T02:19:37Z api DEBUG health probe ok
+2026-03-14T02:19:39Z api ERROR ledger write rejected (E500)
+2026-03-14T02:19:58Z api ERROR upstream timeout on /v1/charges (E503)
+2026-03-14T02:20:14Z api DEBUG cache hit for key user:1204
+2026-03-14T02:20:22Z api INFO config reloaded from disk
+2026-03-14T02:20:24Z api INFO session token refreshed
+2026-03-14T02:20:39Z api INFO request completed in 42ms
+2026-03-14T02:20:52Z api INFO config reloaded from disk
+2026-03-14T02:21:10Z api INFO shutdown signal handled cleanly
+2026-03-14T02:21:13Z api INFO shutdown signal handled cleanly
+2026-03-14T02:21:27Z api TRACE worker claimed job 4471
+2026-03-14T02:21:45Z api INFO connection pool resized to 16
+2026-03-14T02:21:58Z api INFO session token refreshed
+2026-03-14T02:22:06Z api DEBUG queue depth 12
+2026-03-14T02:22:15Z api INFO session token refreshed
+2026-03-14T02:22:22Z api WARN retry scheduled in 500ms
+2026-03-14T02:22:27Z api WARN retry scheduled in 500ms
+2026-03-14T02:22:46Z api TRACE worker claimed job 4471
+2026-03-14T02:23:03Z api ERROR settlement batch unavailable (E503)
+2026-03-14T02:23:20Z api ERROR database connection lost (E500)
+2026-03-14T02:23:37Z api ERROR card tokenization failed (E401)
+2026-03-14T02:23:47Z api DEBUG heartbeat acknowledged
+2026-03-14T02:23:54Z api TRACE worker claimed job 4471
+2026-03-14T02:24:12Z api WARN upstream latency 880ms
+2026-03-14T02:24:29Z api ERROR database connection lost (E500)
+2026-03-14T02:24:43Z api INFO session token refreshed
+2026-03-14T02:24:50Z api INFO config reloaded from disk
+2026-03-14T02:24:56Z api DEBUG cache hit for key user:1204
+2026-03-14T02:25:02Z api TRACE worker claimed job 4471
+2026-03-14T02:25:07Z api INFO batch flushed, 240 rows
+2026-03-14T02:25:08Z api INFO session token refreshed
+2026-03-14T02:25:22Z api INFO config reloaded from disk
+2026-03-14T02:25:31Z api TRACE worker claimed job 4471
+2026-03-14T02:25:32Z api WARN request took 2.1s, above the 1s budget
+2026-03-14T02:25:41Z api INFO shutdown signal handled cleanly
+2026-03-14T02:25:53Z api WARN request took 2.1s, above the 1s budget
+2026-03-14T02:25:59Z api TRACE worker claimed job 4471
+2026-03-14T02:26:01Z api DEBUG health probe ok
+2026-03-14T02:26:02Z api DEBUG heartbeat acknowledged
+2026-03-14T02:26:05Z api INFO session token refreshed
+2026-03-14T02:26:19Z api DEBUG heartbeat acknowledged
+2026-03-14T02:26:33Z api WARN request took 2.1s, above the 1s budget
+2026-03-14T02:26:50Z api INFO shutdown signal handled cleanly
+2026-03-14T02:27:06Z api WARN request took 2.1s, above the 1s budget
+2026-03-14T02:27:21Z api WARN retry scheduled in 500ms
+2026-03-14T02:27:27Z api INFO shutdown signal handled cleanly
+2026-03-14T02:27:31Z api WARN upstream latency 880ms
+2026-03-14T02:27:46Z api INFO connection pool resized to 16
+2026-03-14T02:28:01Z api DEBUG cache hit for key user:1204
+2026-03-14T02:28:03Z api INFO session token refreshed
+2026-03-14T02:28:06Z api INFO request completed in 42ms
+2026-03-14T02:28:08Z api INFO batch flushed, 240 rows
+2026-03-14T02:28:15Z api INFO config reloaded from disk
+2026-03-14T02:28:28Z api WARN request took 2.1s, above the 1s budget
+2026-03-14T02:28:48Z api DEBUG queue depth 12
+2026-03-14T02:28:52Z api DEBUG health probe ok
+2026-03-14T02:29:01Z api INFO config reloaded from disk
+2026-03-14T02:29:06Z api TRACE worker claimed job 4471
+2026-03-14T02:29:08Z api INFO batch flushed, 240 rows
+2026-03-14T02:29:14Z api WARN retry scheduled in 500ms
+2026-03-14T02:29:27Z api INFO shutdown signal handled cleanly
+2026-03-14T02:29:46Z api WARN upstream latency 880ms
+2026-03-14T02:30:06Z api TRACE worker claimed job 4471
+2026-03-14T02:30:11Z api DEBUG health probe ok
+2026-03-14T02:30:15Z api WARN upstream latency 880ms
+2026-03-14T02:30:24Z api WARN upstream latency 880ms
+2026-03-14T02:30:41Z api ERROR settlement batch unavailable (E503)
+2026-03-14T02:30:43Z api DEBUG queue depth 12
+2026-03-14T02:30:59Z api WARN upstream latency 880ms
+2026-03-14T02:31:08Z api WARN request took 2.1s, above the 1s budget
+2026-03-14T02:31:10Z api ERROR ledger write rejected (E500)
+2026-03-14T02:31:30Z api INFO request completed in 42ms
+2026-03-14T02:31:45Z api INFO shutdown signal handled cleanly
+2026-03-14T02:32:00Z api TRACE worker claimed job 4471
+2026-03-14T02:32:03Z api INFO request completed in 42ms
+2026-03-14T02:32:11Z api DEBUG queue depth 12
+2026-03-14T02:32:15Z api DEBUG heartbeat acknowledged
+2026-03-14T02:32:26Z api ERROR card tokenization failed (E401)
+2026-03-14T02:32:36Z api WARN request took 2.1s, above the 1s budget
+2026-03-14T02:32:52Z api DEBUG cache hit for key user:1204
+2026-03-14T02:32:53Z api WARN retry scheduled in 500ms
+2026-03-14T02:33:11Z api WARN upstream latency 880ms
+2026-03-14T02:33:14Z api INFO session token refreshed
+2026-03-14T02:33:29Z api INFO request completed in 42ms
+2026-03-14T02:33:31Z api INFO connection pool resized to 16
+2026-03-14T02:33:37Z api WARN retry scheduled in 500ms
+2026-03-14T02:33:41Z api INFO request completed in 42ms
+2026-03-14T02:33:58Z api TRACE worker claimed job 4471
+2026-03-14T02:34:09Z api WARN retry scheduled in 500ms
+2026-03-14T02:34:26Z api DEBUG heartbeat acknowledged
+2026-03-14T02:34:43Z api INFO session token refreshed
+2026-03-14T02:34:50Z api INFO session token refreshed
+2026-03-14T02:34:54Z api DEBUG heartbeat acknowledged
+2026-03-14T02:35:13Z api INFO request completed in 42ms
+2026-03-14T02:35:15Z api ERROR upstream timeout on /v1/charges (E503)
+2026-03-14T02:35:22Z api INFO batch flushed, 240 rows
+2026-03-14T02:35:26Z api INFO batch flushed, 240 rows
+2026-03-14T02:35:44Z api TRACE worker claimed job 4471
+2026-03-14T02:35:58Z api INFO config reloaded from disk
+2026-03-14T02:36:15Z api WARN retry scheduled in 500ms
+2026-03-14T02:36:20Z api WARN upstream latency 880ms
+2026-03-14T02:36:22Z api INFO request completed in 42ms
+2026-03-14T02:36:36Z api WARN retry scheduled in 500ms
+2026-03-14T02:36:45Z api ERROR ledger write rejected (E500)
+2026-03-14T02:36:49Z api WARN request took 2.1s, above the 1s budget
+2026-03-14T02:37:01Z api TRACE worker claimed job 4471
+2026-03-14T02:37:06Z api INFO config reloaded from disk
+2026-03-14T02:37:11Z api WARN retry scheduled in 500ms
+2026-03-14T02:37:29Z api DEBUG queue depth 12
+2026-03-14T02:37:38Z api ERROR card tokenization failed (E401)
+2026-03-14T02:37:47Z api DEBUG health probe ok
+2026-03-14T02:37:51Z api TRACE worker claimed job 4471
+2026-03-14T02:38:07Z api WARN upstream latency 880ms
+2026-03-14T02:38:19Z api WARN request took 2.1s, above the 1s budget
+2026-03-14T02:38:36Z api ERROR payment declined by processor (E401)
+2026-03-14T02:38:48Z api DEBUG cache hit for key user:1204
+2026-03-14T02:38:49Z api DEBUG heartbeat acknowledged
+2026-03-14T02:38:52Z api DEBUG health probe ok
+2026-03-14T02:38:56Z api WARN upstream latency 880ms
+2026-03-14T02:39:14Z api WARN upstream latency 880ms
+2026-03-14T02:39:15Z api DEBUG heartbeat acknowledged
+2026-03-14T02:39:27Z api ERROR settlement batch unavailable (E503)
+2026-03-14T02:39:39Z api DEBUG heartbeat acknowledged
+2026-03-14T02:39:56Z api INFO batch flushed, 240 rows
+2026-03-14T02:40:00Z api INFO config reloaded from disk
+2026-03-14T02:40:17Z api INFO config reloaded from disk
+2026-03-14T02:40:27Z api INFO request completed in 42ms
+2026-03-14T02:40:33Z api DEBUG health probe ok
+2026-03-14T02:40:49Z api ERROR payment declined by processor (E401)
+2026-03-14T02:41:09Z api INFO shutdown signal handled cleanly
+2026-03-14T02:41:16Z api DEBUG health probe ok
+2026-03-14T02:41:30Z api INFO request completed in 42ms
+2026-03-14T02:41:43Z api ERROR payment declined by processor (E401)
+2026-03-14T02:42:02Z api DEBUG heartbeat acknowledged
+2026-03-14T02:42:18Z api INFO request completed in 42ms
+2026-03-14T02:42:34Z api DEBUG heartbeat acknowledged
+2026-03-14T02:42:42Z api ERROR payment declined by processor (E401)
+2026-03-14T02:42:48Z api ERROR ledger write rejected (E500)
+2026-03-14T02:43:05Z api INFO shutdown signal handled cleanly
+2026-03-14T02:43:10Z api INFO config reloaded from disk
+2026-03-14T02:43:28Z api WARN retry scheduled in 500ms
+2026-03-14T02:43:47Z api INFO shutdown signal handled cleanly
+2026-03-14T02:43:48Z api INFO config reloaded from disk
+2026-03-14T02:44:08Z api INFO shutdown signal handled cleanly
+2026-03-14T02:44:28Z api ERROR card tokenization failed (E401)
+2026-03-14T02:44:41Z api ERROR settlement batch unavailable (E503)
+2026-03-14T02:44:48Z api ERROR ledger write rejected (E500)
+2026-03-14T02:44:58Z api WARN upstream latency 880ms
+2026-03-14T02:45:14Z api TRACE worker claimed job 4471
+2026-03-14T02:45:21Z api ERROR card tokenization failed (E401)
+2026-03-14T02:45:24Z api DEBUG health probe ok
+2026-03-14T02:45:38Z api WARN upstream latency 880ms
+2026-03-14T02:45:40Z api INFO batch flushed, 240 rows
+2026-03-14T02:45:49Z api DEBUG health probe ok
+2026-03-14T02:45:56Z api DEBUG health probe ok
+2026-03-14T02:46:01Z api INFO request completed in 42ms
+2026-03-14T02:46:20Z api INFO config reloaded from disk
+2026-03-14T02:46:36Z api ERROR settlement batch unavailable (E503)
+2026-03-14T02:46:54Z api DEBUG queue depth 12
+2026-03-14T02:47:11Z api ERROR ledger write rejected (E500)
+2026-03-14T02:47:23Z api ERROR settlement batch unavailable (E503)
+2026-03-14T02:47:43Z api ERROR ledger write rejected (E500)
+2026-03-14T02:47:53Z api WARN request took 2.1s, above the 1s budget
+2026-03-14T02:47:55Z api WARN retry scheduled in 500ms
+2026-03-14T02:48:02Z api DEBUG heartbeat acknowledged
+2026-03-14T02:48:03Z api INFO batch flushed, 240 rows
+2026-03-14T02:48:04Z api INFO request completed in 42ms
+2026-03-14T02:48:18Z api DEBUG health probe ok
+2026-03-14T02:48:34Z api WARN request took 2.1s, above the 1s budget
+2026-03-14T02:48:52Z api INFO batch flushed, 240 rows
+2026-03-14T02:48:59Z api DEBUG queue depth 12
+2026-03-14T02:49:09Z api WARN retry scheduled in 500ms
+2026-03-14T02:49:28Z api INFO shutdown signal handled cleanly
+2026-03-14T02:49:47Z api DEBUG health probe ok
+2026-03-14T02:49:49Z api INFO config reloaded from disk
+2026-03-14T02:50:00Z api DEBUG health probe ok
+2026-03-14T02:50:08Z api WARN request took 2.1s, above the 1s budget
+2026-03-14T02:50:20Z api INFO session token refreshed
+2026-03-14T02:50:29Z api INFO request completed in 42ms
+2026-03-14T02:50:33Z api INFO config reloaded from disk
+2026-03-14T02:50:34Z api INFO request completed in 42ms
+2026-03-14T02:50:49Z api TRACE worker claimed job 4471
+2026-03-14T02:50:53Z api WARN upstream latency 880ms
+2026-03-14T02:51:06Z api DEBUG cache hit for key user:1204
+2026-03-14T02:51:22Z api INFO shutdown signal handled cleanly
+2026-03-14T02:51:36Z api INFO connection pool resized to 16
+2026-03-14T02:51:47Z api INFO request completed in 42ms
+2026-03-14T02:51:54Z api ERROR card tokenization failed (E401)
+2026-03-14T02:52:05Z api DEBUG cache hit for key user:1204
+2026-03-14T02:52:07Z api DEBUG health probe ok
+2026-03-14T02:52:12Z api WARN retry scheduled in 500ms
+2026-03-14T02:52:20Z api ERROR payment declined by processor (E401)
+2026-03-14T02:52:24Z api WARN retry scheduled in 500ms
+2026-03-14T02:52:40Z api INFO request completed in 42ms
+2026-03-14T02:52:55Z api ERROR upstream timeout on /v1/charges (E503)
+2026-03-14T02:52:57Z api DEBUG queue depth 12
+2026-03-14T02:53:17Z api ERROR card tokenization failed (E401)
+2026-03-14T02:53:30Z api INFO session token refreshed
+2026-03-14T02:53:36Z api DEBUG health probe ok
+2026-03-14T02:53:56Z api DEBUG health probe ok
+2026-03-14T02:54:07Z api ERROR payment declined by processor (E401)
+2026-03-14T02:54:14Z api DEBUG queue depth 12
+2026-03-14T02:54:26Z api ERROR payment declined by processor (E401)
+2026-03-14T02:54:33Z api WARN request took 2.1s, above the 1s budget
+2026-03-14T02:54:46Z api DEBUG cache hit for key user:1204
+2026-03-14T02:54:52Z api INFO shutdown signal handled cleanly
+2026-03-14T02:54:53Z api DEBUG queue depth 12
+2026-03-14T02:55:13Z api DEBUG queue depth 12
+2026-03-14T02:55:28Z api INFO batch flushed, 240 rows
+2026-03-14T02:55:32Z api INFO connection pool resized to 16
+2026-03-14T02:55:49Z api DEBUG heartbeat acknowledged
+2026-03-14T02:55:56Z api ERROR upstream timeout on /v1/charges (E503)
+2026-03-14T02:56:00Z api DEBUG queue depth 12
+2026-03-14T02:56:11Z api INFO session token refreshed
+2026-03-14T02:56:22Z api ERROR card tokenization failed (E401)
+2026-03-14T02:56:39Z api ERROR database connection lost (E500)
+2026-03-14T02:56:46Z api DEBUG health probe ok
+2026-03-14T02:57:06Z api INFO shutdown signal handled cleanly
+2026-03-14T02:57:09Z api DEBUG heartbeat acknowledged
+2026-03-14T02:57:28Z api DEBUG health probe ok
+2026-03-14T02:57:30Z api WARN retry scheduled in 500ms
+2026-03-14T02:57:35Z api WARN request took 2.1s, above the 1s budget
+2026-03-14T02:57:52Z api INFO shutdown signal handled cleanly
+2026-03-14T02:58:08Z api WARN upstream latency 880ms
+2026-03-14T02:58:21Z api DEBUG queue depth 12
+2026-03-14T02:58:29Z api WARN retry scheduled in 500ms
+2026-03-14T02:58:41Z api ERROR settlement batch unavailable (E503)
+2026-03-14T02:58:42Z api INFO session token refreshed
+2026-03-14T02:58:53Z api WARN upstream latency 880ms
+2026-03-14T02:58:57Z api INFO shutdown signal handled cleanly
+2026-03-14T02:59:00Z api INFO connection pool resized to 16
+2026-03-14T02:59:06Z api INFO shutdown signal handled cleanly
+2026-03-14T02:59:25Z api DEBUG health probe ok
+2026-03-14T02:59:45Z api DEBUG health probe ok
+2026-03-14T02:59:55Z api INFO config reloaded from disk
+2026-03-14T02:59:56Z api DEBUG cache hit for key user:1204
+2026-03-14T03:00:11Z api ERROR payment declined by processor (E401)
+2026-03-14T03:00:30Z api INFO connection pool resized to 16
+2026-03-14T03:00:34Z api DEBUG queue depth 12
+2026-03-14T03:00:52Z api INFO config reloaded from disk
+2026-03-14T03:01:01Z api WARN request took 2.1s, above the 1s budget
+2026-03-14T03:01:14Z api WARN upstream latency 880ms
+2026-03-14T03:01:33Z api WARN upstream latency 880ms
+2026-03-14T03:01:45Z api WARN retry scheduled in 500ms
+2026-03-14T03:01:57Z api INFO config reloaded from disk
+2026-03-14T03:02:14Z api INFO shutdown signal handled cleanly
+2026-03-14T03:02:32Z api DEBUG heartbeat acknowledged
+2026-03-14T03:02:48Z api INFO batch flushed, 240 rows
+2026-03-14T03:02:59Z api TRACE worker claimed job 4471
+2026-03-14T03:03:10Z api INFO connection pool resized to 16
+2026-03-14T03:03:29Z api INFO session token refreshed
+2026-03-14T03:03:38Z api ERROR settlement batch unavailable (E503)
+2026-03-14T03:03:57Z api INFO batch flushed, 240 rows
+2026-03-14T03:04:11Z api INFO request completed in 42ms
+2026-03-14T03:04:18Z api ERROR upstream timeout on /v1/charges (E503)
+2026-03-14T03:04:23Z api DEBUG heartbeat acknowledged
+2026-03-14T03:04:43Z api DEBUG health probe ok
+2026-03-14T03:04:57Z api INFO request completed in 42ms
+2026-03-14T03:05:16Z api INFO connection pool resized to 16
+2026-03-14T03:05:24Z api ERROR database connection lost (E500)
+2026-03-14T03:05:41Z api INFO request completed in 42ms
+2026-03-14T03:05:57Z api INFO batch flushed, 240 rows
+2026-03-14T03:06:02Z api ERROR ledger write rejected (E500)
+2026-03-14T03:06:14Z api INFO shutdown signal handled cleanly
+2026-03-14T03:06:29Z api DEBUG heartbeat acknowledged
+2026-03-14T03:06:40Z api DEBUG heartbeat acknowledged
+2026-03-14T03:06:48Z api WARN request took 2.1s, above the 1s budget
+2026-03-14T03:06:49Z api TRACE worker claimed job 4471
+2026-03-14T03:07:00Z api DEBUG cache hit for key user:1204
+2026-03-14T03:07:14Z api INFO shutdown signal handled cleanly
+2026-03-14T03:07:19Z api INFO batch flushed, 240 rows
+2026-03-14T03:07:34Z api INFO request completed in 42ms
+2026-03-14T03:07:37Z api ERROR card tokenization failed (E401)
+2026-03-14T03:07:50Z api INFO connection pool resized to 16
+2026-03-14T03:07:58Z api DEBUG queue depth 12
+2026-03-14T03:08:04Z api WARN retry scheduled in 500ms
+2026-03-14T03:08:16Z api DEBUG queue depth 12
+2026-03-14T03:08:23Z api TRACE worker claimed job 4471
+2026-03-14T03:08:39Z api INFO config reloaded from disk
+2026-03-14T03:08:46Z api INFO shutdown signal handled cleanly
+2026-03-14T03:09:05Z api WARN upstream latency 880ms
+2026-03-14T03:09:12Z api WARN request took 2.1s, above the 1s budget
+2026-03-14T03:09:16Z api INFO session token refreshed
+2026-03-14T03:09:29Z api DEBUG queue depth 12
+2026-03-14T03:09:48Z api INFO connection pool resized to 16
+2026-03-14T03:10:05Z api INFO connection pool resized to 16
+2026-03-14T03:10:12Z api INFO connection pool resized to 16
+2026-03-14T03:10:31Z api INFO shutdown signal handled cleanly
+2026-03-14T03:10:47Z api INFO config reloaded from disk
+2026-03-14T03:11:05Z api INFO batch flushed, 240 rows
+2026-03-14T03:11:06Z api INFO session token refreshed
+2026-03-14T03:11:14Z api DEBUG cache hit for key user:1204
+2026-03-14T03:11:16Z api ERROR upstream timeout on /v1/charges (E503)
+2026-03-14T03:11:30Z api WARN retry scheduled in 500ms
+2026-03-14T03:11:41Z api WARN retry scheduled in 500ms
+2026-03-14T03:11:59Z api WARN retry scheduled in 500ms
+2026-03-14T03:12:03Z api WARN retry scheduled in 500ms
+2026-03-14T03:12:21Z api INFO request completed in 42ms
+2026-03-14T03:12:26Z api DEBUG health probe ok
+2026-03-14T03:12:40Z api ERROR payment declined by processor (E401)
+2026-03-14T03:12:46Z api WARN upstream latency 880ms
+2026-03-14T03:13:04Z api WARN retry scheduled in 500ms
+2026-03-14T03:13:07Z api WARN request took 2.1s, above the 1s budget
