@@ -285,15 +285,26 @@ func TestBriefingWithNoObjectivesPrintsNoChecklist(t *testing.T) {
 }
 
 // TestGoDirectiveStaysAtTheSupportedFloor guards the go.mod floor against a
-// dependency bump that raises it as a side effect.
+// dependency bump that moves it as a side effect.
 //
-// This repository has been bitten twice: golang.org/x/term v0.45.0 forced the
-// directive from 1.23.0 to 1.25.0, and charmbracelet/glamour v1.0.0 would do the
-// same at 1.24.0, which is why the pin sits at v0.10.0. A `go get` that raises
-// the floor changes the minimum Go a learner needs to build from source, and it
-// does so silently, in a file nobody rereads.
+// The floor is a deliberate decision, not a number the toolchain gets to pick.
+// It changes the minimum Go somebody needs to build from source, and a `go get`
+// will move it silently, in a file nobody rereads. This test exists so that
+// moving it is always a commit somebody wrote a reason for.
+//
+// It sat at 1.23.0 until govulncheck reported GO-2026-5970 in golang.org/x/text,
+// which charmbracelet/glamour brings in. The fix, x/text v0.39.0, declares
+// `go 1.25.0`, and Go refuses to build a module whose dependency asks for a
+// newer directive than its own, so the floor and the fix could not be had
+// separately. The maintainer chose the library over the old floor: glamour is
+// maintained upstream and will carry features this project has not specified
+// yet, and a NEWER minimum Go is not a security cost. It ships users a standard
+// library with more fixes in it, not fewer.
+//
+// So the number below is now 1.25.0, and the rule it enforces has not changed:
+// if a dependency bump moves this line, find out why before accepting it.
 func TestGoDirectiveStaysAtTheSupportedFloor(t *testing.T) {
-	const wantFloor = "go 1.23.0"
+	const wantFloor = "go 1.25.0"
 
 	body, err := os.ReadFile(filepath.Join(cliModuleRoot(t), "go.mod"))
 	if err != nil {
@@ -314,8 +325,9 @@ func TestGoDirectiveStaysAtTheSupportedFloor(t *testing.T) {
 	}
 	if found != wantFloor {
 		t.Errorf("go.mod says %q, want %q.\n"+
-			"A dependency bump has raised this module's minimum Go version. Check the new dependency's own "+
-			"go directive: if it is higher than this floor, pin the dependency back rather than raising the floor. "+
+			"A dependency bump has moved this module's minimum Go version. Check the new dependency's own "+
+			"go directive. Pinning the dependency back is the default answer; raising the floor is a decision "+
+			"that needs a reason written down, the way the x/text security bump has one. "+
 			"See the comment above the require block in go.mod.", found, wantFloor)
 	}
 }
