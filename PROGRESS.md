@@ -5,7 +5,7 @@ push, get CI green, and add a line here. No silent carry-over. If an exit criter
 is unchecked the next morning, it either gets done before new work or it gets
 formally cut.
 
-**Current state: Day 1 complete and the gate is GO. `shellforge run demo` is playable end to end on Linux: real bash in a container, OSC 133 instrumentation, a `check` that verifies real state, and proven host isolation. `CommandEvent.Raw` is always empty: #51 built the store schema, migrations, and the command journal, but deliberately wired neither into `internal/pty` nor anywhere else, so this stays empty until a later ticket does that wiring. Windows resize watching is a Day 3 stub, `WslRuntime` is not started, and `run` refuses on a Windows host because `creack/pty` has no Windows implementation, so Windows plays from inside WSL until Day 3.**
+**Current state: Day 2 complete on Linux, except that nothing in it has been exercised against a real container yet. `shellforge run <level-id>` plays any of the nine written levels from the embedded YAML pack with zero Go changes between them: it renders the briefing, prints the objective checklist, hands over a real instrumented bash, and answers `check` with authored results through the existing control FIFO. The verification engine, composition nodes, result assembly and the golden test contract are all built and unit tested. What is NOT verified: every Docker-gated test in the branch, which is the whole golden contract and the filesystem purity check, because the environment that built it had no Docker socket. CI's Sandbox image job is the first thing to actually play a level. Scoring, XP, hints, `reset`, `map`, `stats`, `play` and journal wiring are all Day 4 and deliberately absent. Windows still plays from inside WSL until Day 3.**
 
 ---
 
@@ -20,15 +20,19 @@ formally cut.
 | Layer dependency enforcement | Done, and verified to fail on a deliberate violation |
 | Punctuation gate | Done, and verified to fail on a deliberate violation |
 | CLI dispatcher | `cmd/shellforge` runs on `spf13/cobra` as of #48, not the hand-rolled dispatcher. Fourteen verbs registered (`doctor` `init` `play` `run` `check` `hint` `reset` `skip` `map` `stats` `sandbox` `bug-report` `author` `version`), plus `sandbox` and `author` as command groups with four stub subcommands each. `version`, `help` and `run demo` work; every other verb fails through `ux.Fail` with a remediation. **The whole `cmd/shellforge` package was untracked by git until #11**: `.gitignore`'s unanchored `shellforge` pattern matched the directory, so it was never committed and CI never compiled or tested it. |
-| `shellforge run demo` | Works on Linux. Provisions, materializes the level, prints the briefing, hands over a real instrumented bash, serves `check` over a FIFO control channel, and tears the level world down on every exit path. Refuses on a Windows host with the `windows-needs-wsl` anchor. |
+| `shellforge run <level-id>` | Works on Linux for any level in the pack, with zero Go changes between levels. Loads from the embedded YAML, renders the briefing through glamour, prints the objective checklist, provisions, materializes the level, hands over a real instrumented bash, serves `check` over the existing FIFO control channel, and tears the level world down on every exit path through one cleanup function. An unknown id fails through `ux.Fail` naming the ids that exist. Refuses on a Windows host with the `windows-needs-wsl` anchor. **Never run against a real container in this environment**: no Docker socket, so every end-to-end claim here rests on unit tests plus CI. |
+| `shellforge run demo` | Still works, deliberately. The Day 1 hardcoded level is kept until a YAML isolation test and the golden harness have replaced the safety coverage `internal/sandbox/demo_golden_test.go` carries, which is the repository's only live host-isolation test. Tracked as a follow-up. |
+| `shellforge author test` | Done. Runs the `docs/LEVEL-FORMAT.md` section 7 golden contract per level and is what `make golden` calls, a target that had been calling a command that did not exist since Day 0. Refuses rather than skips without a Docker daemon, because a `make golden` reporting success having tested nothing is worse than no gate. |
 | Sandbox image | `Containerfile` written, not yet built |
 | Shell instrumentation | `instrument.bash` written, not yet exercised |
-| Content pack | `pack.yaml` with six acts declared, and the first eight levels written (issue #54): `nav-01` to `nav-04` and `files-01` to `files-04`. They validate clean and are embedded in the binary via `packs/packs.go`. **None has been played or golden-tested yet**: that needs the check engine and the `run` wiring in #52, so "validates" is the only claim being made here. Levels 9 to 25 are Day 5. |
+| Content pack | `pack.yaml` with six acts declared, and nine levels written: `nav-01` to `nav-04`, `files-01` to `files-04` (issue #54), and `pipe-05`. They validate clean, are embedded via `packs/packs.go`, and are all reachable from `shellforge run`. `pipe-05` is out of curriculum order on purpose: it is the engine's reference fixture, the level `docs/LEVEL-FORMAT.md` section 6 is written against, and the first whose world comes from committed assets rather than inline content. **None has been played against a real container yet.** The golden contract that would prove it exists and is Docker-gated; CI runs it. Levels 9 to 25 are Day 5. |
+| Level assets | First three committed: `assets/app-1.log`, `app-2.log`, `billing.log`, for pipe-05. Produced by the deterministic generator in `internal/sandbox/demo_level.go` rather than hand written, so their numbers come from code that already has consistency tests. Five tests in `internal/content` count the answers out of the committed bytes the way the level's solution counts them, including one that catches a noise line matching `error` case-insensitively without being an ERROR record. |
+| `internal/game` | A thin `Session`: load, setup, brief, check, teardown, and nothing else. It declares its own `Verifier` interface so it is testable with a two-method fake, borrows the `runtime.Session` it is given and never closes it, and holds the only `content.CheckSpec` to `verify.Spec` conversion, which has to sit above both peers. No event bus, no scoring, no unlock state, no store writes: all Day 4. |
 | Pack loading and validation | Done in `internal/content` (issue #53). `LoadPack`, `Embedded`, `Pack.Level`, `Pack.Order`, and `Validate` with a `TypeChecker` the caller supplies, so `internal/content` and `internal/verify` stay peers rather than one importing the other. `shellforge author validate <pack>` reports every problem one per line and supports `--json`. |
 | Level setup and teardown runner | Done in `internal/content/setup` (issue #50). `Runner.Setup`, `Teardown`, and `IsSetUp` materialize and remove a level's world inside the sandbox: teardown-first idempotency, a `loglines` content generator behind a registered kind, CRLF stripping on the host side before a `runtime.FileEntry` is built, rollback on any failure via `context.WithoutCancel`, and a `SETUP_OK` sentinel written under the state directory rather than the level root. Not wired into the game orchestrator or the CLI: no caller constructs a `Runner` yet outside its own tests. That wiring, plus the pack loader and validator that produce a real `content.Level`, is #52, #53, and #54. |
 | Runtimes | `Runtime` and `Session` interfaces plus their value types and sentinel errors are defined in `internal/runtime`, the reusable contract suite is in `internal/runtime/runtimetest`, and `internal/runtime/docker` implements both by shelling out to the `docker` CLI. The contract suite is green against it on Windows with Docker Desktop's Linux engine, except one subtest documented below. `WslRuntime` is not started. |
 | PTY multiplexer and OSC parser | Both done. Parser: streaming OSC 133 and OSC 7 state machine, fuzzed, with a recorded vim session passing through byte-identical. Multiplexer (`internal/pty/mux.go`): host stdin forwarded to the sandbox verbatim including Ctrl-C, host terminal raw mode restored across every exit path including a panic, initial resize plus SIGWINCH on unix, and CommandEvent assembly from the marker stream. `CommandEvent.Raw` is always empty pending #51. Windows resize watching is a Day 3 stub. |
-| Verification engine | Not started |
+| Verification engine | Done in `internal/verify` (issue #52). `Engine`, `NewEngine`, `WithCheckTimeout`, `WithLevelTimeout`, `Build` and `Run`, the `any_of`/`all_of`/`not` composition nodes, and `LevelResult` matching `docs/LEVEL-FORMAT.md` section 5 field for field. Checks are built once at level load and run on every `check`. 262 tests and subtests. The hermetic half of the purity guarantee is `internal/verify/purity_test.go`, which asserts every check type runs only read-only commands; the filesystem-hash half is in the golden harness and needs Docker. |
 | Progress database | `internal/store` (schema, migrations) and `internal/journal` (the command journal) are both built and unit tested, per #51. Nothing calls `store.Open` outside their own tests: not wired into `cmd/shellforge`, `internal/game`, or `internal/pty`. `CommandEvent.Raw` on the host-side event stream is still always empty. |
 | Documentation | Design record complete. User docs are outlines. |
 | Engineering rules | `CLAUDE.md` index plus 13 on-demand skills under `.claude/skills/` |
@@ -2439,6 +2443,245 @@ CI remains authoritative for all three. `go.mod` and `go.sum` are
 byte-identical to before this commit, confirmed by an empty `git diff --
 go.mod go.sum`.
 
+### Day 2, 2026-08-14: the verification engine, and `run` for any level
+
+Issues #52 and #55, folded into one branch as the note on #52 planned. Both of
+Day 2's outstanding exit criteria are implemented. Neither has been seen working
+in a real container, which is the first thing to say about it.
+
+**`internal/verify` is finished.** `compose.go`, `engine.go` and `result.go`, on
+top of the fourteen check types #49 landed. `Build` resolves specs to checks once
+at level load, so a malformed parameter surfaces before the learner sees a prompt
+rather than on whichever `check` first hits it. `Run` evaluates in declaration
+order with no short-circuit, so the objective checklist is always complete.
+262 tests and subtests, green under `-race`.
+
+Six contract decisions the ticket left open, all recorded in the PR body for
+ratification:
+
+- Composition mirrors `content.CheckSpec` on `verify.Spec`, and `Run` keeps the
+  signature the ticket fixed by putting `LevelID` on `Env` and objective text on
+  `Spec`. `Build` wraps each top-level check in an unexported `objective` carrying
+  the metadata, so the two-method `Check` interface and all fourteen existing
+  types are untouched.
+- `objectives[].status` is the five `Status` values, not the two section 5's
+  example happened to show.
+- Section 4 rule 5 beats section 5's example, which set `primary_failure` to an
+  `optional: true` objective and reported `passed: false` for a run whose only
+  failure was that bonus. The example was corrected.
+- Composites are structural, outside the registry, so `Types()` stays at fourteen.
+- Composites short-circuit internally, and that is not a violation of the
+  no-short-circuit invariant: a branch has no id and never appears in
+  `Objectives`, so the checklist is still complete.
+- The 60 second level budget marks the remaining objectives rather than dropping
+  them, because rule 4's stated purpose for no-short-circuit is a fully populated
+  checklist.
+
+**`not` never launders an inconclusive result into a pass.** Child pass gives
+fail, child fail gives pass, and a child timeout or error propagates unchanged.
+If it inverted them, a sandbox that stopped answering would satisfy every `not`
+in the pack, so a level would start accepting wrong answers at exactly the moment
+something was already broken. This is the subtlest bug available in the engine and
+it has its own test, verified to fail against the wrong implementation.
+
+**`runGuarded` is what makes the 10 second per-check budget true.** Each check
+runs on its own goroutine and `Run` gives up when the context is done, so a check
+that ignores cancellation is still bounded. That is not hypothetical: the `script`
+escape hatch runs author-supplied bash through one `Exec`. A panic is recovered
+into `StatusError` there, because `recover` only catches a panic in its own
+goroutine and an unrecovered one would kill the process, losing the whole
+checklist with the host terminal still in raw mode. A check that never returns
+leaks one goroutine, accepted deliberately and marked `TODO(v0.2)`: the
+alternative is blocking the learner's prompt on a check that will not come back.
+
+**The purity invariant is enforced for the first time.** `doc.go` has promised a
+CI purity test since #49 and there was not one. `internal/verify/purity_test.go`
+is the hermetic half: it drives all eleven Exec-calling check types through the
+real registry and asserts every command they run is on a read-only allowlist,
+that no argv names a mutating command or flag, that `find` is never handed
+`-delete` or an `-exec` outside the allowlist, that two runs ask the sandbox
+identical things, and that `PushFiles`, `PullFile` and `Attach` are never called.
+Verified to fail without its fix: `dir_tree`'s `find -exec sha256sum` was changed
+to `find -exec rm` and two assertions fired with two different explanations.
+
+`find` gets its own test because it is the one allowlisted command that can be
+made to mutate without changing `argv[0]`, and `dir_tree` already uses `-exec`, so
+that door is open and what keeps it safe is which command goes through it.
+
+Two exemptions, both bounded rather than assumed. `script` is exempt because its
+body is one argv element to `bash -c` and therefore opaque to the package;
+`TestScriptCheckIsTheOnlyExemption` asserts no other check type runs a shell, so a
+second one adopting `bash -c` cannot quietly widen the hole while the allowlist
+still passes. The two journal checks are exempt because they never call `Exec`,
+which is asserted rather than commented.
+
+**`internal/game` is a thin `Session`** and nothing more: load, setup, brief,
+check, teardown. It declares its own `Verifier` interface, following the pattern
+`content` uses for `TypeChecker`, so the whole thing is tested against a
+two-method fake with no registry, sandbox or real level. It borrows the
+`runtime.Session` it is given and never closes it, because one sandbox session
+outlives one level. `doc.go` used to describe an event bus and pluggable scoring
+as though they existed; it now says what is here.
+
+It also holds the only `content.CheckSpec` to `verify.Spec` conversion, which has
+to sit above both peers. Two tests hold the mirroring rather than trusting it: one
+checks every field arrives, one pins both structs' field counts so adding a field
+fails a test and forces a decision. That is a deliberate maintenance burden; the
+alternative is a level silently verifying something other than what its author
+wrote.
+
+**One real schema ambiguity resolved, in the safe direction.** `optional` lives on
+both `content.Objective` and `content.CheckSpec` and they can disagree. Either
+saying optional now wins, because treating a disagreement as required would let a
+level fail a learner on something its own checklist showed as a bonus. Marked
+`TODO(v0.2)` and left for a content follow-up, since removing one changes the
+level format.
+
+**`run` no longer knows a level id.** It loads the embedded pack, looks the id up,
+and plays what it finds. An unknown id fails through `ux.Fail` with the new
+`level-not-found` anchor, naming every real id in campaign order and never
+offering the demo. `parseRunArgs` takes the first campaign level as an argument,
+which removed the three hardcoded references to `demo` in its messages.
+
+Two adapters behind one `playable` interface keep the flow single: one for a pack
+level, one for the Day 1 demo. That is what stops the FIFO plumbing, the teardown
+ordering and the raw-mode rules existing twice, and those are exactly the parts
+that were hard to get right.
+
+**An anchor-losing bug fixed.** `runDemo` re-wrapped every `Setup` failure as
+`level-state-corrupted`, discarding the specific anchor `setup.Runner` had already
+attached: `unsafe-level-root` for a bad path, `setup-script-failed` for a failing
+script. A learner following that link landed on a page about a corrupt level when
+the real problem was something else. A wrong link is worse than no link.
+`internal/game` has tests that catch the regression, verified against the old
+behaviour.
+
+**The demo level is kept, not deleted.** `internal/sandbox/demo_golden_test.go`
+holds this repository's only live host-isolation test, the one that runs `rm -rf`
+inside the sandbox and asserts a host canary is byte-identical, and its only live
+filesystem purity check. Deleting them in the same change that introduces a
+generic level runner would drop safety coverage while enlarging the surface, with
+no moment where both old and new coverage are green. A follow-up issue carries the
+deletion, gated on a YAML isolation test and the golden harness being green first.
+
+**Rendering.** `render_check.go` is pure functions over a `LevelResult`, so the
+learner-facing strings are testable with golden strings and no sandbox. A timeout
+and an error are never dressed as wrong answers: each gets its own mark, its own
+objective-line suffix, and a summary saying in words that this is not a wrong
+answer, because the remediation is completely different. A missed bonus is dim and
+labelled, never red. `crlf` is the single place the raw-mode rule is applied, is
+idempotent, and leaves an authored CRLF alone so a pack written on Windows cannot
+produce the doubled carriage return that renders as a stray blank column.
+
+Replies are capped at 16 KiB with a truncation notice, because the `script` check
+appends a failing script's whole stdout to its `on_fail`, so a flood is reachable
+from a level rather than only from a bug.
+
+**glamour, pinned to v0.10.0, and it does less than expected.** The pin is load
+bearing: v1.0.0 declares `go 1.24.0` and would raise this module's floor, the same
+trap `go.mod` already documents for `golang.org/x/term`.
+`TestGoDirectiveStaysAtTheSupportedFloor` now fails if a future bump raises it.
+
+The briefing uses this project's own style config rather than a standard one, and
+the measurements are in the code because reaching for `WithStandardStyle` is the
+obvious thing to do. Against nav-01's real 352 byte briefing: every standard
+style, `ascii` and `notty` included, leaves the `##` heading marker in the output,
+so a learner reads markdown that failed to render; and `dark` produces 5,698 bytes
+with 669 escape sequences, because it paints each padding space individually. The
+second matters beyond appearance, because `brief` sends its reply through the
+capped FIFO. The custom style gives 695 bytes with 10 escape sequences and no
+heading marker. Two tests pin both defects, verified to fail when the style is
+switched back.
+
+With colour off, nothing is styled at all, bold included. Bold is not colour, but
+`ux` emits no escape whatsoever when colour is suppressed, and the reasons apply
+equally: `TERM=dumb` cannot render attributes and a redirected stream is a file
+where an escape is noise. The first version emitted bold under `NO_COLOR` and a
+test caught it.
+
+A rendering failure is never fatal: the raw markdown is printed between the
+existing rules. Refusing to start a level because a formatting library choked
+would be indefensible when the markdown is readable.
+
+**pipe-05 and its three committed assets.** The logs were produced by the
+deterministic generator in `internal/sandbox/demo_level.go`, which already has
+consistency tests including one asserting no noise line matches "error" in any
+case, rather than written by hand. Measured on the committed bytes: 147
+case-insensitive matches for `error`, and exactly `E401`, `E500`, `E503`.
+
+Five tests in `internal/content` hold the assets to those answers with no Docker,
+so they run on the Windows leg too. Verified against three real drift scenarios:
+one extra ERROR line, a code changed to `E404`, and a noise line reading
+"connection errors retried" added as INFO. The third is the subtle one: the
+solution greps case-insensitively, so any line containing "error" counts whatever
+its severity says, and a plausible-looking noise line would make the level's answer
+quietly wrong.
+
+**The golden contract is code, shared by `author test` and the Go test**, because
+two definitions of "is this level correct" would drift and then disagree. It lives
+in `cmd/shellforge` rather than `internal/game` because it needs a real sandbox and
+`internal/archtest`'s `runtimeImplAllowed` deliberately excludes `internal/game`;
+putting it there would have been the leak that set exists to prevent.
+
+Step 2 asserts per objective rather than on `Passed` alone, which is the
+strengthening worth naming: `Passed` being false only proves SOME required check
+failed, so a level can ship with a required check that passes on a bare setup,
+verifying nothing, and `Passed` would still be false because of its siblings.
+
+Step 6 compares the sandbox user's processes against a snapshot taken before the
+level ran. A level whose `setup.script` backgrounds something and whose teardown
+forgets to kill it is otherwise invisible: the level passes and the next level
+inherits a process it did not start.
+
+The hash walker runs inside the sandbox, takes its root as an argument to a fixed
+script rather than interpolated into it, and invokes `find` without `-L` so a
+planted symlink cannot walk it out of the root. Its root is validated first with a
+thirteen case refusal table, in the shape `destructive-safety` asks for even though
+this path only reads: the risk is a bug here hashing the whole sandbox, which would
+look like a hang and make the purity comparison meaningless.
+
+`author test` refuses rather than skips without Docker, exiting through `ux.Fail`
+with `docker-daemon-down`. The Go test skips, so something has to be honest, and a
+`make golden` reporting success having tested nothing is worse than no gate. It
+provisions its own container, never the production `shellforge-sandbox`, so an
+author cannot tear down a level a learner has open in another terminal.
+
+The Go golden test is gated on a Linux Docker daemon AND `SHELLFORGE_GOLDEN=1`.
+The env var is not belt and braces: `ubuntu-latest` HAS a working daemon, so a
+daemon-only gate would make `go test ./...` in the fast Test job start building the
+Containerfile and turn a seconds-long job into a minutes-long one. The new CI step
+is in the existing Sandbox image job, so no job was added and neither
+`all-green`'s needs nor the ruleset changed.
+
+**Three test updates worth recording, because each asserted something that had
+become untrue.** `TestCmdRunRefusesAnUnknownLevel` used `nav-01` as its example of
+a level that does not exist, and `nav-01` is real now, so it asserted the opposite
+of what it said; it uses `nav-99`. `author test` came off `commands_test.go`'s stub
+list, the same way `author validate` did when #53 landed. The demo's two briefing
+tests moved to the demo adapter that now owns its presentation.
+
+**Two bugs of my own, both caught by tests rather than by review.** `plural()`
+documents that every noun it is given takes a plain `-s`, and it had been called
+with "process" and "bonus", which would have rendered "2 processs" and "2 bonuss"
+in front of a learner; both rephrased rather than the shared helper changed. And
+the first field-count test carried arithmetic that was simply wrong.
+
+Gates run locally, all green: `gofmt -s`, `go vet ./...`, `go test ./...`,
+`go test -race` on `internal/verify`, `internal/game`, `cmd/shellforge` and
+`internal/content`, `go test ./internal/archtest/...`,
+`./scripts/check-punctuation.sh`, `./scripts/check-links.sh`,
+`./scripts/check-cli-package.sh`, `./scripts/check-allowlist-regexp.sh`,
+`python3 scripts/check-ci-gates.py`, `go mod tidy` leaving the `go` directive at
+1.23.0, and `shellforge author validate packs/core-linux-basics`.
+
+Not run locally: `govulncheck` and `gosec` (not installed, and the dependency
+graph grew here so the Security job is the first real read on it), `pytest` over
+`scripts/tests` (not installed), and every Docker-gated test in the branch, which
+is the entire golden contract, the filesystem purity check and every end-to-end
+claim about playing a level, because this environment has no Docker socket. That
+last one is the largest untested surface in this branch and CI is the first thing
+to exercise it.
+
 ---
 
 ## Day 1: the spike
@@ -2494,19 +2737,44 @@ removing the flag to make a level pass.**
 
 ## Day 2: content engine and verification
 
-- [x] Levels load from YAML with zero Go changes. Eight levels, `nav-01` to
-      `files-04`, load out of the embedded pack. Not yet demonstrated by
-      playing them: that needs the `run` wiring, folded into #52.
+- [x] Levels load from YAML with zero Go changes. Nine levels now: `nav-01` to
+      `files-04` plus `pipe-05`. `shellforge run <id>` plays any of them and the
+      Go code knows no level id, so adding a tenth is a YAML file and nothing
+      else. Same caveat as the two below about what "plays" rests on.
 - [x] `author validate` catches duplicate id, cycle, missing asset, missing
       `on_fail`, unknown check type. All five, plus setup.root containment,
       objective correspondence in both directions, and the new journal check
       rule. `shellforge author validate packs/core-linux-basics` exits 0 with
-      17 warnings for the levels not yet written.
-- [ ] A failing check prints its authored `on_fail`, not a generic error
-- [ ] Only the first failing required objective is shown
+      17 warnings: sixteen for levels not yet written, and one for pipe-05's
+      `prerequisites: [pipe-04]`, which names a level that has no file yet. The
+      count stayed at 17 rather than dropping to 16 when pipe-05 landed, because
+      it traded its own missing-file warning for that prerequisite one.
+- [x] A failing check prints its authored `on_fail`, not a generic error.
+      `internal/verify` carries the authored text through to
+      `ObjectiveResult.Message`, and `renderCheckReply` prints it under the
+      checklist. A timeout or an error deliberately does NOT carry the authored
+      text, because nothing was established about whether the learner was right.
+      **Demonstrated by unit test, not by playing a level**: see the caveat below.
+- [x] Only the first failing required objective is shown.
+      `LevelResult.PrimaryFailure` is the first non-passing objective that is
+      neither optional nor `severity: warn`, and the renderer prints exactly that
+      one body. A second failing required objective still gets its checklist line.
+      Verified to fail without its fix, against the naive implementation that
+      prints every failing message. Same caveat.
 
-The last two need the engine and the terminal rendering, which are #52 with
-#55 folded into it.
+**The caveat, stated plainly because it is the honest limit of this day's work.**
+Both criteria above, and the two ticked before them, are demonstrated by unit
+tests over a fake sandbox. Not one of them has been demonstrated by playing a
+level in a real container, because the environment this was built in has no
+Docker socket. The golden contract that would demonstrate all four end to end is
+written, is what `make golden` runs, and executes in CI's Sandbox image job; that
+CI run is the first time any of this touches a real sandbox. Until it is green,
+read every claim on this page as "the tests say so" rather than "somebody saw it
+work".
+
+Also not run locally, for the same reason or because the tool is absent:
+`govulncheck`, `gosec`, and `pytest` over `scripts/tests`. The dependency graph
+grew in this branch, so the Security job is the first real read on it.
 
 ## Day 3: Windows, the highest-risk day
 

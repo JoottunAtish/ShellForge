@@ -64,9 +64,9 @@ func verifySpecs(checks []content.CheckSpec, objectives []content.Objective) ([]
 		// is the worse direction to get wrong. verify.Spec.Optional is the only
 		// authority from here on.
 		//
-		// TODO(v0.2): the schema should not carry the flag twice. Tracked as a
-		// content follow-up rather than fixed here, because removing one of
-		// them changes the level format.
+		// TODO(v0.2): the schema should not carry the flag twice. Issue #97
+		// picks one home and makes the other an error; it is not fixed here
+		// because removing one of them changes the level format.
 		if optional[spec.ID] {
 			spec.Optional = true
 		}

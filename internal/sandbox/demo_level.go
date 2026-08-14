@@ -17,7 +17,10 @@ import (
 // The Day 1 demo level, hardcoded in Go.
 //
 // Levels become YAML data on Day 2 and this file is expected to be DELETED
-// then, not extended. It exists so the Day 1 gate can be demonstrated before
+// then, not extended. That deletion is issue #96, and it is gated: this file's
+// demo_golden_test.go still holds the repository's only live host-isolation test
+// and its only live filesystem purity check, so it goes when a YAML equivalent
+// of each is green in CI, and not before. It exists so the Day 1 gate can be demonstrated before
 // the content engine exists, and it is deliberately shaped like the YAML that
 // replaces it so that migration is mechanical rather than a rewrite.
 //

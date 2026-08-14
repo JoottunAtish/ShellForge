@@ -66,7 +66,7 @@ const (
 	// only live filesystem purity check and its only host-isolation test, and
 	// removing them in the same change that introduces a generic level runner
 	// would drop safety coverage while enlarging the surface. Tracked as a
-	// follow-up issue named in that file's header.
+	// follow-up: issue #96, which lists the two tests that must be green first.
 	demoLevelID = "demo"
 
 	// controlReplyTimeout bounds a write to the response FIFO.

@@ -20,6 +20,10 @@ func init() {
 	Register("file_content", newFileContentCheck, "path", "match", "value", "ignore_case")
 	Register("dir_exists", newDirExistsCheck, "path")
 	Register("dir_tree", newDirTreeCheck, "path", "compare_to", "mode")
+	// TODO(v0.2): the "any_of" param is unreachable from YAML. internal/content
+	// reserves that key for composition, so it never arrives in Params and a level
+	// using the documented form is refused as both a type and a composite.
+	// Renaming it is a level-format change: see issue #95.
 	Register("file_mode", newFileModeCheck, "path", "mode", "any_of")
 	Register("file_owner", newFileOwnerCheck, "path", "owner", "group")
 	Register("symlink_target", newSymlinkTargetCheck, "path", "target")
