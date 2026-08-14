@@ -5,7 +5,7 @@ push, get CI green, and add a line here. No silent carry-over. If an exit criter
 is unchecked the next morning, it either gets done before new work or it gets
 formally cut.
 
-**Current state: Day 2 complete on Linux, except that nothing in it has been exercised against a real container yet. `shellforge run <level-id>` plays any of the nine written levels from the embedded YAML pack with zero Go changes between them: it renders the briefing, prints the objective checklist, hands over a real instrumented bash, and answers `check` with authored results through the existing control FIFO. The verification engine, composition nodes, result assembly and the golden test contract are all built and unit tested. What is NOT verified: every Docker-gated test in the branch, which is the whole golden contract and the filesystem purity check, because the environment that built it had no Docker socket. CI's Sandbox image job is the first thing to actually play a level. Scoring, XP, hints, `reset`, `map`, `stats`, `play` and journal wiring are all Day 4 and deliberately absent. Windows still plays from inside WSL until Day 3.**
+**Current state: Day 2 complete on Linux, and now exercised against a real container in CI. `shellforge run <level-id>` plays any of the nine written levels from the embedded YAML pack with zero Go changes between them: it renders the briefing, prints the objective checklist, hands over a real instrumented bash, and answers `check` with authored results through the existing control FIFO. The verification engine, composition nodes, result assembly and the golden test contract are all built and unit tested. The golden contract has run against all nine levels in CI's Sandbox image job, which is the first thing to actually play a level, and finding real bugs is exactly what it did: two levels whose setup script silently never created a directory, one level whose expected answer disagreed with the directory the shell started in, and one whose five timestamp commands could each have failed unnoticed. All four are fixed. Still NOT verified from a developer machine: every Docker-gated test, because the environment that built this had no Docker socket, so CI rather than a person is the witness for anything end to end. Scoring, XP, hints, `reset`, `map`, `stats`, `play` and journal wiring are all Day 4 and deliberately absent. Windows still plays from inside WSL until Day 3.**
 
 ---
 
@@ -20,7 +20,7 @@ formally cut.
 | Layer dependency enforcement | Done, and verified to fail on a deliberate violation |
 | Punctuation gate | Done, and verified to fail on a deliberate violation |
 | CLI dispatcher | `cmd/shellforge` runs on `spf13/cobra` as of #48, not the hand-rolled dispatcher. Fourteen verbs registered (`doctor` `init` `play` `run` `check` `hint` `reset` `skip` `map` `stats` `sandbox` `bug-report` `author` `version`), plus `sandbox` and `author` as command groups with four stub subcommands each. `version`, `help` and `run demo` work; every other verb fails through `ux.Fail` with a remediation. **The whole `cmd/shellforge` package was untracked by git until #11**: `.gitignore`'s unanchored `shellforge` pattern matched the directory, so it was never committed and CI never compiled or tested it. |
-| `shellforge run <level-id>` | Works on Linux for any level in the pack, with zero Go changes between levels. Loads from the embedded YAML, renders the briefing through glamour, prints the objective checklist, provisions, materializes the level, hands over a real instrumented bash, serves `check` over the existing FIFO control channel, and tears the level world down on every exit path through one cleanup function. An unknown id fails through `ux.Fail` naming the ids that exist. Refuses on a Windows host with the `windows-needs-wsl` anchor. **Never run against a real container in this environment**: no Docker socket, so every end-to-end claim here rests on unit tests plus CI. |
+| `shellforge run <level-id>` | Works on Linux for any level in the pack, with zero Go changes between levels. Loads from the embedded YAML, renders the briefing through glamour, prints the objective checklist, provisions, materializes the level, hands over a real instrumented bash, serves `check` over the existing FIFO control channel, and tears the level world down on every exit path through one cleanup function. An unknown id fails through `ux.Fail` naming the ids that exist. Refuses on a Windows host with the `windows-needs-wsl` anchor. **Never run against a real container from a developer machine**: no Docker socket here, so every end-to-end claim rests on unit tests plus CI's golden run. The learner's shell starts in `/home/learner`, not the level root, which is what a login shell does and what nav-01 teaches. |
 | `shellforge run demo` | Still works, deliberately. The Day 1 hardcoded level is kept until a YAML isolation test and the golden harness have replaced the safety coverage `internal/sandbox/demo_golden_test.go` carries, which is the repository's only live host-isolation test. Tracked as a follow-up. |
 | `shellforge author test` | Done. Runs the `docs/LEVEL-FORMAT.md` section 7 golden contract per level and is what `make golden` calls, a target that had been calling a command that did not exist since Day 0. Refuses rather than skips without a Docker daemon, because a `make golden` reporting success having tested nothing is worse than no gate. |
 | Sandbox image | `Containerfile` written, not yet built |
@@ -2798,6 +2798,88 @@ grew in this branch, so the Security job is the first real read on it.
 - [ ] 25 levels validate clean
 - [ ] Whole campaign played start to finish in one sitting, friction noted
 - [ ] Every act ends in a boss level that takes 10 minutes or more
+
+### Day 2 follow-up, 2026-08-14: what CI found when the golden test first ran for real
+
+The golden contract ran nine levels in a real container for the first time and
+failed three. None of the three was a golden-harness bug in the way it first
+looked, and one of them was not a level bug at all. Writing this down because the
+correction matters more than the fixes: "fix the level" would have been the wrong
+move on two of them.
+
+**files-03 and files-04 were one engine bug.** Both create a directory in
+setup.script, and in both cases the directory was never created. setup.script ran
+as root, and the sandbox drops CAP_DAC_OVERRIDE deliberately, so root cannot
+create an entry in the learner-owned 0755 level root. `mkdir -p filed` as root
+gets EACCES.
+
+Two things hid it, and either alone would have kept it hidden for the rest of the
+project. setup.files land through PushFiles, which is `docker cp` and runs in the
+daemon with full host privilege, so a level's files appear normally whatever the
+container's capability set says. And every level's script ended with
+`chown -R learner:learner .`, which root CAN do because CAP_CHOWN is kept, so
+`bash -c` returned that command's zero exit and discarded the failed mkdir before
+it. Setup reported success on a world it had not finished building.
+
+Fixed by running setup.script and teardown.script as the learner, which is the
+identity that owns the tree and the smaller privilege. The redundant chown came
+out of all nine levels.
+
+**That found a fourth problem nobody had reported.** nav-04's script is five
+`touch -d` calls establishing the mtime ordering the level is entirely about, and
+its checks only read flags.txt, so any of them failing would have taught nothing
+and reported nothing. It gained `set -e`. Worth knowing why nav-04 passed while
+the other two failed: `touch -d` as root works, because CAP_FOWNER covers utimes.
+The same capability set allows the timestamps and forbids the mkdir. Coincidence,
+not design.
+
+**nav-01 was a separate bug and it was mine.** It asks the learner which
+directory they started in and expects /home/learner, and both the interactive
+Attach and the harness's solution runner used the level root. The level was right:
+a login shell starts you in your home directory, nav-01 teaches exactly that, and
+starting anywhere else makes the campaign's first lesson false. Both call sites
+now use sandboxHome.
+
+The instructive part is that because BOTH copies were wrong in the same direction
+they agreed with each other, and the harness happily verified solutions from a
+directory no learner is ever in. So the guard asserts both are specifically
+sandboxHome rather than merely equal to each other. Two wrong copies of one value
+agree, which is why "do these match" was never going to be enough.
+
+**One more round: the harness itself was wrong about files-04.** With the engine
+fixed, eight of nine passed and files-04 failed on `important-intact`, "important/
+is untouched, byte for byte". That objective is already true at setup and the
+learner earns it by keeping it true while deleting everything around it. Step 2's
+per-objective assertion had assumed every objective describes work. So
+content.Objective gained `preserves: true`, and the harness inverts the assertion
+for one: it must PASS at step 2, because one already false means the level asks
+the learner to protect something its own setup never created. Step 4 still
+requires it to pass, which is where it earns its keep, and it is not `optional`:
+deleting important/ still fails the level.
+
+Six new Docker-free tests so none of this needs a container to stay fixed, and
+all six run on the Windows leg: the WorkDir guard, the chown guard, the
+needs-root guard, the errexit guard that found nav-04, and two holding
+`preserves` honest (never together with `optional`, and only on a level tagged
+`destructive`). All six verified to fail without their fix.
+
+Two living contracts changed in the same commits as their code, per the rule:
+docs/LEVEL-FORMAT.md's setup and teardown execution section, which said both
+scripts run as root, and section 7's golden contract list. Both changes plus the
+go floor move are on #98 for ratification.
+
+Separately, the Security job found three reachable vulnerabilities, all arriving
+with glamour. x/text's fix declares `go 1.25.0` and Go will not build a module
+whose dependency asks for a newer directive than it declares, so the fix and the
+1.23.0 floor were mutually exclusive. The maintainer chose to keep the library, so
+the floor is 1.25.0, stated in five places and moved in all five. A newer minimum
+Go is not a security cost: the directive is a minimum, so it ships a standard
+library with more fixes rather than fewer. The cost is compatibility, and building
+from source now needs Go 1.25.
+
+Still not run from a developer machine: every Docker-gated test, govulncheck,
+gosec and pytest. The difference from yesterday is that CI has now run the first
+two, and both found real things.
 
 ## Day 6: hardening, CI, packaging
 
