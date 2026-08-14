@@ -3,6 +3,8 @@ package ux
 import (
 	"bytes"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -95,5 +97,67 @@ func TestRenderToNonTerminalHasNoEscapeCodes(t *testing.T) {
 	Render(&buf, Fail("do the thing", errors.New("nope"), "try again", "anchor"))
 	if strings.Contains(buf.String(), "\x1b[") {
 		t.Errorf("escape codes leaked into a non-terminal writer:\n%q", buf.String())
+	}
+}
+
+// TestColorEnabledHonoursEverySuppressionRule covers the three ways a learner
+// or their environment says no to colour. Before ColorEnabled was exported
+// these were only reachable through Render, so each rule was asserted only by
+// the absence of escape codes in one rendered error. A caller outside this
+// package now depends on the answer directly, which is worth asserting
+// directly.
+//
+// Every case sets both NO_COLOR and TERM with t.Setenv, so a case never
+// inherits the value the previous one wanted, and so the suite behaves the
+// same on a developer's coloured terminal as on a CI runner.
+func TestColorEnabledHonoursEverySuppressionRule(t *testing.T) {
+	tests := []struct {
+		name    string
+		noColor string
+		setNo   bool
+		term    string
+		want    bool
+	}{
+		{name: "no-color set to empty still suppresses", noColor: "", setNo: true, term: "xterm-256color", want: false},
+		{name: "no-color set to a value suppresses", noColor: "1", setNo: true, term: "xterm-256color", want: false},
+		{name: "term dumb suppresses", term: "dumb", want: false},
+		{name: "term DUMB suppresses, case insensitively", term: "DUMB", want: false},
+		{name: "a plain buffer is not a character device", term: "xterm-256color", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.setNo {
+				t.Setenv("NO_COLOR", tt.noColor)
+			} else {
+				os.Unsetenv("NO_COLOR")
+			}
+			t.Setenv("TERM", tt.term)
+
+			if got := ColorEnabled(&bytes.Buffer{}); got != tt.want {
+				t.Errorf("ColorEnabled = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestColorEnabledRefusesADevNullFile pins the character-device rule against a
+// real *os.File rather than a buffer, because the buffer cases above pass for
+// the wrong reason: they fail the *os.File type assertion before the mode is
+// ever consulted. A regular file on disk is a *os.File and is not a character
+// device, which is the case a learner produces with `shellforge run > log`.
+func TestColorEnabledRefusesARegularFile(t *testing.T) {
+	os.Unsetenv("NO_COLOR")
+	t.Setenv("TERM", "xterm-256color")
+
+	path := filepath.Join(t.TempDir(), "redirected")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create the redirect target: %v", err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+
+	if ColorEnabled(f) {
+		t.Error("ColorEnabled = true for a regular file, want false: a redirect must not receive escape codes")
 	}
 }

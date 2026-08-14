@@ -109,7 +109,7 @@ func plain(s string) string { return s }
 // Color is suppressed when NO_COLOR is set to anything, when TERM is "dumb", or
 // when the stream is not a character device. See https://no-color.org.
 func paletteFor(w io.Writer) palette {
-	if !colorEnabled(w) {
+	if !ColorEnabled(w) {
 		return palette{bad: plain, good: plain, dim: plain, cmd: plain}
 	}
 	wrap := func(code string) func(string) string {
@@ -123,7 +123,20 @@ func paletteFor(w io.Writer) palette {
 	}
 }
 
-func colorEnabled(w io.Writer) bool {
+// ColorEnabled reports whether w should receive ANSI colour.
+//
+// It is exported so that a caller rendering something other than an Error
+// asks the same question this package already answers for its own palette,
+// rather than reimplementing the rule. There is exactly one place in the
+// codebase that decides whether colour is wanted, and this is it.
+//
+// The answer is a property of the stream and the environment, not of the
+// moment, so a caller that writes many times is expected to ask once and
+// carry the answer. `check` replies are the case that matters: the reply
+// travels through the sandbox and back, so there is no *os.File on the host
+// to ask by the time it is rendered, and asking per reply would also mean a
+// Stat syscall per keystroke of the learner's patience.
+func ColorEnabled(w io.Writer) bool {
 	if _, set := os.LookupEnv("NO_COLOR"); set {
 		return false
 	}

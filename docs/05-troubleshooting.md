@@ -498,6 +498,32 @@ docker rm -f shellforge-sandbox
 
 ---
 
+## level-not-found
+
+**You'll see:** "play level" and the name you typed, followed by a list of the
+levels that do exist.
+
+**What it means:** There is no level with that id in the content pack. Almost
+always a typo, or a level from the curriculum that is not written yet. The pack
+that ships with Shellforge fills in over time, and `pack.yaml` lists ids ahead of
+the files that implement them, so a name you read in the campaign plan may not be
+playable yet.
+
+**Fix:** The error lists every level in the pack, in campaign order. Pick one
+from that list. To see the list on its own, without triggering the error:
+
+```
+shellforge author validate packs/core-linux-basics
+```
+
+If you meant to start at the beginning:
+
+```
+shellforge run nav-01
+```
+
+---
+
 ## level-pack-invalid
 
 **You'll see:** "read the level definition", "read the level assets", or
