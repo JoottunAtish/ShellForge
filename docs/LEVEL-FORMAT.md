@@ -72,6 +72,9 @@ objectives:                    # R  ≥1; ids must match check ids
   - id: obj2
     text: "Solved in one pipeline"
     optional: true             # optional = bonus XP, never blocks passing
+  - id: obj3
+    text: "important/ is untouched"
+    preserves: true            # already true at setup; earned by not breaking it
 
 # ── world setup ───────────────────────────────────────────
 setup:                         # R
@@ -496,8 +499,24 @@ shellforge run pipe-06                    # play it yourself
 
 **Golden test contract** (what `author test` asserts, and what CI runs for every level):
 1. Fresh sandbox, run `setup`.
-2. Run checks → **all required checks must FAIL.** (If a level passes before you've done anything, the checks are wrong.)
-3. Run `solution` as `learner` in a login shell.
+2. Run checks → **every required check must FAIL**, and at least one must. (If a level passes before you have done anything, the checks are wrong.) The exception is an objective marked `preserves: true`, which must **PASS** here instead: see below.
+3. Run `solution` as `learner` in a login shell, from `/home/learner`.
 4. Run checks → **all required checks must PASS.**
 5. Run `teardown` → `setup.root` no longer exists and no stray processes remain.
 6. Run checks twice, hash the filesystem before and after → **identical** (purity).
+
+Step 2 is asserted **per objective**, not on the overall pass/fail. That matters: a
+level can ship with one required check that passes on a bare setup, testing nothing
+the learner has to do, and the level would still report "not passed" because of its
+siblings. Checking each one is what catches that, and it caught two real levels the
+first time it ran.
+
+`preserves: true` is the one exemption, for an objective the learner satisfies by
+**not breaking** something rather than by doing something. `files-04` is the case:
+it teaches deletion, and "important/ is untouched, byte for byte" is already true
+at setup. Such an objective is inverted at step 2, where it must pass rather than
+fail, because one that is already false means the level is asking the learner to
+protect something its own setup never created. It is **not** the same as
+`optional`: a learner who deletes `important/` still fails the level. And it cannot
+be used to quiet the gate, because step 2 also requires that at least one required
+non-preserving objective failed.

@@ -155,3 +155,81 @@ func TestMultiCommandSetupScriptsSetErrexit(t *testing.T) {
 		}
 	}
 }
+
+// TestPreservesObjectivesAreNotAlsoOptional asserts the two flags are never set
+// together.
+//
+// They pull in opposite directions and a level setting both is confused rather
+// than expressive. `optional` means a learner can skip it and still pass;
+// `preserves` means the objective is already satisfied and the learner must not
+// break it. Both at once describes a bonus that is awarded for doing nothing,
+// which is not a thing worth awarding, and it would also make the golden
+// contract skip the objective entirely: `optional` is checked first, so the
+// preservation assertion would never run and the level would lose the only gate
+// it had.
+func TestPreservesObjectivesAreNotAlsoOptional(t *testing.T) {
+	pack, err := Embedded()
+	if err != nil {
+		t.Fatalf("load the embedded pack: %v", err)
+	}
+	if len(pack.Levels) == 0 {
+		t.Fatal("the embedded pack has no levels; this test is not looking at anything")
+	}
+
+	for _, lvl := range pack.Levels {
+		for _, obj := range lvl.Objectives {
+			if obj.Preserves && obj.Optional {
+				t.Errorf("%s: objective %q sets both `optional` and `preserves`.\n"+
+					"They contradict each other: optional means the learner may skip it, preserves "+
+					"means it is already true and must stay true. Setting both also makes the golden "+
+					"contract skip the objective, since optional is tested first, so the level would "+
+					"be left with no assertion about it at all. Pick one.", lvl.ID, obj.ID)
+			}
+		}
+	}
+}
+
+// TestEveryPreservingObjectiveIsADestructiveLevel is a smell test rather than a
+// rule, and it is deliberately narrow.
+//
+// `preserves` exempts an objective from the golden contract's strongest
+// assertion, which makes it the one field in the schema an author could reach for
+// to make a failing golden test go away. The legitimate use is a level that asks
+// the learner to destroy things carefully, so requiring the level to say
+// `destructive` in its tags costs an honest author one word and makes a
+// dishonest use visible in review.
+func TestEveryPreservingObjectiveIsADestructiveLevel(t *testing.T) {
+	pack, err := Embedded()
+	if err != nil {
+		t.Fatalf("load the embedded pack: %v", err)
+	}
+
+	for _, lvl := range pack.Levels {
+		preserving := false
+		for _, obj := range lvl.Objectives {
+			if obj.Preserves {
+				preserving = true
+				break
+			}
+		}
+		if !preserving {
+			continue
+		}
+
+		destructive := false
+		for _, tag := range lvl.Tags {
+			if tag == "destructive" {
+				destructive = true
+				break
+			}
+		}
+		if !destructive {
+			t.Errorf("%s has a `preserves: true` objective but is not tagged `destructive`.\n"+
+				"preserves exempts an objective from the golden contract's per-objective "+
+				"pre-solution assertion, which is the assertion that catches a check testing "+
+				"nothing. The honest use is a level about deleting things carefully. If that is "+
+				"what this level is, add the destructive tag; if it is not, the objective almost "+
+				"certainly wants a real check rather than an exemption.", lvl.ID)
+		}
+	}
+}

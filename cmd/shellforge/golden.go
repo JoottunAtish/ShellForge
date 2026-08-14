@@ -162,22 +162,57 @@ func runGoldenLevel(ctx context.Context, h goldenHarness, level *content.Level) 
 	// ship with a required check that passes on a bare setup, verifying nothing
 	// the learner has to do, and Passed would still be false because of its
 	// siblings. Checking each one catches that, and it is the bug this stage
-	// exists to find.
+	// exists to find. It found two real ones on its first run.
+	//
+	// An objective marked `preserves: true` is exempt, because it describes
+	// restraint rather than work: it is already true at setup and the learner's
+	// job is to keep it true. files-04's "important/ is untouched, byte for
+	// byte" is the case, and it is not a loophole, because the check below
+	// still requires at least one required objective to actually fail. A level
+	// cannot mark everything and quiet the gate.
 	start = time.Now()
 	before, err := session.Check(ctx)
 	stopwatch(stagePreCheck, start)
 	if err != nil {
 		return fail(level.ID, stagePreCheck, timings, "run the checks: %v", err)
 	}
+
+	preserves := make(map[string]bool, len(level.Objectives))
+	for _, obj := range level.Objectives {
+		if obj.Preserves {
+			preserves[obj.ID] = true
+		}
+	}
+
+	demanded := 0
 	for _, obj := range before.Objectives {
 		if obj.Optional {
 			continue
 		}
+		if preserves[obj.ID] {
+			// A preservation objective must be TRUE at setup. One that is
+			// already false means the level's own world does not satisfy the
+			// thing the learner is being asked to protect, so the objective
+			// can never be earned and its on_fail would blame the learner for
+			// it.
+			if obj.Status != verify.StatusPass {
+				return fail(level.ID, stagePreCheck, timings,
+					"objective %q is marked `preserves: true` but is %s on a fresh setup, so the learner is asked to preserve something that was never there",
+					obj.ID, obj.Status)
+			}
+			continue
+		}
+		demanded++
 		if obj.Status == verify.StatusPass {
 			return fail(level.ID, stagePreCheck, timings,
-				"objective %q passed before the solution ran, so the check does not test anything the learner has to do",
+				"objective %q passed before the solution ran, so the check does not test anything the learner has to do. "+
+					"If the learner satisfies it by NOT breaking something, mark the objective `preserves: true`",
 				obj.ID)
 		}
+	}
+	if demanded == 0 {
+		return fail(level.ID, stagePreCheck, timings,
+			"no required objective failed before the solution ran, so nothing in this level asks the learner to do anything")
 	}
 
 	// 3. Apply the level's own solution, as the learner, in a login shell.
