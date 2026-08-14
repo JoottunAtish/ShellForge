@@ -16,6 +16,16 @@
 // fully populated, even though only the first failing required check has its
 // on_fail displayed.
 //
+// That invariant is about objectives, and a composition branch is not one. A
+// branch inside an any_of, an all_of or a not has no id, never appears in
+// LevelResult.Objectives, and has nothing reported about it either way, so a
+// composite stops evaluating branches once its own answer is decided. The
+// checklist is still complete: the composite is the objective, and it is always
+// reported. Evaluating the remaining branches of a decided any_of would cost
+// sandbox round trips and tell the learner nothing. compose.go states the same
+// thing at the point of use and a test pins it, so the optimisation is not
+// mistaken for a violation of the rule above and reverted.
+//
 // Checks run through Session.Exec in a fresh non-interactive shell, never in the
 // learner's shell. Shell-local state such as environment variables and the
 // working directory comes from the snapshot files written by PROMPT_COMMAND, not
