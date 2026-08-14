@@ -145,16 +145,24 @@ func TestParamStringSlice(t *testing.T) {
 //
 // Mirrors internal/runtime/runtimetest's TestPackageImportsNoBackend: parse
 // every non-test .go file in this package's directory and fail if any of
-// them imports internal/journal. internal/archtest's layer test would not
-// catch this on its own: internal/journal is L2 and internal/verify is L3,
-// so importing it is a legal downward edge by the layer rule alone. This
-// test enforces the additional, package-specific contract that doc.go
-// states: internal/verify never imports internal/journal at all, because it
-// declares its own JournalReader interface instead.
+// them imports a package this one is contractually forbidden to touch.
+//
+// internal/archtest's layer test does not catch either of these on its own.
+// internal/journal is L2 and internal/verify is L3, so importing it is a
+// legal downward edge by the layer rule alone. internal/content is L3 too,
+// so importing it is a legal same-layer edge. Both are nonetheless forbidden
+// by contract, and this test is the only thing enforcing that.
 
-const journalImportPath = "github.com/JoottunAtish/ShellForge/internal/journal"
+// forbiddenImports maps a package this one must never import to the reason.
+// The reason is printed on failure, because the next person to reach for one
+// of these will have a good-looking motive and needs to see the counterargument
+// rather than just a rule.
+var forbiddenImports = map[string]string{
+	"github.com/JoottunAtish/ShellForge/internal/journal": "internal/verify declares its own JournalReader interface instead, so that a check can ask about command history without this package ever knowing internal/journal's concrete type. See doc.go.",
+	"github.com/JoottunAtish/ShellForge/internal/content": "internal/content is a peer at layer 3, not a dependency. It owns the level schema and this package owns what a check means; the two meet through the TypeChecker interface content declares and this package implements, and through whatever converts content.CheckSpec into verify.Spec above both. Importing it here would make the check registry depend on the YAML shape, which is the coupling that split exists to prevent.",
+}
 
-func TestPackageDoesNotImportJournal(t *testing.T) {
+func TestPackageDoesNotImportForbiddenPackages(t *testing.T) {
 	_, thisFile, _, ok := goruntime.Caller(0)
 	if !ok {
 		t.Fatal("runtime.Caller(0) failed to report this file's path")
@@ -167,11 +175,13 @@ func TestPackageDoesNotImportJournal(t *testing.T) {
 	}
 
 	fset := token.NewFileSet()
+	scanned := 0
 	for _, entry := range entries {
 		name := entry.Name()
 		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			continue
 		}
+		scanned++
 		path := filepath.Join(dir, name)
 		f, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
 		if err != nil {
@@ -179,10 +189,17 @@ func TestPackageDoesNotImportJournal(t *testing.T) {
 		}
 		for _, imp := range f.Imports {
 			p := importPath(imp)
-			if p == journalImportPath {
-				t.Errorf("%s imports %q: internal/verify must declare its own JournalReader interface instead, see doc.go", name, p)
+			if reason, forbidden := forbiddenImports[p]; forbidden {
+				t.Errorf("%s imports %q.\n%s", name, p, reason)
 			}
 		}
+	}
+
+	// A scan that found no files would report clean while checking nothing,
+	// which is the failure mode this repository has already been bitten by
+	// once: see the allowlist gate's own history in PROGRESS.md.
+	if scanned == 0 {
+		t.Fatal("scanned no non-test .go files; the directory walk is wrong and this test is reporting a false clean")
 	}
 }
 
