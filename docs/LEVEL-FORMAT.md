@@ -332,16 +332,46 @@ and for anti-pattern warnings.
   "level_id": "pipe-05",
   "passed": false,
   "objectives": [
-    {"id":"obj1","text":"report.txt contains the error count","status":"pass"},
-    {"id":"obj2","text":"Solved in one pipeline","status":"fail","optional":true,
+    {"id":"obj1","text":"report.txt holds the total ERROR count","status":"pass"},
+    {"id":"obj2","text":"codes.txt lists the distinct error codes, sorted","status":"fail",
+     "message":"codes.txt should hold the distinct codes, one per line, sorted."},
+    {"id":"obj3","text":"Counted with a single pipeline","status":"fail","optional":true,
      "message":"You got there - but there's a one-liner."}
   ],
-  "primary_failure": {"id":"obj2","message":"..."},
-  "notes": ["Hardcoding the answer works, but you won't learn the pipeline."],
+  "primary_failure": {"id":"obj2","text":"codes.txt lists the distinct error codes, sorted",
+                      "status":"fail",
+                      "message":"codes.txt should hold the distinct codes, one per line, sorted."},
+  "notes": ["You got there - but there's a one-liner.",
+            "Hardcoding the answer works, but you won't learn the pipeline."],
   "score": {"base":150,"hint_penalty":20,"efficiency_bonus":15,"first_try":0,"total":145},
   "duration_ms": 412
 }
 ```
+
+`status` is one of `pass`, `fail`, `warn`, `timeout`, `error`. The example shows only
+`pass` and `fail` because that run produced only those two. `warn` is what a
+`severity: warn` check's failure becomes; `timeout` and `error` are described in §4.6 and
+are deliberately distinct from `fail`, because "you have not solved it" and "we could not
+tell" need different words in front of a beginner.
+
+`primary_failure` is the first failing check that is **neither `optional` nor
+`severity: warn`**, per §4.5, and it repeats that objective rather than referring to it by
+id. A bonus objective is never the primary failure: presenting one as the headline reason
+a level failed teaches the learner that a bonus was mandatory. It is absent, not null, when
+nothing blocking failed.
+
+`notes` carries the message of every non-passing result that does not block: bonus
+objectives the learner missed, and `severity: warn` anti-pattern checks. A `severity: warn`
+check produces a note and **no** entry in `objectives`, which is why §2's invariants say it
+needs no objective.
+
+`objectives` and `notes` are always arrays, never null, so a consumer can count them
+without a special case.
+
+`score` is populated by `internal/game`, not by the verification engine: it needs the hint
+ledger and the command count, which live with the learner's progress rather than with the
+sandbox. The engine's own result type omits the field entirely and the game layer adds it,
+so a caller reading this document sees one shape either way.
 
 ---
 
