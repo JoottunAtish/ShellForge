@@ -174,6 +174,7 @@ whether a level's world is already in place.
 | DAG acyclic, all `prerequisites` resolve | Unlock logic |
 | Non-optional checks ≥1 | A level you can't fail isn't a level |
 | `command_matched` and `command_not_matched` must set `optional: true` or `severity: warn` | The journal is learner-influenced and may never decide pass or fail |
+| A check declares no parameter outside the set its type accepts | A mistyped `sha526` or `compare-to` used to be dropped in silence, leaving a check that asserted something other than what the author wrote. The error names the bad key and lists what the type takes. |
 
 ---
 

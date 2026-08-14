@@ -7,8 +7,8 @@ import (
 )
 
 func init() {
-	Register("env_var", newEnvVarCheck)
-	Register("cwd_is", newCwdIsCheck)
+	Register("env_var", newEnvVarCheck, "name", "value")
+	Register("cwd_is", newCwdIsCheck, "path")
 }
 
 // snapshotMissingMessage is shown for any check whose Snapshots read failed.

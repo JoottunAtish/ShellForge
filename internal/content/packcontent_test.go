@@ -92,14 +92,22 @@ func TestShippedLevelsKeepLearnerOutputInsideTheirRoot(t *testing.T) {
 		root := path.Clean(lvl.Setup.Root)
 
 		for _, c := range walkChecks(lvl.Checks) {
-			target, ok := c.Params["path"].(string)
-			if !ok || target == "" {
-				continue
-			}
-			clean := path.Clean(target)
-			if clean != root && !strings.HasPrefix(clean, root+"/") {
-				t.Errorf("%s: %s: check %q points at %s, which is outside setup.root %s, so teardown will not clean it up",
-					lvl.SourceFile, lvl.ID, c.ID, target, root)
+			// compare_to as well as path. A dir_tree check names two
+			// directories and reads both, so covering only path leaves the
+			// second one unchecked: files-03 compares config.bak against
+			// config, and a compare_to pointing outside the root would have
+			// passed this test while describing a directory teardown never
+			// removes.
+			for _, key := range []string{"path", "compare_to"} {
+				target, ok := c.Params[key].(string)
+				if !ok || target == "" {
+					continue
+				}
+				clean := path.Clean(target)
+				if clean != root && !strings.HasPrefix(clean, root+"/") {
+					t.Errorf("%s: %s: check %q names %s in %s, which is outside setup.root %s, so teardown will not clean it up",
+						lvl.SourceFile, lvl.ID, c.ID, target, key, root)
+				}
 			}
 		}
 	}

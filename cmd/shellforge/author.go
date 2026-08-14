@@ -51,12 +51,22 @@ type validateReport struct {
 
 // runValidate loads the pack at dir, validates it, and writes the report.
 func runValidate(out io.Writer, dir string, asJSON bool) error {
+	// The two failures are reported separately. Folding them together and
+	// wrapping err unconditionally prints "%!w(<nil>)" for the path that
+	// exists but is a file, which is worse than a bare Go error: it tells
+	// the author nothing and looks like a crash.
+	const remediationNotAPack = "Give the path of a pack directory, the one holding pack.yaml and levels/. For the pack that ships with Shellforge that is `shellforge author validate packs/core-linux-basics`."
+
 	info, err := os.Stat(dir)
-	if err != nil || !info.IsDir() {
+	if err != nil {
 		return ux.Fail("validate the content pack",
 			fmt.Errorf("read %s: %w", dir, err),
-			"Give the path of a pack directory, the one holding pack.yaml and levels/. For the pack that ships with Shellforge that is `shellforge author validate packs/core-linux-basics`.",
-			docAnchorPackInvalid)
+			remediationNotAPack, docAnchorPackInvalid)
+	}
+	if !info.IsDir() {
+		return ux.Fail("validate the content pack",
+			fmt.Errorf("%s is a file, not a pack directory", dir),
+			remediationNotAPack, docAnchorPackInvalid)
 	}
 
 	fsys := os.DirFS(dir)

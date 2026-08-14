@@ -74,8 +74,10 @@ const (
 // checkReservedKeys are the keys CheckSpec decodes into its own fields. Every
 // other key in a check's mapping becomes a Params entry.
 //
-// Validate reads this to report an unknown composition-adjacent key
-// accurately, so the set lives in one place rather than being spelled twice.
+// It is the declaration decodeField's switch is tested against, so that a key
+// added to one and not the other is a test failure rather than a field that
+// silently lands in Params and is then rejected by the check registry as an
+// unknown parameter.
 var checkReservedKeys = map[string]bool{
 	"id":              true,
 	"type":            true,

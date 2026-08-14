@@ -225,6 +225,35 @@ func TestValidateOnAMissingDirectoryIsUserFacing(t *testing.T) {
 	assertUserFacing(t, err)
 }
 
+// TestValidateOnAFileRatherThanADirectoryReadsAsEnglish covers the other half
+// of the "this is not a pack directory" case.
+//
+// A path that exists but is a regular file leaves os.Stat's error nil, so
+// wrapping it produced "read go.mod: %!w(<nil>)": a message that names no
+// cause and reads like a crash. Non-negotiable 6 in CLAUDE.md says every
+// user-facing error names what failed and why, and a formatting verb is
+// neither.
+func TestValidateOnAFileRatherThanADirectoryReadsAsEnglish(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "pack.yaml")
+	if err := os.WriteFile(file, []byte("id: not-a-directory\n"), 0o644); err != nil {
+		t.Fatalf("write the fixture: %v", err)
+	}
+
+	var out bytes.Buffer
+	err := runValidate(&out, file, false)
+	if err == nil {
+		t.Fatal("a regular file was accepted as a pack directory")
+	}
+	assertUserFacing(t, err)
+
+	if strings.Contains(err.Error(), "%!") {
+		t.Errorf("the error carries an unexpanded formatting verb, so it names no cause: %v", err)
+	}
+	if !strings.Contains(err.Error(), "not a pack directory") {
+		t.Errorf("the error does not say what is wrong with the path given: %v", err)
+	}
+}
+
 // TestValidateCommandIsWiredIntoTheAuthorGroup proves the verb reaches the
 // real implementation rather than the stub it replaced.
 func TestValidateCommandIsWiredIntoTheAuthorGroup(t *testing.T) {

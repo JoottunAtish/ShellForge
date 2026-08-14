@@ -11,7 +11,7 @@ import (
 )
 
 func init() {
-	Register("script", newScriptCheck)
+	Register("script", newScriptCheck, "run", "as_user")
 }
 
 // defaultScriptUser is who a script check runs as when as_user is absent

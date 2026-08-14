@@ -10,8 +10,8 @@ import (
 )
 
 func init() {
-	Register("command_matched", newCommandMatchedCheck)
-	Register("command_not_matched", newCommandNotMatchedCheck)
+	Register("command_matched", newCommandMatchedCheck, "pattern", "scope")
+	Register("command_not_matched", newCommandNotMatchedCheck, "pattern", "scope")
 }
 
 // journalCheck backs both command_matched and command_not_matched. Only
