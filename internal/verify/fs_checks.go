@@ -15,14 +15,14 @@ import (
 )
 
 func init() {
-	Register("file_exists", newFileExistsCheck)
-	Register("file_absent", newFileAbsentCheck)
-	Register("file_content", newFileContentCheck)
-	Register("dir_exists", newDirExistsCheck)
-	Register("dir_tree", newDirTreeCheck)
-	Register("file_mode", newFileModeCheck)
-	Register("file_owner", newFileOwnerCheck)
-	Register("symlink_target", newSymlinkTargetCheck)
+	Register("file_exists", newFileExistsCheck, "path")
+	Register("file_absent", newFileAbsentCheck, "path")
+	Register("file_content", newFileContentCheck, "path", "match", "value", "ignore_case")
+	Register("dir_exists", newDirExistsCheck, "path")
+	Register("dir_tree", newDirTreeCheck, "path", "compare_to", "mode")
+	Register("file_mode", newFileModeCheck, "path", "mode", "any_of")
+	Register("file_owner", newFileOwnerCheck, "path", "owner", "group")
+	Register("symlink_target", newSymlinkTargetCheck, "path", "target")
 }
 
 // statInfo is what one `stat -c '%F|%a|%U|%G' <path>` call reports: file

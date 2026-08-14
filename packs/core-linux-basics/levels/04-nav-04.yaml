@@ -1,0 +1,134 @@
+id: nav-04
+version: 1
+title: "The Manual"
+act: act1
+boss: true
+
+difficulty: 2
+xp: 90
+par_commands: 4
+estimated_minutes: 8
+concepts: [man, help-flags, apropos, self-sufficiency]
+prerequisites: [nav-03]
+tags: [must-know, boss]
+
+briefing: |
+  ## 14:05. Kofi's last note.
+
+  > I am not going to teach you every command. There are thousands, and I have
+  > forgotten most of them twice. Learn to read the manual and you will never
+  > need me.
+  >
+  > Every command on this machine documents itself. Start there.
+  >
+  >                                                                     - Kofi
+
+  There are log files in `~/quest/logs`. You want to see them newest first,
+  which means two flags on the listing command: one that sorts by time, and one
+  that reverses the order.
+
+  Do not guess them. Look them up, then write the two flags into
+  `~/quest/flags.txt`: no dashes, alphabetical order, separated by a space.
+
+objectives:
+  - id: flags
+    text: "quest/flags.txt names the two flags, alphabetical, space separated"
+  - id: read-the-manual
+    text: "Looked the flags up rather than guessing"
+    optional: true
+  - id: searched-by-keyword
+    text: "Searched for a command by keyword"
+    optional: true
+
+setup:
+  root: /home/learner/quest
+  files:
+    - path: logs/app-2026-03-11.log
+      generate:
+        kind: loglines
+        seed: 311
+        lines: 40
+    - path: logs/app-2026-03-12.log
+      generate:
+        kind: loglines
+        seed: 312
+        lines: 40
+    - path: logs/app-2026-03-13.log
+      generate:
+        kind: loglines
+        seed: 313
+        lines: 40
+    - path: logs/app-2026-03-14.log
+      generate:
+        kind: loglines
+        seed: 314
+        lines: 40
+    - path: logs/README.txt
+      content: |
+        One file per day. Newest is not necessarily last in a plain listing:
+        a plain listing sorts by name, not by time.
+  script: |
+    touch -d "2026-03-11T02:00:00Z" logs/app-2026-03-11.log
+    touch -d "2026-03-12T02:00:00Z" logs/app-2026-03-12.log
+    touch -d "2026-03-13T02:00:00Z" logs/app-2026-03-13.log
+    touch -d "2026-03-14T02:00:00Z" logs/app-2026-03-14.log
+    touch -d "2026-03-10T09:30:00Z" logs/README.txt
+    chown -R learner:learner .
+
+checks:
+  - id: flags
+    type: file_content
+    path: /home/learner/quest/flags.txt
+    match: trimmed_equals
+    value: "r t"
+    ignore_case: false
+    on_fail: >-
+      flags.txt does not hold the two flags yet. It wants the letters only,
+      with no dashes, in alphabetical order, separated by one space. Look for
+      the flag that sorts by modification time and the flag that reverses the
+      sort order. Both are single letters, and `man ls` documents each of them.
+
+  - id: read-the-manual
+    optional: true
+    type: command_matched
+    pattern: '^\s*man\s+ls\b|^\s*ls\s+--help\b'
+    scope: level
+    on_fail: >-
+      You got the answer. The habit this level is really after is looking it up
+      instead: `man ls` opens the manual, and `ls --help` prints a shorter
+      version. Everything after this level assumes you can read one.
+
+  - id: searched-by-keyword
+    optional: true
+    type: command_matched
+    pattern: '^\s*apropos\s+\S|^\s*man\s+-k\s+\S'
+    scope: level
+    on_fail: >-
+      When you do not know a command's name, you can search by what it does:
+      `apropos time` lists every manual page mentioning "time". Worth trying
+      once before you leave this level.
+
+hints:
+  - cost: 5
+    text: >-
+      `man ls` opens the manual for the listing command. It opens in a pager:
+      press `/` to search inside it, type a word and press Enter, `n` for the
+      next match, and `q` to quit and get your prompt back. Nothing is broken
+      while you are in there.
+  - cost: 10
+    text: >-
+      Search the manual for the word "time", then for "reverse". Each one is
+      described as a single-letter flag.
+  - cost: 20
+    text: >-
+      The flags are `-t` and `-r`. Alphabetical order puts `r` first, and the
+      file wants them without dashes.
+  - cost: 40
+    reveal_solution: true
+
+solution: |
+  man ls
+  ls -ltr ~/quest/logs
+  echo "r t" > ~/quest/flags.txt
+
+teardown: {}

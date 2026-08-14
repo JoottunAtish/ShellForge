@@ -1,0 +1,171 @@
+id: files-03
+version: 1
+title: "Moving Day"
+act: act2
+
+difficulty: 2
+xp: 70
+par_commands: 5
+estimated_minutes: 7
+concepts: [cp, cp-r, mv, rename, globs]
+prerequisites: [files-02]
+tags: [must-know]
+
+briefing: |
+  ## 15:30. Before anybody touches the config.
+
+  Three jobs, in any order.
+
+  1. **Back up `config/`** to `config.bak/`, contents and all. Copying a folder
+     is not the same as copying a file, and the command will tell you so.
+  2. **Rename `oldname.conf` to `atlas.conf`.** Renaming and moving are the
+     same operation here: you are moving it to a new name in the same place.
+  3. **File the delivery notes.** Every `.csv` in `downloads/` belongs in
+     `filed/`. Everything else in `downloads/` stays exactly where it is.
+
+objectives:
+  - id: backup
+    text: "config.bak is a complete copy of config"
+  - id: renamed
+    text: "oldname.conf is now atlas.conf"
+  - id: filed
+    text: "Every .csv from downloads is in filed, and nothing else moved"
+
+setup:
+  root: /home/learner/quest
+  files:
+    - path: config/atlas.ini
+      content: |
+        [atlas]
+        listen = 0.0.0.0:8080
+        workers = 4
+        log_level = info
+
+    - path: config/routes.ini
+      content: |
+        [routes]
+        port-louis = rotterdam,hamburg
+        rotterdam  = hamburg,gdansk
+
+    - path: config/secrets/db.ini
+      content: |
+        [db]
+        host = localhost
+        user = atlas
+        password = not-a-real-password
+
+    - path: oldname.conf
+      content: |
+        # Kofi named this before the service was called atlas.
+        service = atlas
+        retries = 3
+
+    - path: downloads/deliveries-jan.csv
+      content: |
+        shipment,delivered_at
+        SH-1001,2026-01-14
+
+    - path: downloads/deliveries-feb.csv
+      content: |
+        shipment,delivered_at
+        SH-1002,2026-02-03
+
+    - path: downloads/deliveries-mar.csv
+      content: |
+        shipment,delivered_at
+        SH-1003,2026-03-09
+
+    - path: downloads/readme.txt
+      content: |
+        Anything the browser downloaded lands here. Only the .csv files are
+        delivery notes. This file is not one of them.
+
+    - path: downloads/invoice-scan.pdf.txt
+      content: |
+        Placeholder for a scanned invoice. Not a delivery note.
+  script: |
+    mkdir -p filed
+    chown -R learner:learner .
+
+checks:
+  - id: backup
+    type: dir_tree
+    path: /home/learner/quest/config.bak
+    compare_to: /home/learner/quest/config
+    mode: names_and_hashes
+    on_fail: >-
+      config.bak is missing, or it does not match config exactly. If the copy
+      command refused and said it was omitting a directory, that is the point
+      of this step: copying a folder needs the recursive flag. Check that
+      config/secrets came across too, not just the two files at the top.
+
+  - id: renamed
+    all_of:
+      - type: file_exists
+        path: /home/learner/quest/atlas.conf
+        on_fail: "There is no atlas.conf yet."
+      - type: file_absent
+        path: /home/learner/quest/oldname.conf
+        on_fail: >-
+          oldname.conf is still there. You copied it instead of moving it, so
+          now there are two. Renaming should leave exactly one.
+    on_fail: >-
+      The rename is not done. One command both moves and renames: give it the
+      old name and the new name, in that order.
+
+  - id: filed
+    all_of:
+      - type: file_exists
+        path: /home/learner/quest/filed/deliveries-jan.csv
+        on_fail: "deliveries-jan.csv is not in filed/."
+      - type: file_exists
+        path: /home/learner/quest/filed/deliveries-feb.csv
+        on_fail: "deliveries-feb.csv is not in filed/."
+      - type: file_exists
+        path: /home/learner/quest/filed/deliveries-mar.csv
+        on_fail: "deliveries-mar.csv is not in filed/."
+      - type: file_absent
+        path: /home/learner/quest/downloads/deliveries-jan.csv
+        on_fail: "deliveries-jan.csv is still in downloads/, so it was copied rather than moved."
+      - type: file_absent
+        path: /home/learner/quest/downloads/deliveries-feb.csv
+        on_fail: "deliveries-feb.csv is still in downloads/, so it was copied rather than moved."
+      - type: file_absent
+        path: /home/learner/quest/downloads/deliveries-mar.csv
+        on_fail: "deliveries-mar.csv is still in downloads/, so it was copied rather than moved."
+      - type: file_exists
+        path: /home/learner/quest/downloads/readme.txt
+        on_fail: "readme.txt was supposed to stay in downloads/."
+      - type: file_exists
+        path: /home/learner/quest/downloads/invoice-scan.pdf.txt
+        on_fail: "invoice-scan.pdf.txt was supposed to stay in downloads/."
+    on_fail: >-
+      The delivery notes are not filed correctly. All three `.csv` files move
+      into filed/ and leave downloads/, and the two files that are not `.csv`
+      stay put. A `*` in a filename matches any run of characters, so you can
+      name all three at once without typing them out.
+
+hints:
+  - cost: 5
+    text: >-
+      `cp` copies, `mv` moves. `mv` is also how you rename: moving a file to a
+      new name in the same folder is a rename.
+  - cost: 10
+    text: >-
+      `cp` refuses a folder unless you tell it to go inside: read `man cp` and
+      look for the recursive flag. For the delivery notes, `downloads/*.csv`
+      expands to every matching file before the command even runs.
+  - cost: 20
+    text: >-
+      `cp -r config config.bak`, then `mv oldname.conf atlas.conf`, then
+      `mv downloads/*.csv filed/`.
+  - cost: 35
+    reveal_solution: true
+
+solution: |
+  cd ~/quest
+  cp -r config config.bak
+  mv oldname.conf atlas.conf
+  mv downloads/*.csv filed/
+
+teardown: {}

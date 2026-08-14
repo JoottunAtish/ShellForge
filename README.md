@@ -7,6 +7,8 @@
 [![Go 1.23+](https://img.shields.io/badge/go-1.23%2B-00ADD8.svg)](https://go.dev/dl/)
 [![Status: pre-alpha](https://img.shields.io/badge/status-pre--alpha-orange.svg)](PROGRESS.md)
 
+[![Shellforge on GitHub](https://githubcard.com/JoottunAtish/ShellForge.svg?d=4S7ENYlgGRMx)](https://github.com/JoottunAtish/ShellForge)
+
 Shellforge drops you into a real Linux shell inside a disposable sandbox and gives
 you jobs to do. Not multiple choice. Not a simulator. You type real commands into a
 real `bash` process, and the game checks whether you actually did the thing.

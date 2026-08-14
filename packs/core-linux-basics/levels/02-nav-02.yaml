@@ -1,0 +1,119 @@
+id: nav-02
+version: 1
+title: "Taking Inventory"
+act: act1
+
+difficulty: 1
+xp: 50
+par_commands: 3
+estimated_minutes: 5
+concepts: [ls, hidden-files, listing-flags]
+prerequisites: [nav-01]
+tags: [must-know, orientation]
+
+briefing: |
+  ## 09:40. Still Monday.
+
+  Kofi left files everywhere. Some of them he clearly did not want anyone to
+  trip over on their first morning, so he named them the way you hide a thing
+  on a Linux machine: he put a dot in front.
+
+  A plain listing will not show you those.
+
+  There is one hidden file directly inside `~/quest`. Find its name.
+
+objectives:
+  - id: hidden-name
+    text: "quest/found.txt holds the name of the hidden file"
+  - id: human-readable
+    text: "Sized up the inbox with a human-readable long listing"
+    optional: true
+
+setup:
+  root: /home/learner/quest
+  files:
+    - path: .kofi-notes
+      content: |
+        Things I never wrote down properly:
+
+        - The billing log rotates at 02:00 and nobody knows why.
+        - inbox/ is where I dumped anything I did not have time to file.
+        - If atlas stops responding, it is almost always disk.
+
+    - path: inbox/manifest-jan.csv
+      content: |
+        shipment,origin,destination,weight_kg
+        SH-1001,Port Louis,Rotterdam,1420
+        SH-1002,Rotterdam,Hamburg,880
+
+    - path: inbox/manifest-feb.csv
+      content: |
+        shipment,origin,destination,weight_kg
+        SH-1003,Hamburg,Gdansk,2310
+
+    - path: inbox/notes.txt
+      content: |
+        Ask Kofi about the Gdansk delay.
+
+    - path: inbox/rates.txt
+      content: |
+        Port Louis to Rotterdam: 4.10 per kg
+        Rotterdam to Hamburg:    1.05 per kg
+        Hamburg to Gdansk:       0.90 per kg
+
+    - path: inbox/contacts.txt
+      content: |
+        Rotterdam desk: ext 4102
+        Hamburg desk:   ext 4110
+
+    - path: inbox/archive.log
+      generate:
+        kind: loglines
+        seed: 4102
+        lines: 1200
+  script: |
+    chown -R learner:learner .
+
+checks:
+  - id: hidden-name
+    type: file_content
+    path: /home/learner/quest/found.txt
+    match: trimmed_equals
+    value: ".kofi-notes"
+    on_fail: >-
+      found.txt is missing or does not hold the hidden file's name. Write the
+      name on its own, including the leading dot, and nothing else: no path in
+      front of it. A plain listing will not show you the file at all, so if you
+      have not seen it yet, the listing is what to change.
+
+  - id: human-readable
+    optional: true
+    type: command_matched
+    pattern: 'ls\s+-[a-zA-Z]*l[a-zA-Z]*h|ls\s+-[a-zA-Z]*h[a-zA-Z]*l|ls\s+(-[a-zA-Z]+\s+)*-l\s+.*-h|ls\s+(-[a-zA-Z]+\s+)*-h\s+.*-l'
+    scope: level
+    on_fail: >-
+      Try listing `inbox/` with both the long format and human-readable sizes
+      at once. Flags can be stacked behind a single dash.
+
+hints:
+  - cost: 5
+    text: >-
+      A file whose name starts with a dot is hidden from a plain listing. It is
+      not protected or special, it is just skipped by default.
+  - cost: 10
+    text: >-
+      `ls` takes flags that change what it shows. One of them means "all", and
+      "all" is what you are missing.
+  - cost: 15
+    text: >-
+      `ls -a ~/quest` lists everything, including the hidden entries. Ignore
+      `.` and `..`: those two are in every folder.
+  - cost: 30
+    reveal_solution: true
+
+solution: |
+  ls -a ~/quest
+  ls -lh ~/quest/inbox
+  echo .kofi-notes > ~/quest/found.txt
+
+teardown: {}

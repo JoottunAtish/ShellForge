@@ -277,8 +277,8 @@ func TestMaterializedFilesCarryModeAndOwner(t *testing.T) {
 	f := &fakeSession{}
 	r := NewRunner(f, nil)
 	lvl := &content.Level{ID: "nav-01", Setup: content.Setup{Root: "/home/learner/quest", Files: []content.FileSpec{
-		{Path: "explicit.txt", Content: "x", Mode: "0755", Owner: "root:root"},
-		{Path: "default.txt", Content: "y"},
+		{Path: "explicit.txt", ContentSet: true, Content: "x", Mode: "0755", Owner: "root:root"},
+		{Path: "default.txt", ContentSet: true, Content: "y"},
 	}}}
 
 	if err := r.Setup(context.Background(), lvl); err != nil {
@@ -351,18 +351,18 @@ func TestBuildFileEntryRefusesInvalidSpecs(t *testing.T) {
 		// prefix check catches it independently, the same redundancy noted
 		// above and the one blocking finding 3 found in validateLevelRoot's
 		// own ".." check.
-		{name: "path traverses through a .. segment that still lands under root", spec: content.FileSpec{Path: "logs/../notes.txt", Content: "x"}},
-		{name: "path escapes root with a .. segment", spec: content.FileSpec{Path: "../../etc/passwd", Content: "x"}},
-		{name: "path is absolute", spec: content.FileSpec{Path: "/etc/passwd", Content: "x"}},
-		{name: "path is empty", spec: content.FileSpec{Path: "", Content: "x"}},
-		{name: "path cleans to the root itself", spec: content.FileSpec{Path: ".", Content: "x"}},
-		{name: "both source and content set", spec: content.FileSpec{Path: "a.txt", Source: "assets/a.txt", Content: "x"}},
+		{name: "path traverses through a .. segment that still lands under root", spec: content.FileSpec{Path: "logs/../notes.txt", ContentSet: true, Content: "x"}},
+		{name: "path escapes root with a .. segment", spec: content.FileSpec{Path: "../../etc/passwd", ContentSet: true, Content: "x"}},
+		{name: "path is absolute", spec: content.FileSpec{Path: "/etc/passwd", ContentSet: true, Content: "x"}},
+		{name: "path is empty", spec: content.FileSpec{Path: "", ContentSet: true, Content: "x"}},
+		{name: "path cleans to the root itself", spec: content.FileSpec{Path: ".", ContentSet: true, Content: "x"}},
+		{name: "both source and content set", spec: content.FileSpec{Path: "a.txt", Source: "assets/a.txt", ContentSet: true, Content: "x"}},
 		{name: "none of source, content, or generate set", spec: content.FileSpec{Path: "a.txt"}},
 		{name: "source escapes the pack", spec: content.FileSpec{Path: "a.txt", Source: "../outside.txt"}, packFS: escapingSourceFS},
-		{name: "mode does not parse as octal", spec: content.FileSpec{Path: "a.txt", Content: "x", Mode: "not-octal"}},
-		{name: "mode has bits above 0o777", spec: content.FileSpec{Path: "a.txt", Content: "x", Mode: "7777"}},
-		{name: "owner is flag-shaped", spec: content.FileSpec{Path: "a.txt", Content: "x", Owner: "-rf"}},
-		{name: "owner carries shell metacharacters", spec: content.FileSpec{Path: "a.txt", Content: "x", Owner: "learner:learner;rm -rf /"}},
+		{name: "mode does not parse as octal", spec: content.FileSpec{Path: "a.txt", ContentSet: true, Content: "x", Mode: "not-octal"}},
+		{name: "mode has bits above 0o777", spec: content.FileSpec{Path: "a.txt", ContentSet: true, Content: "x", Mode: "7777"}},
+		{name: "owner is flag-shaped", spec: content.FileSpec{Path: "a.txt", ContentSet: true, Content: "x", Owner: "-rf"}},
+		{name: "owner carries shell metacharacters", spec: content.FileSpec{Path: "a.txt", ContentSet: true, Content: "x", Owner: "learner:learner;rm -rf /"}},
 	}
 
 	for _, tc := range tests {
@@ -425,7 +425,7 @@ var _ fs.File = (*permissiveFile)(nil)
 // buildManifest rather than buildFileEntry itself.
 func TestBuildManifestRefusesAnOversizedManifest(t *testing.T) {
 	lvl := &content.Level{ID: "nav-01", Setup: content.Setup{Root: "/home/learner/quest", Files: []content.FileSpec{
-		{Path: "big.txt", Content: strings.Repeat("x", maxManifestBytes+1)},
+		{Path: "big.txt", ContentSet: true, Content: strings.Repeat("x", maxManifestBytes+1)},
 	}}}
 	r := NewRunner(&fakeSession{}, nil)
 
@@ -449,7 +449,7 @@ func TestSetupScriptRunsAsRootAfterTheFiles(t *testing.T) {
 	r := NewRunner(f, nil)
 	lvl := &content.Level{ID: "nav-01", Setup: content.Setup{
 		Root:   "/home/learner/quest",
-		Files:  []content.FileSpec{{Path: "a.txt", Content: "x"}},
+		Files:  []content.FileSpec{{Path: "a.txt", ContentSet: true, Content: "x"}},
 		Script: "chown -R learner:learner .",
 	}}
 
@@ -610,7 +610,7 @@ func TestPushFailureRollsBack(t *testing.T) {
 	f := &fakeSession{pushErr: errors.New("push exploded")}
 	r := NewRunner(f, nil)
 	lvl := &content.Level{ID: "nav-01", Setup: content.Setup{Root: "/home/learner/quest", Files: []content.FileSpec{
-		{Path: "a.txt", Content: "x"},
+		{Path: "a.txt", ContentSet: true, Content: "x"},
 	}}}
 
 	err := r.Setup(context.Background(), lvl)
@@ -659,7 +659,7 @@ func TestSentinelIsWrittenOnlyAfterEveryStepSucceeds(t *testing.T) {
 	r := NewRunner(f, nil)
 	lvl := &content.Level{ID: "nav-01", Setup: content.Setup{
 		Root:   "/home/learner/quest",
-		Files:  []content.FileSpec{{Path: "a.txt", Content: "x"}},
+		Files:  []content.FileSpec{{Path: "a.txt", ContentSet: true, Content: "x"}},
 		Script: "true",
 	}}
 

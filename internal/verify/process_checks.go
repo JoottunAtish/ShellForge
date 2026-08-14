@@ -11,7 +11,7 @@ import (
 )
 
 func init() {
-	Register("process_running", newProcessRunningCheck)
+	Register("process_running", newProcessRunningCheck, "pattern", "negate")
 }
 
 type processRunningCheck struct {

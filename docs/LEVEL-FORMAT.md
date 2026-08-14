@@ -165,12 +165,16 @@ whether a level's world is already in place.
 | `id` matches `[a-z0-9][a-z0-9-]*`, first character alphanumeric | A leading hyphen makes the id flag-shaped; see the security skill |
 | Every check has a non-empty `on_fail` | Generic failure messages are the #1 quality killer |
 | Every `objectives[].id` has a matching check `id` and vice versa | Keeps the HUD checklist honest |
+| A `severity: warn` check needs no objective | It produces a note (§5), never a checklist line, so there is nothing to correspond to. An `optional: true` bonus check is still shown to the learner and still needs one. |
+| `optional`, `severity` and `id` appear only on the outermost check of an objective, never on a composition branch | They describe a whole objective; the engine evaluates a composite structurally, so on a branch they would be silently ignored |
 | `solution` present and non-empty | Golden tests need it |
 | ≥2 hints | One hint is a cliff |
 | `setup.root` under `/home/learner/` | Reset safety |
 | No `source:` pointing outside the pack | Reproducibility |
 | DAG acyclic, all `prerequisites` resolve | Unlock logic |
 | Non-optional checks ≥1 | A level you can't fail isn't a level |
+| `command_matched` and `command_not_matched` must set `optional: true` or `severity: warn` | The journal is learner-influenced and may never decide pass or fail |
+| A check declares no parameter outside the set its type accepts | A mistyped `sha526` or `compare-to` used to be dropped in silence, leaving a check that asserted something other than what the author wrote. The error names the bad key and lists what the type takes. |
 
 ---
 
@@ -257,8 +261,19 @@ Checks are **read-only**. A check that mutates state is a bug and CI catches it 
 
 ### Journal / behavioural
 
+**A journal check may never gate passing.** It must set `optional: true` or
+`severity: warn`, and `shellforge author validate` rejects a level where one
+does neither. The journal records what the learner typed, and the shell
+instrumentation writes it from inside the sandbox, where a learner can forge an
+entry with a `printf` of the right escape sequence. A level that stakes passing
+on that signal can be beaten without solving it, and, worse, can fail a learner
+who solved it a way the pattern did not anticipate. Use these for bonus
+objectives, for the handful of levels where the syntax genuinely is the lesson,
+and for anti-pattern warnings.
+
 ```yaml
 - type: command_matched
+  optional: true             # R  optional: true or severity: warn
   pattern: 'grep.*\|\s*wc\s+-l'
   scope: level               # level | last_n:5 | last
 ```

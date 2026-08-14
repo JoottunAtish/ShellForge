@@ -23,7 +23,8 @@ formally cut.
 | `shellforge run demo` | Works on Linux. Provisions, materializes the level, prints the briefing, hands over a real instrumented bash, serves `check` over a FIFO control channel, and tears the level world down on every exit path. Refuses on a Windows host with the `windows-needs-wsl` anchor. |
 | Sandbox image | `Containerfile` written, not yet built |
 | Shell instrumentation | `instrument.bash` written, not yet exercised |
-| Content pack | `pack.yaml` with six acts declared. Zero levels written. |
+| Content pack | `pack.yaml` with six acts declared, and the first eight levels written (issue #54): `nav-01` to `nav-04` and `files-01` to `files-04`. They validate clean and are embedded in the binary via `packs/packs.go`. **None has been played or golden-tested yet**: that needs the check engine and the `run` wiring in #52, so "validates" is the only claim being made here. Levels 9 to 25 are Day 5. |
+| Pack loading and validation | Done in `internal/content` (issue #53). `LoadPack`, `Embedded`, `Pack.Level`, `Pack.Order`, and `Validate` with a `TypeChecker` the caller supplies, so `internal/content` and `internal/verify` stay peers rather than one importing the other. `shellforge author validate <pack>` reports every problem one per line and supports `--json`. |
 | Level setup and teardown runner | Done in `internal/content/setup` (issue #50). `Runner.Setup`, `Teardown`, and `IsSetUp` materialize and remove a level's world inside the sandbox: teardown-first idempotency, a `loglines` content generator behind a registered kind, CRLF stripping on the host side before a `runtime.FileEntry` is built, rollback on any failure via `context.WithoutCancel`, and a `SETUP_OK` sentinel written under the state directory rather than the level root. Not wired into the game orchestrator or the CLI: no caller constructs a `Runner` yet outside its own tests. That wiring, plus the pack loader and validator that produce a real `content.Level`, is #52, #53, and #54. |
 | Runtimes | `Runtime` and `Session` interfaces plus their value types and sentinel errors are defined in `internal/runtime`, the reusable contract suite is in `internal/runtime/runtimetest`, and `internal/runtime/docker` implements both by shelling out to the `docker` CLI. The contract suite is green against it on Windows with Docker Desktop's Linux engine, except one subtest documented below. `WslRuntime` is not started. |
 | PTY multiplexer and OSC parser | Both done. Parser: streaming OSC 133 and OSC 7 state machine, fuzzed, with a recorded vim session passing through byte-identical. Multiplexer (`internal/pty/mux.go`): host stdin forwarded to the sandbox verbatim including Ctrl-C, host terminal raw mode restored across every exit path including a panic, initial resize plus SIGWINCH on unix, and CommandEvent assembly from the marker stream. `CommandEvent.Raw` is always empty pending #51. Windows resize watching is a Day 3 stub. |
@@ -2493,11 +2494,19 @@ removing the flag to make a level pass.**
 
 ## Day 2: content engine and verification
 
-- [ ] Levels load from YAML with zero Go changes
-- [ ] `author validate` catches duplicate id, cycle, missing asset, missing
-      `on_fail`, unknown check type
+- [x] Levels load from YAML with zero Go changes. Eight levels, `nav-01` to
+      `files-04`, load out of the embedded pack. Not yet demonstrated by
+      playing them: that needs the `run` wiring, folded into #52.
+- [x] `author validate` catches duplicate id, cycle, missing asset, missing
+      `on_fail`, unknown check type. All five, plus setup.root containment,
+      objective correspondence in both directions, and the new journal check
+      rule. `shellforge author validate packs/core-linux-basics` exits 0 with
+      17 warnings for the levels not yet written.
 - [ ] A failing check prints its authored `on_fail`, not a generic error
 - [ ] Only the first failing required objective is shown
+
+The last two need the engine and the terminal rendering, which are #52 with
+#55 folded into it.
 
 ## Day 3: Windows, the highest-risk day
 

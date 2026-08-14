@@ -6,6 +6,22 @@ The story is thin on purpose - it costs writing time, not engineering time, and 
 
 **Reading this table:** *Par* = number of commands a competent user needs; used for the efficiency bonus. *Time* = expected minutes for a beginner.
 
+**Two conventions were settled while levels 1 to 8 were written, and they apply
+to every level from here on.**
+
+*Everything the learner produces lives inside the level's `setup.root`.* An
+earlier draft of Act I had the learner writing to `~/answer.txt` and `~/found.txt`
+directly in their home directory. Teardown is `rm -rf` on `setup.root` and may go
+no further, so a file written outside it survives the level that created it and
+leaks into the next one. Each level now owns a folder, usually `~/quest`, and both
+the setup and the learner's answers live in it.
+
+*A journal check may never gate passing.* `command_matched` and
+`command_not_matched` must be `optional: true` or `severity: warn`, and
+`shellforge author validate` rejects a level where one is neither. See
+[LEVEL-FORMAT.md](LEVEL-FORMAT.md) section 3 for why. Where a level below
+describes a required journal check, it is a bonus objective in the built level.
+
 ---
 
 ## Act I - Orientation
@@ -18,9 +34,9 @@ The story is thin on purpose - it costs writing time, not engineering time, and 
 | XP / Difficulty / Par / Time | 40 / 1 / 2 / 3 min |
 
 **Briefing.** 08:15. You've been handed a terminal and no instructions. Before you can go anywhere, you need to know where you are.
-**Objectives.** (1) Print your current directory. (2) Write the path you're in into `~/answer.txt`.
-**Setup.** Home dir with a `welcome.txt` from Kofi.
-**Checks.** `file_content ~/answer.txt trimmed_equals /home/learner` · `command_matched ^\s*pwd\s*$` (bonus).
+**Objectives.** (1) Print your current directory. (2) Write the path you're in into `~/quest/answer.txt`.
+**Setup.** `~/quest` with a `welcome.txt` from Kofi.
+**Checks.** `file_content ~/quest/answer.txt trimmed_equals /home/learner` · `command_matched ^\s*pwd\s*$` (bonus).
 **Hints.** (1) The prompt shows an abbreviation, not the full path. (2) Three letters: "print working directory". (3) `pwd`. (4) Solution.
 **Teaching note.** First level must be winnable in under 60 seconds. Confidence before difficulty.
 
@@ -31,9 +47,9 @@ The story is thin on purpose - it costs writing time, not engineering time, and 
 | XP / Diff / Par / Time | 50 / 1 / 3 / 5 min |
 
 **Briefing.** Kofi left files everywhere, including some he didn't want you to see immediately.
-**Objectives.** (1) Find the hidden file in your home directory. (2) Copy its *name* into `~/found.txt`. (3) *(bonus)* Discover the largest file in `~/inbox/` using a human-readable listing.
-**Setup.** `~/.kofi-notes`, `~/inbox/` with 6 files of varied sizes.
-**Checks.** `file_content ~/found.txt trimmed_equals .kofi-notes` · bonus `command_matched ls\s+-[a-z]*l[a-z]*h|ls\s+-[a-z]*h[a-z]*l`.
+**Objectives.** (1) Find the hidden file in `~/quest`. (2) Copy its *name* into `~/quest/found.txt`. (3) *(bonus)* Discover the largest file in `~/quest/inbox/` using a human-readable listing.
+**Setup.** `~/quest/.kofi-notes`, `~/quest/inbox/` with 6 files of varied sizes.
+**Checks.** `file_content ~/quest/found.txt trimmed_equals .kofi-notes` · bonus `command_matched ls\s+-[a-z]*l[a-z]*h|ls\s+-[a-z]*h[a-z]*l`.
 **Hints.** (1) Files starting with `.` are hidden from a plain `ls`. (2) `ls` takes flags; one of them means "all". (3) `ls -a`. (4) Solution.
 
 ### 3. `nav-03` - Getting Around
@@ -58,7 +74,9 @@ The story is thin on purpose - it costs writing time, not engineering time, and 
 **Briefing.** Kofi's last note: *"I'm not going to teach you every command. Learn to read the manual and you'll never need me."*
 **Objectives.** (1) Find the `ls` flag that sorts by modification time and use it. (2) Find the `ls` flag that reverses sort order. (3) Write the two flags (without dashes, alphabetical, space-separated) into `~/flags.txt`. (4) *(bonus)* Use `apropos` to search for a keyword.
 **Setup.** `~/logs/` with files whose mtimes are deliberately spread.
-**Checks.** `file_content ~/flags.txt trimmed_equals "r t"` · `command_matched ^\s*man\s+ls` · bonus `command_matched ^\s*apropos\s+`.
+**Checks.** `file_content ~/quest/flags.txt trimmed_equals "r t"` · bonus `command_matched ^\s*man\s+ls` · bonus `command_matched ^\s*apropos\s+`.
+
+> The `man ls` check reads the journal, so it is a bonus objective and cannot gate passing. The flags file is what decides the level. A learner who already knew `-t` and `-r` has still solved it, which is the correct outcome: the check verifies what they achieved, not what they typed.
 **Hints.** (1) `man ls` opens the manual. Press `/` to search inside it, `q` to quit. (2) Search for "time" and "reverse". (3) The flags are `-t` and `-r`. (4) Solution.
 **Teaching note.** This is the single most valuable level in the game. Everything after assumes they can read `man`. Do not skip the `/`-to-search hint - beginners get trapped in `less` and panic.
 
@@ -70,25 +88,33 @@ The story is thin on purpose - it costs writing time, not engineering time, and 
 ### 5. `files-01` - Laying Foundations
 Concepts: `mkdir`, `-p`, `touch`. **50 XP / D2 / par 3 / 5 min.**
 **Objectives.** Build `~/shipments/2026/q1/` in one command; create empty `manifest.csv` and `.gitkeep` inside it.
-**Checks.** `dir_exists` · `file_exists` ×2 · `is_empty manifest.csv` · bonus `command_matched mkdir\s+-p`.
+**Checks.** `dir_exists` · `file_exists` ×2 · `file_content manifest.csv line_count 0` · bonus `command_matched mkdir\s+-p`.
+
+> There is no `is_empty` check type. Emptiness is `file_content` with `match: line_count` and `value: "0"`.
 **Teaching note.** Make the nested path deep enough that doing it without `-p` is visibly annoying.
 
 ### 6. `files-02` - Reading the Records
 Concepts: `cat`, `less`, `head`, `tail`, `wc -l`. **60 XP / D2 / par 4 / 6 min.**
-**Objectives.** From a 4,000-line `deliveries.log`: put the **first** line in `~/first.txt`, the **last 3** lines in `~/last.txt`, and the total line count in `~/count.txt`.
-**Checks.** three `file_content` exact matches · bonus `command_not_matched ^\s*cat\s` (i.e. solve it without dumping the whole file).
+**Objectives.** From a 4,000-line `~/quest/deliveries.log`: put the **first** line in `~/quest/first.txt`, the **last 3** lines in `~/quest/last.txt`, and the total line count in `~/quest/count.txt`.
+**Checks.** three `file_content` matches · `command_not_matched ^\s*cat\s+\S*deliveries\.log` with `severity: warn` (i.e. solve it without dumping the whole file).
+
+> `deliveries.log` comes from the seeded `loglines` generator, so the expected first and last lines are fixed constants and identical on every machine. Changing the seed or the line count changes the answers and needs a `version:` bump.
 **Teaching note.** The negative check teaches *why* `head`/`tail` exist. Make the file big enough that `cat` floods the screen.
 
 ### 7. `files-03` - Moving Day
 Concepts: `cp`, `mv`, `cp -r`, rename-vs-move. **70 XP / D2 / par 5 / 7 min.**
-**Objectives.** Back up `config/` to `config.bak/` (recursively), rename `oldname.conf` to `atlas.conf`, move all `.csv` files from `~/downloads/` into `~/shipments/2026/q1/`.
-**Checks.** `dir_tree` equality on the backup · `file_exists`/`file_absent` pairs for the rename · file count in destination.
+**Objectives.** Back up `~/quest/config/` to `config.bak/` (recursively), rename `oldname.conf` to `atlas.conf`, move all `.csv` files from `~/quest/downloads/` into `~/quest/filed/`.
+**Checks.** `dir_tree` `names_and_hashes` on the backup · `file_exists`/`file_absent` pair for the rename · per-file `file_exists`/`file_absent` for the move, plus two `file_exists` on the non-`.csv` files that must not move.
+
+> The destination is `~/quest/filed/`, not `~/shipments/2026/q1/` as an earlier draft had it. Every level's teardown removes only its own `setup.root`, so a level must never write into another level's world.
 **Teaching note.** Include the classic trap: `cp dir dest` without `-r` fails. Let them hit it; the `on_fail` explains it.
 
 ### 8. `files-04` - Controlled Demolition
 Concepts: `rm`, `rmdir`, `rm -r`, `-i`, why there is no undo. **70 XP / D3 / par 4 / 6 min.**
 **Objectives.** Delete the three `*.tmp` files, remove the empty `scratch/` directory, delete the non-empty `cache/` directory - while leaving `important/` completely untouched.
-**Checks.** `file_absent` ×3 · `dir_absent` ×2 · **`dir_tree important/` must be byte-identical** (this is the real test).
+**Checks.** `file_absent` ×3 · `not: dir_exists` ×2 · **`important/` byte-identical**: `file_content` `match: sha256` on each of the three files, plus a `script` check asserting it holds exactly three files.
+
+> There is no `dir_absent` check type; a missing directory is `not:` wrapping `dir_exists`. There is also no way to point `dir_tree` at a pristine copy without keeping that copy inside the level's own world, where the learner can see and delete it, so byte-identity is asserted with content hashes instead. The hashes are of the level's own inline `content:` blocks: editing that content without recomputing them breaks the level, and `TestLevelAssetHashesMatchTheirContent` is what catches it.
 **Teaching note.** The briefing explicitly warns: there is no recycle bin. Award the "rm -rf Survivor" achievement if they nuke `important/` and have to `reset`. Turning the mistake into a badge is much better pedagogy than punishing it.
 
 ### 9. `files-05` - Pattern Matching  🔶 *Act II boss*

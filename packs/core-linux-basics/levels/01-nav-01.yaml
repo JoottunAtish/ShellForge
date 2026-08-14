@@ -1,0 +1,88 @@
+id: nav-01
+version: 1
+title: "First Contact"
+act: act1
+
+difficulty: 1
+xp: 40
+par_commands: 2
+estimated_minutes: 3
+concepts: [pwd, prompt, absolute-paths]
+tags: [must-know, orientation]
+
+briefing: |
+  ## 08:15, Monday. Your first day.
+
+  Somebody sat you at a desk, pointed at a black rectangle, and walked off to a
+  meeting. Kofi, the engineer who ran this server, left on Friday.
+
+  There is a folder called `quest` in your home directory. That is where your
+  work for each ticket goes.
+
+  Before you can go anywhere, you need to know where you are standing.
+
+objectives:
+  - id: location
+    text: "quest/answer.txt holds the folder you are standing in"
+  - id: used-pwd
+    text: "Found it with a single command"
+    optional: true
+
+setup:
+  root: /home/learner/quest
+  files:
+    - path: welcome.txt
+      content: |
+        You made it. Sorry about the mess.
+
+        Everything on this server is somewhere under a folder. Folders live
+        inside folders, all the way up to a single one called / that holds
+        everything else.
+
+        Your own folder is the one you start in. Find out its name first.
+        Everything after that is easier.
+
+                                                                  - Kofi
+  script: |
+    chown -R learner:learner .
+
+checks:
+  - id: location
+    type: file_content
+    path: /home/learner/quest/answer.txt
+    match: trimmed_equals
+    value: "/home/learner"
+    on_fail: >-
+      answer.txt is missing, or it does not hold the folder you started in.
+      The answer is a full path beginning with a slash, not just a name. If
+      you moved somewhere else first, go back to your home folder and look
+      again.
+
+  - id: used-pwd
+    optional: true
+    type: command_matched
+    pattern: '^\s*pwd\s*$'
+    scope: level
+    on_fail: >-
+      You got the answer, and there is a command that would have told you
+      directly. Three letters, short for "print working directory".
+
+hints:
+  - cost: 5
+    text: >-
+      The prompt at the start of your line shows an abbreviation, not the full
+      path. There is a command that prints the whole thing.
+  - cost: 10
+    text: >-
+      The command is three letters and stands for "print working directory".
+  - cost: 15
+    text: >-
+      Run `pwd`. To put its output in a file instead of on screen, send it
+      there with `>`, as in `pwd > somefile.txt`.
+  - cost: 30
+    reveal_solution: true
+
+solution: |
+  pwd > ~/quest/answer.txt
+
+teardown: {}

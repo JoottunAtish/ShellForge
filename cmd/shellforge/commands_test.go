@@ -157,8 +157,12 @@ func TestUnimplementedVerbsExplainThemselves(t *testing.T) {
 		{"doctor"}, {"init"}, {"play"}, {"check"}, {"hint"}, {"reset"},
 		{"skip"}, {"map"}, {"stats"}, {"bug-report"},
 		{"sandbox", "build"}, {"sandbox", "rebuild"}, {"sandbox", "destroy"}, {"sandbox", "status"},
-		{"author", "validate"}, {"author", "scaffold"}, {"author", "test"}, {"author", "record"},
+		{"author", "scaffold"}, {"author", "test"}, {"author", "record"},
 	}
+
+	// `author validate` was a stub when #48 wrote this list and is real as of
+	// #53. It is deliberately absent above rather than deleted from the
+	// documented set, and author_test.go covers its behaviour instead.
 
 	for _, args := range stubs {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {

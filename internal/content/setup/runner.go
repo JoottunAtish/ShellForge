@@ -427,7 +427,11 @@ func (r *Runner) buildFileEntry(spec content.FileSpec, root string) (runtime.Fil
 	if spec.Source != "" {
 		set++
 	}
-	if spec.Content != "" {
+	// ContentSet, not Content != "": an empty file is a legitimate thing for
+	// a level to materialize, and files-01 authors a .gitkeep that exists
+	// only to be empty. Inferring the author's intent from emptiness would
+	// make that file unwritable.
+	if spec.ContentSet {
 		set++
 	}
 	if spec.Generate != nil {
