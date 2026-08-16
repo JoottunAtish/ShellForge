@@ -2940,6 +2940,81 @@ than pretending otherwise. Silent precedence between two spellings of one
 setting is the same shape as the `optional` disagreement #97 describes, so it
 belongs in a ticket with that one, not smuggled into this branch.
 
+### Day 2 follow-up, 2026-08-16: the first-run error that named the wrong problem
+
+Issue #74. A user on Windows with Docker Desktop installed but WSL integration
+switched off for their distribution was told this, and nothing else:
+
+```
+Error: provision the sandbox
+  build the sandbox image: docker build exited 1: https://docs.docker.com/go/wsl2/
+
+Try this: Run `docker info` to confirm the daemon is running, then run `shellforge run demo` again.
+```
+
+Docker had printed "The command 'docker' could not be found in this WSL 2
+distro. We recommend to activate the WSL integration in Docker Desktop
+settings." We had that sentence in a byte slice and threw it away, then told
+them to run a command that would tell them more than we did. Non-negotiable 6
+asks for what failed, why, and the next command; this managed none of the three
+on the first thing a new user does.
+
+**Two independent causes, and fixing either alone leaves the symptom.**
+
+`summarizeFailure` takes the last non-empty line, which is right for a build
+failure: BuildKit writes the fatal error last, and an earlier first-line version
+reliably surfaced the "Sending build context" banner instead. It is wrong when
+the failure is "docker is not really here", where the output is a human-written
+wrapper whose diagnosis is the first line and whose last line is a bare URL. The
+fallback is now exactly one sentence wide: a summary line that is nothing but a
+URL is useless, so use the first line instead. Both directions are pinned in one
+table on purpose, because they pull against each other and split across two
+tests the next person would break one while fixing the other.
+
+The second cause was ours. `ux.Render` resolves with `errors.As`, which binds the
+outermost `*ux.Error`, so `runDemo` wrapping an already-classified error did not
+add context, it overwrote the better answer. `classifyFailure` had done its job
+and returned `docker-daemon-down`; the CLI replaced it with `sandbox-unhealthy`
+and a vaguer remediation. Introduced by #11, in #11's own code. The `Setup` call
+site already had the conditional pass-through inline with a good comment
+explaining it; the other four did not. That is now
+`failUnlessAlreadyUserFacing`, applied at all five.
+
+**Found while writing a regression pin the ticket asked for, and fixed:** the
+permission-denied branch never fired. It matched a lowercase "docker daemon
+socket", and Docker capitalises its own product name, so what actually arrives
+is "Got permission denied while trying to connect to the Docker daemon socket".
+`docs/05-troubleshooting.md` quotes it correctly, so the docs and the code had
+disagreed since the branch was written. A user in the wrong group fell through
+to the `docker version` probe, which fails on the same message and had the same
+casing bug in its own arm, and was told to start a daemon that was already
+running. Matching is case-insensitive now and both casings are pinned. This was
+outside the ticket, and writing a pin around the lowercase spelling would have
+been pinning a fiction.
+
+`docker-wsl-integration-off` is a new anchor with a new heading, placed with the
+other `docker-` entries. It is not a duplicate of `windows-needs-wsl`: that one
+refuses on a Windows host because `creack/pty` cannot allocate a host pseudo
+terminal, this one is about running inside WSL where the pty works and Docker is
+unreachable. The heading says so, since the two are easy to confuse.
+
+The doc anchor gate needed extending rather than satisfying. Converting five
+call sites from `ux.Fail` to a helper removed all five from a test that walks the
+AST looking for `ux.Fail`, which is the same blind-spot shape the gate was
+written to close after #11. It now follows registered forwarders to their call
+sites, and an unregistered forwarder is reported with a message saying to
+register it. Verified by typo-ing an anchor at a forwarder call site and
+confirming the gate catches it.
+
+Every guard here was mutation-checked: the URL fallback, the branch ordering, the
+casing fix, the pass-through, and both directions of the anchor gate.
+
+**Not verified, and it is the ticket's own definition of done:** the manual
+reproduction with WSL integration switched off. That needs Windows with Docker
+Desktop, and this environment has neither Docker nor Windows. Every unit test
+here runs without a daemon, but the end-to-end proof is outstanding and someone
+with the setup should run it before this is trusted.
+
 ## Day 6: hardening, CI, packaging
 
 - [ ] CI green on both platforms

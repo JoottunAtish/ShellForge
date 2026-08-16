@@ -202,6 +202,36 @@ already open.
 
 ---
 
+## docker-wsl-integration-off
+
+**You'll see:** "The command 'docker' could not be found in this WSL 2 distro",
+usually followed by a link to `docs.docker.com`.
+
+**What it means:** You are running Shellforge inside WSL, and Docker Desktop is
+installed on Windows but is not sharing itself with this Linux distribution.
+Docker is running perfectly well; this distribution cannot reach it.
+
+**Fix:**
+
+1. Open Docker Desktop on Windows.
+2. Go to Settings, then Resources, then WSL integration.
+3. Turn the integration on for the distribution you are using, and apply.
+4. Back in WSL, confirm it worked:
+
+```bash
+docker version
+```
+
+That must print both a Client and a Server section. If it prints only a Client,
+the integration is still off for this distribution.
+
+**Still stuck?** Check that you enabled it for the right distribution: `wsl -l
+-v` in PowerShell lists them, and the one you want is the one marked with `*`.
+This is not the same problem as `windows-needs-wsl`, which is about running
+Shellforge from Windows itself rather than from inside WSL.
+
+---
+
 ## disk-space-low
 
 **You'll see:** `doctor` reports insufficient free disk space.

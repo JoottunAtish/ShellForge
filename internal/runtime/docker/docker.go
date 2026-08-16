@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"github.com/JoottunAtish/ShellForge/internal/platform"
 	"github.com/JoottunAtish/ShellForge/internal/platform/ux"
@@ -357,13 +358,26 @@ func (rt *dockerRuntime) Capabilities() runtime.Caps {
 // than string-matching the original command's message, per the ticket's
 // approach.
 func (rt *dockerRuntime) classifyFailure(ctx context.Context, op string, err error, stderr []byte) error {
-	if bytes.Contains(stderr, []byte("permission denied")) && bytes.Contains(stderr, []byte("docker daemon socket")) {
+	if isPermissionDenied(stderr) {
 		return ux.Fail(op, err, `sudo usermod -aG docker "$USER", then log out and back in`, "docker-permission-denied")
+	}
+
+	// This branch MUST come before the `docker version` probe below. The
+	// message is written by Docker Desktop's own shim inside the WSL
+	// distribution, not by the daemon, so the probe fails exactly the way a
+	// dead daemon does and cannot tell the two apart. Probing first would
+	// send someone whose Docker is running and healthy to "start Docker".
+	// Keyed on Docker's own stable wording rather than on the URL that
+	// follows it, matching the permission-denied branch above.
+	if bytes.Contains(stderr, []byte("could not be found in this WSL 2 distro")) {
+		return ux.Fail(op, err,
+			"Open Docker Desktop, go to Settings, Resources, WSL integration, and turn the integration on for this distribution. Then run `docker version` inside WSL to confirm it is reachable.",
+			"docker-wsl-integration-off")
 	}
 
 	_, versionStderr, versionCode, versionErr := rt.run.run(ctx, []string{"docker", "version"}, nil)
 	if versionErr != nil || versionCode != 0 {
-		if bytes.Contains(versionStderr, []byte("permission denied")) && bytes.Contains(versionStderr, []byte("docker daemon socket")) {
+		if isPermissionDenied(versionStderr) {
 			return ux.Fail(op, err, `sudo usermod -aG docker "$USER", then log out and back in`, "docker-permission-denied")
 		}
 		return ux.Fail(op, err, "start Docker: `sudo systemctl start docker` on Linux, or start Docker Desktop", "docker-daemon-down")
@@ -383,15 +397,71 @@ func lastLine(b []byte) string {
 	return ""
 }
 
-// summarizeFailure reports the last line of both stdout and stderr,
+// isPermissionDenied reports whether b is docker's own "you are not in the
+// docker group" message.
+//
+// The match is case-insensitive because docker capitalises the product name:
+// what it actually prints is "Got permission denied while trying to connect
+// to the Docker daemon socket at unix:///var/run/docker.sock", and
+// docs/05-troubleshooting.md quotes it that way. This was a case-sensitive
+// match against a lowercase "docker daemon socket" until issue #74, so the
+// branch never fired: a user in the wrong group fell through to the `docker
+// version` probe, which fails on the same message, and was told to start a
+// daemon that was already running.
+func isPermissionDenied(b []byte) bool {
+	lower := bytes.ToLower(b)
+	return bytes.Contains(lower, []byte("permission denied")) &&
+		bytes.Contains(lower, []byte("docker daemon socket"))
+}
+
+// firstLine returns the first non-empty line of b, trimmed. It is the right
+// summary when the output is a human-written wrapper message whose diagnosis
+// comes first and whose last line is a bare URL.
+func firstLine(b []byte) string {
+	for _, line := range bytes.Split(bytes.TrimSpace(b), []byte("\n")) {
+		if trimmed := bytes.TrimSpace(line); len(trimmed) > 0 {
+			return string(trimmed)
+		}
+	}
+	return ""
+}
+
+// isBareURL reports whether line is nothing but a URL, and so says nothing
+// about what went wrong.
+//
+// Deliberately a prefix test against two schemes and nothing cleverer. A line
+// that merely contains a URL alongside text is a perfectly good summary and
+// must be left alone, and anything that scores lines by "informativeness"
+// would misfire on the build failure this file's default gets right.
+func isBareURL(line string) bool {
+	return strings.HasPrefix(line, "http://") || strings.HasPrefix(line, "https://")
+}
+
+// summarize picks the summary line for one stream: the last non-empty line,
+// unless that line is only a URL, in which case the first non-empty line.
+func summarize(b []byte) string {
+	if line := lastLine(b); !isBareURL(line) {
+		return line
+	}
+	return firstLine(b)
+}
+
+// summarizeFailure reports the summary line of both stdout and stderr,
 // labelled, rather than guessing which stream `docker build` chose for its
 // fatal error: BuildKit writes it to stdout, the classic builder to
 // stderr, and either way it is the last line, not the first. An earlier
 // version of this took only the first non-empty line across the two
 // streams, which reliably surfaced the "Sending build context..." progress
 // banner instead of the actual failure.
+//
+// The last line is wrong for one narrow case, which is why summarize exists:
+// when docker is not really present, the output is a human-written wrapper
+// message whose diagnosis is the FIRST line and whose last line is a bare
+// URL. Reporting the URL threw away the only sentence that said what to do.
+// The fallback is limited to a summary line that is nothing but a URL, so the
+// BuildKit reasoning above still holds everywhere else.
 func summarizeFailure(stdout, stderr []byte) string {
-	out, errLine := lastLine(stdout), lastLine(stderr)
+	out, errLine := summarize(stdout), summarize(stderr)
 	switch {
 	case out != "" && errLine != "":
 		return fmt.Sprintf("stdout: %s | stderr: %s", out, errLine)
