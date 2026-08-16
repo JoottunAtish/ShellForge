@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/JoottunAtish/ShellForge/internal/content"
@@ -71,9 +72,17 @@ func (r *gameResponder) Reply(ctx context.Context, verb, _ string) string {
 		return r.check(ctx)
 
 	case "brief":
-		// Rendered with the same renderer as the pre-attach briefing, then put
-		// through crlf, because this one IS printed into a raw-mode terminal.
-		return crlf("\n" + renderMarkdown(r.level.Briefing, defaultBriefWidth, r.color) + "\n")
+		// Rendered with the same renderer AND the same checklist as the
+		// pre-attach briefing, then put through crlf, because this one IS
+		// printed into a raw-mode terminal. printObjectiveChecklist is the
+		// only place report.txt-style filenames and paths named nowhere else
+		// appear, and it is also what the hint verb below points a learner
+		// back to; dropping it here is the one place both promises break at
+		// once, worst on a boss level with no numbered steps to fall back on.
+		var b strings.Builder
+		b.WriteString("\n" + renderMarkdown(r.level.Briefing, defaultBriefWidth, r.color) + "\n")
+		printObjectiveChecklist(&b, r.level)
+		return crlf(b.String())
 
 	case "hint":
 		// Hints are Day 4: the ladder, the XP cost and the record of what a
