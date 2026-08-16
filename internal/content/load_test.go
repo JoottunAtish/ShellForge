@@ -88,7 +88,12 @@ func TestWorkedExampleRoundTrips(t *testing.T) {
 	// the example used to close with the trailing chown this PR removed from
 	// every level. setup.Script decoding itself is covered by
 	// setupspec_test.go and setup_script_test.go, against fixtures that carry
-	// one.
+	// one. Pinned as empty here, not just left undocumented, so a future
+	// edit to the doc that reintroduces a script line fails this test rather
+	// than only reading wrong in a diff.
+	if lvl.Setup.Script != "" {
+		t.Errorf("setup.script decoded to %q, want empty: the worked example is meant to have none", lvl.Setup.Script)
+	}
 
 	if len(lvl.Objectives) != 3 || !lvl.Objectives[2].Optional {
 		t.Errorf("objectives = %+v", lvl.Objectives)

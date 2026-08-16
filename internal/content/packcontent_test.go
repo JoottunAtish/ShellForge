@@ -5,9 +5,47 @@ import (
 	"encoding/hex"
 	"path"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
+
+// scopedLines returns the solution lines a command_matched or
+// command_not_matched check with the given scope would actually see at
+// runtime, mirroring internal/verify's parseScope semantics (journal_checks.go)
+// without importing that package: internal/content and internal/verify are
+// peers by design, neither importing the other.
+//
+// A check with scope: last only ever sees the single most recent command, and
+// last_n:N only the most recent N. Matching every line of the solution
+// regardless of scope, as an earlier version of this file did, would report a
+// bonus reachable when a scope: last check would in fact never see the line
+// that satisfies it, because it is not the last thing the solution ran.
+func scopedLines(lines []string, scope string) []string {
+	switch {
+	case scope == "" || scope == "level":
+		return lines
+	case scope == "last":
+		if len(lines) == 0 {
+			return nil
+		}
+		return lines[len(lines)-1:]
+	case strings.HasPrefix(scope, "last_n:"):
+		n, err := strconv.Atoi(strings.TrimPrefix(scope, "last_n:"))
+		if err != nil || n <= 0 {
+			return lines
+		}
+		if n > len(lines) {
+			n = len(lines)
+		}
+		return lines[len(lines)-n:]
+	default:
+		// An unparseable scope is a different test's problem (schema
+		// validation); do not let it hide a pattern mismatch here.
+		return lines
+	}
+}
 
 // TestLevelAssetHashesMatchTheirContent keeps a level's declared sha256 from
 // drifting away from the asset it describes.
@@ -144,6 +182,45 @@ func TestShippedLevelsHaveDistinctRoots(t *testing.T) {
 	}
 }
 
+// TestScopedLines pins scopedLines against internal/verify's parseScope
+// semantics directly, since packcontent_test.go cannot import internal/verify
+// to share the implementation and a silent drift between the two would let
+// TestCommandMatchedBonusesAreReachableByTheirOwnSolution pass a level whose
+// scope: last or scope: last_n check could never actually pass at runtime.
+func TestScopedLines(t *testing.T) {
+	lines := []string{"cd ~/quest", "grep -r ERROR logs/ | wc -l", "pwd > answer.txt"}
+
+	cases := []struct {
+		name  string
+		scope string
+		want  []string
+	}{
+		{"empty scope means level", "", lines},
+		{"explicit level", "level", lines},
+		{"last is only the final line", "last", []string{"pwd > answer.txt"}},
+		{"last_n:2 is the final two lines", "last_n:2", []string{"grep -r ERROR logs/ | wc -l", "pwd > answer.txt"}},
+		{"last_n larger than the solution is clamped to all of it", "last_n:99", lines},
+		{"last_n:0 is invalid and falls back to every line", "last_n:0", lines},
+		{"an unparseable scope falls back to every line", "not-a-real-scope", lines},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := scopedLines(lines, tc.scope)
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("scopedLines(lines, %q) = %v, want %v", tc.scope, got, tc.want)
+			}
+		})
+	}
+
+	t.Run("last on an empty solution returns nothing rather than panicking", func(t *testing.T) {
+		got := scopedLines(nil, "last")
+		if len(got) != 0 {
+			t.Errorf("scopedLines(nil, \"last\") = %v, want empty", got)
+		}
+	})
+}
+
 // TestCommandMatchedBonusesAreReachableByTheirOwnSolution closes the class of
 // defect nav-01's used-pwd was: an authored bonus objective that the level's
 // own reference solution cannot earn.
@@ -180,17 +257,20 @@ func TestCommandMatchedBonusesAreReachableByTheirOwnSolution(t *testing.T) {
 			}
 			checked++
 
+			scope, _ := c.Params["scope"].(string)
+			visible := scopedLines(lines, scope)
+
 			matched := false
-			for _, line := range lines {
+			for _, line := range visible {
 				if re.MatchString(line) {
 					matched = true
 					break
 				}
 			}
 			if !matched {
-				t.Errorf("%s: %s: check %q (pattern %q) matches no line of the level's own solution:\n%s\n"+
+				t.Errorf("%s: %s: check %q (pattern %q, scope %q) matches no line of the level's own solution the runtime would show it:\n%s\n"+
 					"The reference solution cannot earn the bonus it is meant to demonstrate.",
-					lvl.SourceFile, lvl.ID, c.ID, pattern, lvl.Solution)
+					lvl.SourceFile, lvl.ID, c.ID, pattern, scope, lvl.Solution)
 			}
 		}
 	}
@@ -229,11 +309,14 @@ func TestCommandNotMatchedGuardsDoNotCondemnTheirOwnSolution(t *testing.T) {
 			}
 			checked++
 
-			for _, line := range lines {
+			scope, _ := c.Params["scope"].(string)
+			visible := scopedLines(lines, scope)
+
+			for _, line := range visible {
 				if re.MatchString(line) {
-					t.Errorf("%s: %s: check %q (pattern %q) matches a line of the level's own solution: %q\n"+
+					t.Errorf("%s: %s: check %q (pattern %q, scope %q) matches a line of the level's own solution the runtime would show it: %q\n"+
 						"The anti-pattern guard would condemn the reference answer.",
-						lvl.SourceFile, lvl.ID, c.ID, pattern, line)
+						lvl.SourceFile, lvl.ID, c.ID, pattern, scope, line)
 				}
 			}
 		}
