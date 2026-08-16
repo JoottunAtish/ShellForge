@@ -2,6 +2,7 @@ package verify
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/JoottunAtish/ShellForge/internal/runtime"
@@ -254,6 +255,54 @@ func TestFileContentCheck(t *testing.T) {
 			t.Fatal("expected an error for a non-integer line_count value")
 		}
 	})
+
+	// The four subtests below are the unfalsifiable-check rule and its
+	// boundaries. A file_content check with an empty value passes whatever
+	// the learner did under contains and regex, which is the
+	// accepts-wrong-answer defect class reached by leaving a placeholder
+	// blank. It must stay legal under exact and trimmed_equals, where an
+	// empty value is the natural way to assert that a file is empty.
+	t.Run("factory: contains with an empty value is refused", func(t *testing.T) {
+		_, err := newFileContentCheck(Spec{ID: "o", Params: map[string]any{"path": "/f", "match": "contains", "value": ""}})
+		if err == nil {
+			t.Fatal("match: contains with an empty value was accepted; it always matches, so the objective can never fail")
+		}
+		for _, want := range []string{"contains", "unfalsifiable"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error does not mention %q, so an author cannot see what to fix: %v", want, err)
+			}
+		}
+	})
+
+	t.Run("factory: regex with an empty value is refused", func(t *testing.T) {
+		_, err := newFileContentCheck(Spec{ID: "o", Params: map[string]any{"path": "/f", "match": "regex", "value": ""}})
+		if err == nil {
+			t.Fatal("match: regex with an empty value was accepted; the empty pattern matches everything")
+		}
+		for _, want := range []string{"regex", "unfalsifiable"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error does not mention %q, so an author cannot see what to fix: %v", want, err)
+			}
+		}
+	})
+
+	t.Run("trimmed_equals with an empty value still asserts a blank file", func(t *testing.T) {
+		c := newCheck(t, map[string]any{"path": "/f", "match": "trimmed_equals", "value": ""})
+		sess := verifytest.NewSession(verifytest.Const(runtime.ExecResult{ExitCode: 0, Stdout: []byte("  \n\t\n")}, nil))
+		if r := runCheck(c, sess); r.Status != StatusPass {
+			t.Fatalf("a whitespace-only file must satisfy match: trimmed_equals with an empty value: got %+v", r)
+		}
+	})
+
+	t.Run("factory: line_count with an empty value keeps its own message", func(t *testing.T) {
+		_, err := newFileContentCheck(Spec{ID: "o", Params: map[string]any{"path": "/f", "match": "line_count", "value": ""}})
+		if err == nil {
+			t.Fatal("match: line_count with an empty value was accepted")
+		}
+		if !strings.Contains(err.Error(), "must be an integer") {
+			t.Errorf("line_count no longer reports its own Atoi rejection, so the new guards changed a path they must not touch: %v", err)
+		}
+	})
 }
 
 func TestDirExistsCheck(t *testing.T) {
@@ -474,13 +523,46 @@ func TestFileModeCheck(t *testing.T) {
 		}
 	})
 
-	t.Run("any_of pass on the second candidate", func(t *testing.T) {
+	t.Run("modes pass on the second candidate", func(t *testing.T) {
 		c := mustFactory(t, "file_mode", Spec{ID: "o", OnFail: "wrong mode", Params: map[string]any{
-			"path": "/deploy.sh", "any_of": []any{"0700", "0750"},
+			"path": "/deploy.sh", "modes": []any{"0700", "0750"},
 		}})
 		sess := verifytest.NewSession(verifytest.Const(statExists("regular file", "750", "learner", "learner"), nil))
 		if r := runCheck(c, sess); r.Status != StatusPass {
 			t.Fatalf("got %+v", r)
+		}
+	})
+
+	t.Run("modes fail when no candidate matches", func(t *testing.T) {
+		c := mustFactory(t, "file_mode", Spec{ID: "o", OnFail: "wrong mode", Params: map[string]any{
+			"path": "/deploy.sh", "modes": []any{"0700", "0750"},
+		}})
+		sess := verifytest.NewSession(verifytest.Const(statExists("regular file", "755", "learner", "learner"), nil))
+		if r := runCheck(c, sess); r.Status != StatusFail || r.Message != "wrong mode" {
+			t.Fatalf("got %+v", r)
+		}
+	})
+
+	// The old spelling was documented but never reachable, because
+	// internal/content decodes "any_of" into CheckSpec.AnyOf and it never
+	// arrives in Params. If it arrives anyway, from a caller building a Spec
+	// by hand, the registry's unknown-parameter guard names the accepted set
+	// rather than silently ignoring it.
+	t.Run("factory: the old any_of spelling is an unknown param", func(t *testing.T) {
+		factory, ok := Lookup("file_mode")
+		if !ok {
+			t.Fatal("file_mode is not registered")
+		}
+		_, err := factory(Spec{ID: "o", Params: map[string]any{
+			"path": "/deploy.sh", "any_of": []any{"0700", "0750"},
+		}})
+		if err == nil {
+			t.Fatal("file_mode accepted the unreachable any_of param")
+		}
+		for _, want := range []string{"any_of", "modes"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error does not mention %q, so an author cannot see the new spelling: %v", want, err)
+			}
 		}
 	})
 
@@ -500,9 +582,9 @@ func TestFileModeCheck(t *testing.T) {
 		}
 	})
 
-	t.Run("factory: neither mode nor any_of", func(t *testing.T) {
+	t.Run("factory: neither mode nor modes", func(t *testing.T) {
 		if _, err := newFileModeCheck(Spec{ID: "o", Params: map[string]any{"path": "/deploy.sh"}}); err == nil {
-			t.Fatal("expected an error when neither mode nor any_of is given")
+			t.Fatal("expected an error when neither mode nor modes is given")
 		}
 	})
 

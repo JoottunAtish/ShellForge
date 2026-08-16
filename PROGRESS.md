@@ -2894,6 +2894,52 @@ Still not run from a developer machine: every Docker-gated test, govulncheck,
 gosec and pytest. The difference from yesterday is that CI has now run the first
 two, and both found real things.
 
+### Day 2 follow-up, 2026-08-16: two check parameters that could not do what they said
+
+Issues #82 and #95, taken on one branch because they are the same defect wearing
+two costumes: a check parameter whose documented behaviour and real behaviour
+disagreed, and in both cases the documentation was the honest half.
+
+**`file_content` with `match: contains` or `match: regex` and an empty `value`
+is now refused when the level loads.** `strings.Contains(s, "")` is true for
+every `s` and `regexp.Compile("")` matches every string at every position, so
+either one produced an objective that passed whatever the learner did. That is
+the `accepts-wrong-answer` class inverted: not a learner finding a hole, but a
+level author leaving a placeholder blank and shipping a checklist line that
+cannot fail. Nothing downstream could have caught it, because an unfalsifiable
+check and a satisfied one look identical from outside. `exact` and
+`trimmed_equals` keep accepting an empty value, where it means "the file is
+empty" and is the natural way to write that; `sha256` and `line_count` already
+failed closed and were left alone, with a regression test pinning that
+`line_count` still reports its own message rather than one of the new ones.
+
+**`file_mode`'s list parameter is now `modes`, and the documented `any_of`
+spelling never worked.** `internal/content` reserves `any_of` for a composition
+node, so it was decoded into `CheckSpec.AnyOf` and never reached `Params`: an
+author following section 3 of docs/LEVEL-FORMAT.md got an error about declaring
+both a type and a composition node, which is true and unhelpful. The parameter
+had been dead since it was registered. No shipped level used it, so nothing was
+broken for a learner.
+
+The round trip is what was missing, and it is the reason this survived review
+twice. `internal/content` owns the decoder that decides whether a key becomes a
+field or a parameter, `internal/verify` owns the registry that decides whether a
+parameter is accepted, they are both layer 3, and neither may import the other.
+A test in either one runs against a fake and proves only its own half. The new
+tests live in `cmd/shellforge`, where the two legitimately meet, next to
+TestEmbeddedPackValidatesAgainstTheRealRegistry: one loads a level using `modes`
+through the real decoder and builds it against the real registry, and two more
+pin that both old spellings are still refused with an error naming the file.
+
+Every new guard was mutation-checked rather than assumed: each was reverted in
+turn and the tests that should have caught it did.
+
+One thing found and deliberately not fixed here: setting both `mode` and `modes`
+is accepted, and `modes` silently wins. The documentation now says so rather
+than pretending otherwise. Silent precedence between two spellings of one
+setting is the same shape as the `optional` disagreement #97 describes, so it
+belongs in a ticket with that one, not smuggled into this branch.
+
 ## Day 6: hardening, CI, packaging
 
 - [ ] CI green on both platforms
