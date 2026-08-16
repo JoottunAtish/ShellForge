@@ -101,6 +101,7 @@ __sf_urlencode() {
 # including a local declaration with an assignment, overwrites the exit status
 # the game is trying to record.
 # ---------------------------------------------------------------------------
+# BEGIN __sf_after
 __sf_after() {
   local ec=$?
 
@@ -108,6 +109,29 @@ __sf_after() {
   printf '\e]133;D;%s\a' "$ec"
   __sf_urlencode "$PWD"
   printf '\e]7;file://quest%s\a' "$__sf_encoded"
+
+  # A destructive command such as `rm -rf /` can take SF_STATE with it, along
+  # with everything else on the filesystem. Every write below then fails,
+  # five times per prompt, and every escape hatch (check, brief, hint, reset)
+  # reads and writes the same directory for its control FIFOs, so a learner
+  # in that state has no working command except a bash builtin and, without
+  # this, no explanation why. Sandbox isolation still holds: the host and the
+  # container image are untouched, and `shellforge run` recovers completely.
+  # The only thing lost is this one shell.
+  #
+  # Checked with the builtin `[ -d ... ]`, never an external command: after a
+  # full-root delete, /opt/shellforge and /usr/bin are gone too, so anything
+  # that is not a bash builtin does not exist to be called. Warned once per
+  # shell, not once per prompt, so the learner sees it once rather than being
+  # buried under it on every keystroke.
+  if [ ! -d "$SF_STATE" ]; then
+    if [ -z "${__sf_state_gone_warned:-}" ]; then
+      __sf_state_gone_warned=1
+      printf 'shellforge: this sandbox is broken and cannot be repaired from inside it.\n'
+      printf 'Type `exit`, then run `shellforge run %s` again to get a fresh one.\n' "${SF_LEVEL_ID:-<level-id>}"
+    fi
+    return $ec
+  fi
 
   # Durable journal, readable from inside the sandbox by check scripts and
   # surviving a crash of the host process.
@@ -131,6 +155,7 @@ __sf_after() {
 
   return $ec
 }
+# END __sf_after
 PROMPT_COMMAND='__sf_after'
 
 # ---------------------------------------------------------------------------
