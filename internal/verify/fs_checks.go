@@ -20,11 +20,13 @@ func init() {
 	Register("file_content", newFileContentCheck, "path", "match", "value", "ignore_case")
 	Register("dir_exists", newDirExistsCheck, "path")
 	Register("dir_tree", newDirTreeCheck, "path", "compare_to", "mode")
-	// TODO(v0.2): the "any_of" param is unreachable from YAML. internal/content
-	// reserves that key for composition, so it never arrives in Params and a level
-	// using the documented form is refused as both a type and a composite.
-	// Renaming it is a level-format change: see issue #95.
-	Register("file_mode", newFileModeCheck, "path", "mode", "any_of")
+	// The list parameter is "modes" and must not be spelled "any_of":
+	// internal/content reserves that key for a composition node, so a check
+	// writing it is decoded as both a type and a composite and refused before
+	// any parameter is read. "modes" is the plural of the singular "mode"
+	// beside it, and it is not reserved, so the documented form reaches
+	// Params. See issue #95.
+	Register("file_mode", newFileModeCheck, "path", "mode", "modes")
 	Register("file_owner", newFileOwnerCheck, "path", "owner", "group")
 	Register("symlink_target", newSymlinkTargetCheck, "path", "target")
 }
@@ -196,9 +198,27 @@ func newFileContentCheck(s Spec) (Check, error) {
 	m := contentMatch(matchRaw)
 	var re *regexp.Regexp
 	switch m {
-	case matchExact, matchTrimmedEquals, matchContains, matchSHA256, matchLineCount:
-		// no further validation
+	case matchExact, matchTrimmedEquals, matchSHA256, matchLineCount:
+		// no further validation. An empty value is meaningful for exact and
+		// trimmed_equals, where it asserts that the file is empty, and fails
+		// closed for the other two: no file hashes to the empty string, and
+		// line_count's Atoi below rejects it with its own message.
+	case matchContains:
+		// strings.Contains(s, "") is true for every s, so this check could
+		// never report a fail and the objective would pass whatever the
+		// learner did. Refusing at construction is the only gate: nothing
+		// downstream can tell an unfalsifiable check from a satisfied one.
+		if value == "" {
+			return nil, factoryError("file_content", s.ID, fmt.Errorf(
+				"param %q must not be empty for match: contains: an empty value always matches, making the check unfalsifiable", "value"))
+		}
 	case matchRegex:
+		// The empty pattern matches every string at every position, so this
+		// is the contains case in another spelling.
+		if value == "" {
+			return nil, factoryError("file_content", s.ID, fmt.Errorf(
+				"param %q must not be empty for match: regex: an empty pattern matches everything, making the check unfalsifiable", "value"))
+		}
 		pattern := value
 		if ignoreCase {
 			pattern = "(?i)" + pattern
@@ -538,9 +558,12 @@ func equalStringMaps(a, b map[string]string) bool {
 
 // --- file_mode ---
 
+// fileModeCheck passes when the path's permission bits equal any one of
+// modes. A check written with the singular "mode" parameter arrives here as a
+// one-element list, so Run has a single shape to evaluate.
 type fileModeCheck struct {
 	id, path, onFail string
-	anyOf            []uint32
+	modes            []uint32
 }
 
 func newFileModeCheck(s Spec) (Check, error) {
@@ -553,31 +576,31 @@ func newFileModeCheck(s Spec) (Check, error) {
 	if err != nil {
 		return nil, factoryError("file_mode", s.ID, err)
 	}
-	anyOfRaw, err := paramStringSlice(s.Params, "any_of")
+	modesRaw, err := paramStringSlice(s.Params, "modes")
 	if err != nil {
 		return nil, factoryError("file_mode", s.ID, err)
 	}
 
 	var candidates []string
 	switch {
-	case len(anyOfRaw) > 0:
-		candidates = anyOfRaw
+	case len(modesRaw) > 0:
+		candidates = modesRaw
 	case hasMode:
 		candidates = []string{mode}
 	default:
-		return nil, factoryError("file_mode", s.ID, fmt.Errorf("either %q or %q is required", "mode", "any_of"))
+		return nil, factoryError("file_mode", s.ID, fmt.Errorf("either %q or %q is required", "mode", "modes"))
 	}
 
-	anyOf := make([]uint32, 0, len(candidates))
+	modes := make([]uint32, 0, len(candidates))
 	for _, c := range candidates {
 		v, err := strconv.ParseUint(c, 8, 32)
 		if err != nil {
 			return nil, factoryError("file_mode", s.ID, fmt.Errorf("mode %q is not a valid octal permission: %w", c, err))
 		}
-		anyOf = append(anyOf, uint32(v))
+		modes = append(modes, uint32(v))
 	}
 
-	return &fileModeCheck{id: s.ID, path: path, onFail: s.OnFail, anyOf: anyOf}, nil
+	return &fileModeCheck{id: s.ID, path: path, onFail: s.OnFail, modes: modes}, nil
 }
 
 func (c *fileModeCheck) ID() string { return c.id }
@@ -593,7 +616,7 @@ func (c *fileModeCheck) Run(ctx context.Context, env Env) Result {
 	if missing {
 		return Result{ID: c.id, Status: StatusFail, Message: c.onFail, Duration: time.Since(start)}
 	}
-	for _, want := range c.anyOf {
+	for _, want := range c.modes {
 		if info.Mode == want {
 			return Result{ID: c.id, Status: StatusPass, Duration: time.Since(start)}
 		}
