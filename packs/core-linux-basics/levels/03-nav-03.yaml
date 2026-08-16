@@ -79,8 +79,6 @@ setup:
         SH-1001  Port Louis   Rotterdam  1420 kg
         SH-1002  Rotterdam    Hamburg     880 kg
         SH-1003  Hamburg      Gdansk     2310 kg
-  script: |
-    chown -R learner:learner .
 
 checks:
   - id: note-exists

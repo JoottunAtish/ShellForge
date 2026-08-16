@@ -105,7 +105,8 @@ function Show-Help {
         'rootfs'   = 'Export the WSL rootfs tarball'
         'run'      = 'Play one level (-Level <id>)'
         'validate' = 'Validate the content pack'
-        'golden'   = 'Run the golden test for every level'
+        'golden'    = 'Run the golden test for every level, through the CLI'
+        'golden-go' = 'The same contract as a Go test. Needs a Linux Docker daemon'
         'tools'    = 'Report expected toolchain versions'
         'clean'    = 'Remove build output'
         'ci'       = 'Everything CI runs'
@@ -199,6 +200,15 @@ switch ($Target.ToLowerInvariant()) {
     'golden' {
         Invoke-Step 'build' { go build -trimpath -ldflags $LdFlags -o "$BinDir\$Binary" $Pkg }
         & "$BinDir\$Binary" author test --all
+    }
+
+    'golden-go' {
+        $env:SHELLFORGE_GOLDEN = '1'
+        try {
+            go test -run '^TestEveryLevelGoldenPath$|^TestPipe05RejectsNearMisses$' -timeout 30m ./cmd/shellforge/...
+        } finally {
+            Remove-Item Env:\SHELLFORGE_GOLDEN -ErrorAction SilentlyContinue
+        }
     }
 
     'tools' {

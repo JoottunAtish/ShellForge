@@ -33,7 +33,7 @@ These are short because they are the ones that actually get violated.
 
 ## Development setup
 
-You need **Go 1.23 or newer** and **one container runtime**.
+You need **Go 1.25 or newer** and **one container runtime**.
 
 ```bash
 git clone https://github.com/JoottunAtish/ShellForge.git

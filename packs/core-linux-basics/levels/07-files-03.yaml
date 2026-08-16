@@ -85,7 +85,6 @@ setup:
         Placeholder for a scanned invoice. Not a delivery note.
   script: |
     mkdir -p filed
-    chown -R learner:learner .
 
 checks:
   - id: backup

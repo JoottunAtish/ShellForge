@@ -10,7 +10,9 @@ file is silent, follow the Google guide. Where they conflict, this file wins.
 
 ## Mechanical
 
-- **Go 1.23 or newer.** Standard layout, no framework.
+- **Go 1.25 or newer.** Standard layout, no framework. The floor was 1.23 until
+  a security fix in `golang.org/x/text` required 1.25; `go.mod`'s own comment
+  carries the reason, and `TestGoDirectiveStaysAtTheSupportedFloor` guards it.
 - **`gofmt -s` is not negotiable and not configurable.** CI fails on any
   unformatted file. Do not argue with the formatter.
 - **No hard column limit.** Break lines for readability. Keep function signatures
@@ -102,6 +104,7 @@ Approved set, and nothing else:
 | `fatih/color` | Output styling | Must honour `NO_COLOR`. |
 | `stretchr/testify` | Assertions | `require`, not `assert`, for anything that invalidates the rest of the test. |
 | `golang.org/x/term` | Host raw mode and window size | Go team maintained golang.org/x module; approved for #10, the standard answer for raw mode since Go has no stdlib termios API. |
+| `charmbracelet/glamour` | Level briefings, markdown to ANSI | Approved for #55, and **kept** when govulncheck reported three vulnerabilities against it: the maintainer chose the maintained upstream library over the old `go 1.23.0` floor, which is why the floor is 1.25.0. Held at **v0.10.0**, no longer for floor reasons but because v1.0.0 moves to lipgloss v2 and relocates the `ansi.StyleConfig` that `briefingStyle` is written against; that is a briefing-renderer change and wants its own commit. Three transitives are held **above** what v0.10.0 asks for and must not be lowered: `x/text` v0.39.0, `goldmark` v1.7.17, `x/net` v0.38.0. Imported only by `cmd/shellforge`, never below L5. Use the project's own `briefingStyle`, not `WithStandardStyle`: every standard style leaves the `##` heading marker in the output, and `dark` inflates a 352 byte briefing to 5,698 bytes of per-space padding escapes. Honours `NO_COLOR` through `ux.ColorEnabled`, and emits no attributes at all, bold included, when colour is off. |
 
 **Ask before adding anything else.** The answer is usually the standard library.
 

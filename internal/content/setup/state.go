@@ -12,13 +12,18 @@ import (
 )
 
 // userLearner is the sandbox user every non-root call in this package runs
-// as: the sentinel read and write, the resolve-root readlink, and the final
-// rm -rf. See runner.go's Teardown doc comment for why root cannot do the
-// deletion itself.
+// as: the sentinel read and write, the resolve-root readlink, the final
+// rm -rf, and the author's own setup.script and teardown.script. See
+// runner.go's Teardown doc comment for why root cannot do the deletion itself,
+// and runScript's for why it cannot run the scripts either.
 const userLearner = "learner"
 
-// userRoot is the sandbox user the chown steps and the author's own
-// setup.script and teardown.script run as.
+// userRoot is the sandbox user the chown steps run as, and nothing else.
+//
+// It is down to the chowns because they are the only work here that needs a
+// capability the learner does not have (CAP_CHOWN) and does not need one the
+// sandbox withholds from root (CAP_DAC_OVERRIDE). Anything that WRITES into the
+// learner-owned level root has to be the learner.
 const userRoot = "root"
 
 // sentinelPath returns the path of the SETUP_OK marker for a level, under

@@ -113,7 +113,7 @@ func TestControlChannelAnswersTheShim(t *testing.T) {
 	served := make(chan struct{})
 	go func() {
 		defer close(served)
-		serveControlRequests(serveCtx, sess, level, reqPath, resPath)
+		serveControlRequests(serveCtx, sess, &demoResponder{level: level, sess: sess}, reqPath, resPath)
 	}()
 
 	// runShim invokes the shim the way the learner's shell does: through the

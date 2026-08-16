@@ -42,6 +42,10 @@ objectives:
     text: "The non-empty cache/ directory is gone"
   - id: important-intact
     text: "important/ is untouched, byte for byte"
+    # Already true when the level starts. The learner earns this one by not
+    # breaking it while deleting everything around it, which is the whole
+    # lesson, so the golden contract does not expect it to fail first.
+    preserves: true
 
 setup:
   root: /home/learner/quest
@@ -93,7 +97,6 @@ setup:
                                                                       - Kofi
   script: |
     mkdir -p scratch
-    chown -R learner:learner .
 
 checks:
   - id: temps-gone

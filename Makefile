@@ -23,7 +23,7 @@ CONTAINER_ENGINE := $(shell command -v docker 2>/dev/null || command -v podman 2
 
 .DEFAULT_GOAL := help
 .PHONY: help build install test race fuzz cover lint fmt vet punct allowlist links arch \
-        cli labels sec vuln gosec image rootfs run golden validate clean tools ci
+        cli labels sec vuln gosec image rootfs run golden golden-go validate clean tools ci
 
 ## help: Show this help.
 help:
@@ -139,9 +139,13 @@ run: build
 validate: build
 	./$(BIN_DIR)/$(BINARY) author validate packs/core-linux-basics
 
-## golden: Run the golden test for every level.
+## golden: Run the golden test for every level, through the CLI.
 golden: build
 	./$(BIN_DIR)/$(BINARY) author test --all
+
+## golden-go: The same contract as a Go test. Needs a Linux Docker daemon.
+golden-go:
+	SHELLFORGE_GOLDEN=1 go test -run '^TestEveryLevelGoldenPath$$|^TestPipe05RejectsNearMisses$$' -timeout 30m ./cmd/shellforge/...
 
 ## tools: Report the toolchain versions this repo expects.
 tools:

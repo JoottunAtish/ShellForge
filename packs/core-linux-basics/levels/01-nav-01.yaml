@@ -43,8 +43,6 @@ setup:
         Everything after that is easier.
 
                                                                   - Kofi
-  script: |
-    chown -R learner:learner .
 
 checks:
   - id: location
@@ -61,7 +59,7 @@ checks:
   - id: used-pwd
     optional: true
     type: command_matched
-    pattern: '^\s*pwd\s*$'
+    pattern: '^\s*pwd\b'
     scope: level
     on_fail: >-
       You got the answer, and there is a command that would have told you

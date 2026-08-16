@@ -48,8 +48,6 @@ setup:
       content: |
         deliveries.log is written by the dispatch service, one line per event,
         oldest first. It is rotated at 02:00 and never edited in place.
-  script: |
-    chown -R learner:learner .
 
 checks:
   - id: first-line

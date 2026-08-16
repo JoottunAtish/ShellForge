@@ -72,6 +72,9 @@ objectives:                    # R  ≥1; ids must match check ids
   - id: obj2
     text: "Solved in one pipeline"
     optional: true             # optional = bonus XP, never blocks passing
+  - id: obj3
+    text: "important/ is untouched"
+    preserves: true            # already true at setup; earned by not breaking it
 
 # ── world setup ───────────────────────────────────────────
 setup:                         # R
@@ -89,9 +92,8 @@ setup:                         # R
         kind: loglines
         seed: 91731
         lines: 4000
-  script: |                    # O  runs as root AFTER files, inside sandbox
+  script: |                    # O  runs as the learner AFTER files, in sandbox
     touch -d "2 days ago" logs/app-1.log
-    chown -R learner:learner .
   timeout_seconds: 30          # O  default 30, bounds setup.script
 
 # ── verification ──────────────────────────────────────────
@@ -118,7 +120,7 @@ tags: [text-processing, must-know]   # O
 
 ### Setup and teardown execution
 
-`setup.script` runs as `root`, inside the sandbox, after every file in
+`setup.script` runs as **`learner`**, inside the sandbox, after every file in
 `setup.files` is materialized, with the working directory set to the resolved
 `setup.root`, under `setup.timeout_seconds` (default 30 seconds). It is passed
 to the sandbox as a single argument to `bash -c`, never concatenated into a host
@@ -127,10 +129,33 @@ meaning of every example in this document, so the author decides. A non-zero
 exit, or a timeout, rolls the whole setup back, exactly as if `setup.files` had
 failed to materialize: nothing is left half-built.
 
-`teardown.script` runs as `root` too, but with the working directory
+`teardown.script` runs as `learner` too, but with the working directory
 `/home/learner`, not `setup.root`: the root is not guaranteed to exist when
 teardown runs, since teardown also runs before every setup to keep it
 idempotent.
+
+**Do not chown in a setup script, and do not expect root.** Both scripts used to
+run as `root`, and the change is worth understanding because it is not a
+preference. The sandbox starts with `--cap-drop ALL` and adds back only `CHOWN`
+and `FOWNER`, so root inside it does not hold `CAP_DAC_OVERRIDE` and does not
+bypass ordinary permission checks. The level root has already been chowned to
+the learner by the time a script runs, mode 0755, which makes root *other* on
+it: a script doing `mkdir -p reports` as root fails with `EACCES`. The learner
+owns the tree, so the learner is the identity that can work in it. The runner
+chowns everything `setup.files` materialized before your script starts, so
+there is nothing left for a script to chown.
+
+This bit real levels. `files-03` and `files-04` both shipped with a
+`mkdir -p` in their setup script and both were silently missing that directory,
+because `setup.files` arrive through `docker cp` with daemon privilege and land
+regardless, and because both scripts ended with a `chown` that root *can*
+perform, so `bash -c` returned the chown's zero exit and discarded the failure
+before it. Setup reported success. The golden contract in section 7 is what
+found them, which is the argument for running it on every level.
+
+Since no `set -e` is injected, a script whose last command succeeds still
+reports success. If your script has more than one command and you want the
+first failure to fail the level, write `set -e` yourself at the top.
 
 Setup always tears down first, unconditionally, before staging anything. This
 is what makes it safe to run a level's setup twice in a row, or against a level
@@ -178,7 +203,7 @@ whether a level's world is already in place.
 
 ---
 
-## 3. Check catalogue (v0.1 - 13 types)
+## 3. Check catalogue (v0.1, 14 types)
 
 Common fields on every check: `id` (R), `on_fail` (R), `optional` (O, default false), `severity` (O: `fail`|`warn`), `timeout_seconds` (O).
 
@@ -332,16 +357,46 @@ and for anti-pattern warnings.
   "level_id": "pipe-05",
   "passed": false,
   "objectives": [
-    {"id":"obj1","text":"report.txt contains the error count","status":"pass"},
-    {"id":"obj2","text":"Solved in one pipeline","status":"fail","optional":true,
-     "message":"You got there - but there's a one-liner."}
+    {"id":"obj1","text":"report.txt holds the total ERROR count","status":"pass"},
+    {"id":"obj2","text":"codes.txt lists the distinct error codes, sorted","status":"fail",
+     "message":"codes.txt should hold the distinct codes, one per line, sorted."},
+    {"id":"obj3","text":"Counted with a single pipeline","status":"fail","optional":true,
+     "message":"You got there, but there is a one-liner."}
   ],
-  "primary_failure": {"id":"obj2","message":"..."},
-  "notes": ["Hardcoding the answer works, but you won't learn the pipeline."],
+  "primary_failure": {"id":"obj2","text":"codes.txt lists the distinct error codes, sorted",
+                      "status":"fail",
+                      "message":"codes.txt should hold the distinct codes, one per line, sorted."},
+  "notes": ["You got there, but there is a one-liner.",
+            "Hardcoding the answer works, but you won't learn the pipeline."],
   "score": {"base":150,"hint_penalty":20,"efficiency_bonus":15,"first_try":0,"total":145},
   "duration_ms": 412
 }
 ```
+
+`status` is one of `pass`, `fail`, `warn`, `timeout`, `error`. The example shows only
+`pass` and `fail` because that run produced only those two. `warn` is what a
+`severity: warn` check's failure becomes; `timeout` and `error` are described in §4.6 and
+are deliberately distinct from `fail`, because "you have not solved it" and "we could not
+tell" need different words in front of a beginner.
+
+`primary_failure` is the first failing check that is **neither `optional` nor
+`severity: warn`**, per §4.5, and it repeats that objective rather than referring to it by
+id. A bonus objective is never the primary failure: presenting one as the headline reason
+a level failed teaches the learner that a bonus was mandatory. It is absent, not null, when
+nothing blocking failed.
+
+`notes` carries the message of every non-passing result that does not block: bonus
+objectives the learner missed, and `severity: warn` anti-pattern checks. A `severity: warn`
+check produces a note and **no** entry in `objectives`, which is why §2's invariants say it
+needs no objective.
+
+`objectives` and `notes` are always arrays, never null, so a consumer can count them
+without a special case.
+
+`score` is populated by `internal/game`, not by the verification engine: it needs the hint
+ledger and the command count, which live with the learner's progress rather than with the
+sandbox. The engine's own result type omits the field entirely and the game layer adds it,
+so a caller reading this document sees one shape either way.
 
 ---
 
@@ -382,7 +437,6 @@ setup:
     - { path: logs/app-1.log, source: assets/app-1.log }
     - { path: logs/app-2.log, source: assets/app-2.log }
     - { path: logs/billing.log, source: assets/billing.log }
-  script: chown -R learner:learner .
 
 checks:
   - id: obj1
@@ -404,7 +458,7 @@ checks:
     type: command_matched
     pattern: 'grep[^|]*\|\s*wc\s+-l'
     scope: level
-    on_fail: "You got there - but there's a one-liner hiding in this. Try connecting grep straight into wc."
+    on_fail: "You got there, but there is a one-liner hiding in this. Try connecting grep straight into wc."
 
   - id: nocheat
     severity: warn
@@ -444,8 +498,24 @@ shellforge run pipe-06                    # play it yourself
 
 **Golden test contract** (what `author test` asserts, and what CI runs for every level):
 1. Fresh sandbox, run `setup`.
-2. Run checks → **all required checks must FAIL.** (If a level passes before you've done anything, the checks are wrong.)
-3. Run `solution` as `learner` in a login shell.
+2. Run checks → **every required check must FAIL**, and at least one must. (If a level passes before you have done anything, the checks are wrong.) The exception is an objective marked `preserves: true`, which must **PASS** here instead: see below.
+3. Run `solution` as `learner` in a login shell, from `/home/learner`.
 4. Run checks → **all required checks must PASS.**
 5. Run `teardown` → `setup.root` no longer exists and no stray processes remain.
 6. Run checks twice, hash the filesystem before and after → **identical** (purity).
+
+Step 2 is asserted **per objective**, not on the overall pass/fail. That matters: a
+level can ship with one required check that passes on a bare setup, testing nothing
+the learner has to do, and the level would still report "not passed" because of its
+siblings. Checking each one is what catches that, and it caught two real levels the
+first time it ran.
+
+`preserves: true` is the one exemption, for an objective the learner satisfies by
+**not breaking** something rather than by doing something. `files-04` is the case:
+it teaches deletion, and "important/ is untouched, byte for byte" is already true
+at setup. Such an objective is inverted at step 2, where it must pass rather than
+fail, because one that is already false means the level is asking the learner to
+protect something its own setup never created. It is **not** the same as
+`optional`: a learner who deletes `important/` still fails the level. And it cannot
+be used to quiet the gate, because step 2 also requires that at least one required
+non-preserving objective failed.

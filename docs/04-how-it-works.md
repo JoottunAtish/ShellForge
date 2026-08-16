@@ -83,6 +83,51 @@ care whether you used `grep`, `awk`, a loop, or a script you wrote yourself. Tha
 is deliberate: checking what you typed would punish you for finding a better
 solution than the one the author had in mind.
 
+## What happens when you type `check`
+
+The whole round trip, because it explains why verification cannot be fooled from
+inside the sandbox, and why a `check` sometimes pauses.
+
+```
+inside the sandbox                          on your machine
+------------------                          ---------------
+you type `check`
+  |
+  v
+/opt/shellforge/bin/check
+writes one line to
+$SF_STATE/control.req  ------------------>  the host is blocked reading that
+                                            named pipe, and wakes up
+                                              |
+                                              v
+                                            it runs the level's checks itself,
+                                            reading the sandbox through a
+                                            separate non-interactive shell
+                                              |
+                                              v
+$SF_STATE/control.res  <------------------  it writes the rendered result back
+  |
+  v
+`check` prints it
+```
+
+**The checks run on your machine, not in the sandbox.** That is the important
+part. Nothing inside the sandbox decides whether you passed, so no amount of
+editing, deleting or breaking things in there can change the verdict. It also
+means a level about file permissions cannot accidentally lock the game out of its
+own verification.
+
+The shim inside the sandbox is deliberately stupid: it writes a line and prints
+what comes back. You can read it:
+[`images/bin/_sf-request`](../images/bin/_sf-request).
+
+**Why a `check` occasionally pauses for a few seconds.** If you press Ctrl-C
+while a check is running, the shim dies immediately and you get your prompt back,
+but the host has already started work and is holding a reply nobody is reading
+any more. It gives up after ten seconds. Type `check` again straight away and it
+may wait out the rest of that, once. Nothing is lost and nothing is stale: the
+reply you eventually see is always the result of the check you asked for.
+
 ## Why "you cannot break it" is a real promise and not marketing
 
 Three independent things have to hold, and all three are checked in CI:

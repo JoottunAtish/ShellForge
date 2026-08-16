@@ -56,8 +56,6 @@ setup:
 
     - path: 2025/q4/.gitkeep
       content: ""
-  script: |
-    chown -R learner:learner .
 
 checks:
   - id: quarter-folder

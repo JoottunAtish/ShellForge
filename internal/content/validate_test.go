@@ -239,7 +239,11 @@ func TestValidateJournalChecksCannotGatePassing(t *testing.T) {
 
 			report := validateFixture(t, fixturePack("", lvl))
 
-			requireNoProblem(t, report, "nav-01", "checks[1]")
+			// Legal, but this build wires no runtime journal yet (issue #88),
+			// so the check is a warning rather than a clean pass: it verifies
+			// nothing until then, and that gap must stay visible to the
+			// author rather than passing silently.
+			requireProblem(t, report, "nav-01", "checks[1]", ProblemWarning, "reads the command journal")
 			if !report.OK() {
 				t.Errorf("an optional journal check should be legal:\n%s", formatReport(report))
 			}
@@ -253,12 +257,61 @@ func TestValidateJournalChecksCannotGatePassing(t *testing.T) {
 
 			report := validateFixture(t, fixturePack("", lvl))
 
-			requireNoProblem(t, report, "nav-01", "checks[1]")
+			// Same gap as above: legal, but not yet functional.
+			requireProblem(t, report, "nav-01", "checks[1]", ProblemWarning, "reads the command journal")
 			if !report.OK() {
 				t.Errorf("a severity: warn journal check should be legal:\n%s", formatReport(report))
 			}
 		})
 	}
+}
+
+// TestValidateJournalChecksWarnTheirEmptyOutcome is the regression test for
+// the wiring gap issue #88 tracks: no runtime session in this build supplies
+// a real verify.JournalReader, so a legal journal check degrades into a wrong
+// answer rather than an error. command_matched can never pass and
+// command_not_matched can never fire; the validator must say so rather than
+// stay quiet, so the gap is visible to an author instead of only to a
+// learner who plays the level.
+func TestValidateJournalChecksWarnTheirEmptyOutcome(t *testing.T) {
+	t.Run("command_matched names that it can never pass", func(t *testing.T) {
+		lvl := defaultLevel()
+		lvl.Objectives += "  - id: bonus\n    text: \"Did it in one command\"\n    optional: true\n"
+		lvl.Checks += "  - id: bonus\n    optional: true\n    type: command_matched" +
+			"\n    pattern: '^\\s*pwd\\s*$'\n    on_fail: \"There is a shorter way.\"\n"
+
+		report := validateFixture(t, fixturePack("", lvl))
+
+		requireProblem(t, report, "nav-01", "checks[1]", ProblemWarning, "can never pass")
+	})
+
+	t.Run("command_not_matched names that it can never fire", func(t *testing.T) {
+		lvl := defaultLevel()
+		lvl.Checks += "  - id: nocheat\n    severity: warn\n    type: command_not_matched" +
+			"\n    pattern: '^\\s*echo\\s'\n    on_fail: \"Hardcoding works today, not at 3 AM.\"\n"
+
+		report := validateFixture(t, fixturePack("", lvl))
+
+		requireProblem(t, report, "nav-01", "checks[1]", ProblemWarning, "can never fire")
+	})
+
+	t.Run("a gating journal check gets the error, not the warning too", func(t *testing.T) {
+		lvl := defaultLevel()
+		lvl.Checks = `checks:
+  - id: obj1
+    type: command_matched
+    pattern: '^\s*pwd\s*$'
+    on_fail: "Print the working directory first."
+`
+		report := validateFixture(t, fixturePack("", lvl))
+
+		requireProblem(t, report, "nav-01", "checks[0]", ProblemError, "must not decide whether a level is passed")
+		for _, p := range report.Problems {
+			if p.LevelID == "nav-01" && p.Field == "checks[0]" && p.Level == ProblemWarning {
+				t.Errorf("a gating journal check should get only the error, not the empty-journal warning too: %s", p.Message)
+			}
+		}
+	})
 }
 
 // TestValidateJournalChecksCannotHideInsideAComposite is the regression test
@@ -335,7 +388,9 @@ func TestValidateJournalChecksCannotHideInsideAComposite(t *testing.T) {
 `
 		report := validateFixture(t, fixturePack("", lvl))
 
-		requireNoProblem(t, report, "nav-01", "checks[1].any_of[0]")
+		// Legal, but the same runtime gap as the top-level cases: the branch
+		// still reads a journal nothing wires yet.
+		requireProblem(t, report, "nav-01", "checks[1].any_of[0]", ProblemWarning, "reads the command journal")
 		if !report.OK() {
 			t.Errorf("a journal check inside an optional objective should be legal:\n%s", formatReport(report))
 		}

@@ -1,0 +1,114 @@
+id: pipe-05
+version: 1
+title: "The Log Sifter"
+act: act3
+boss: true
+
+difficulty: 4
+xp: 150
+par_commands: 6
+estimated_minutes: 15
+concepts: [pipes, grep, wc, redirection]
+prerequisites: [pipe-04]
+tags: [text-processing, must-know]
+
+briefing: |
+  ## 02:41. Billing service.
+
+  Your phone woke you up. Errors are pouring in and nobody knows how many.
+
+  Today's rotated logs are in `~/quest/logs/`. There are three of them and they
+  are long enough that scrolling is not a plan.
+
+  Find out how bad it is, then find out which failures are involved. Leave the
+  answers behind in `~/quest/`: the total in `report.txt`, and the codes in
+  `codes.txt`.
+
+objectives:
+  - id: obj1
+    text: "report.txt holds the total ERROR count"
+  - id: obj2
+    text: "codes.txt lists the distinct error codes, sorted"
+  - id: obj3
+    text: "Counted with a single pipeline"
+    optional: true
+
+setup:
+  root: /home/learner/quest
+  files:
+    - path: logs/app-1.log
+      source: assets/app-1.log
+    - path: logs/app-2.log
+      source: assets/app-2.log
+    - path: logs/billing.log
+      source: assets/billing.log
+
+checks:
+  - id: obj1
+    type: file_content
+    path: /home/learner/quest/report.txt
+    match: trimmed_equals
+    value: "147"
+    on_fail: >-
+      report.txt is missing, or the number in it is not the total. It has to be
+      `~/quest/report.txt`: your shell starts in your home directory, not in
+      `quest`. Are you searching every file in logs/, rather than one of them?
+      `grep` can take a whole directory if you tell it to look inside.
+
+  - id: obj2
+    type: file_content
+    path: /home/learner/quest/codes.txt
+    match: trimmed_equals
+    value: "E401\nE500\nE503"
+    on_fail: >-
+      codes.txt should hold the distinct error codes, one per line, in order,
+      and nothing else. Each code looks like a capital E and three digits.
+      `sort` and `uniq` are friends, and `sort -u` does both at once.
+
+  - id: obj3
+    optional: true
+    type: command_matched
+    pattern: 'grep[^|]*\|\s*wc\s+-l'
+    scope: level
+    on_fail: >-
+      You got the count, and there is a shorter way. Try connecting grep
+      straight into wc with a pipe, so nothing lands in a file in between.
+
+  - id: nocheat
+    severity: warn
+    type: command_not_matched
+    pattern: '^\s*echo\s+147'
+    on_fail: >-
+      Writing the number in by hand works tonight. It will not work at 03:00
+      next time, when the count is different and you are the one who has to
+      find it again.
+
+hints:
+  - cost: 5
+    text: >-
+      `grep` searches inside files, and it can take a whole directory if you
+      tell it to look inside rather than at it.
+  - cost: 10
+    text: >-
+      `-r` searches every file underneath a directory. `-i` ignores upper and
+      lower case, which matters if you are not sure how the log spells things.
+  - cost: 15
+    text: >-
+      `wc -l` counts the lines it is fed. Two commands can be joined so that the
+      output of the first becomes the input of the second: that is what `|`
+      does. To capture the answer in a file, send it there with `>`.
+  - cost: 25
+    text: >-
+      For the codes, `grep -o` prints only the part that matched rather than the
+      whole line, and `-E` lets you write a pattern like `E[0-9]{3}`. A
+      recursive search also prefixes each match with the file it came from;
+      `-h` turns that off, which matters when you want the codes and nothing
+      else.
+  - cost: 40
+    reveal_solution: true
+
+solution: |
+  grep -ri ERROR ~/quest/logs/ | wc -l > ~/quest/report.txt
+  grep -rhoE 'E[0-9]{3}' ~/quest/logs/ | sort -u > ~/quest/codes.txt
+
+teardown: {}

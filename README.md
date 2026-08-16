@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/JoottunAtish/ShellForge/actions/workflows/ci.yml/badge.svg)](https://github.com/JoottunAtish/ShellForge/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Go 1.23+](https://img.shields.io/badge/go-1.23%2B-00ADD8.svg)](https://go.dev/dl/)
+[![Go 1.25+](https://img.shields.io/badge/go-1.25%2B-00ADD8.svg)](https://go.dev/dl/)
 [![Status: pre-alpha](https://img.shields.io/badge/status-pre--alpha-orange.svg)](PROGRESS.md)
 
 [![Shellforge on GitHub](https://githubcard.com/JoottunAtish/ShellForge.svg?d=4S7ENYlgGRMx)](https://github.com/JoottunAtish/ShellForge)

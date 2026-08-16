@@ -108,6 +108,29 @@ type Objective struct {
 	// Optional marks a bonus objective. A bonus objective awards XP and
 	// never blocks passing.
 	Optional bool `yaml:"optional"`
+
+	// Preserves marks an objective the learner satisfies by NOT breaking
+	// something, rather than by doing something.
+	//
+	// Almost every objective describes work: it fails on a fresh setup and
+	// passes once the learner has acted, and the golden contract in
+	// docs/LEVEL-FORMAT.md section 7 requires exactly that, because a
+	// required check passing before the learner touches anything is usually
+	// a check that tests nothing. files-04 is the exception that shows the
+	// rule. It is the level that teaches deletion, and "important/ is
+	// untouched, byte for byte" is the whole point of it: the objective is
+	// already true at setup, and the learner's job is to keep it true while
+	// deleting everything around it.
+	//
+	// Setting this exempts the objective from the golden contract's
+	// pre-solution assertion. It does NOT make the objective optional: a
+	// learner who deletes important/ still fails the level, which is the
+	// entire lesson.
+	//
+	// It is deliberately narrow. A level cannot mark every objective this
+	// way to quiet the gate, because the harness still requires at least one
+	// required objective to fail before the solution runs.
+	Preserves bool `yaml:"preserves"`
 }
 
 // Hint is one tier of help, with the cost shown before the learner commits to

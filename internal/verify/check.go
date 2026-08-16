@@ -65,6 +65,14 @@ type Env struct {
 	// Root is the level's setup.root.
 	Root string
 
+	// LevelID is the id of the level being checked, which the engine copies
+	// into LevelResult.LevelID. It is on Env rather than a parameter of
+	// Engine.Run so that Run keeps the signature the ticket fixed, and it is
+	// a plain string so that this package still never learns where a level
+	// comes from. No Check reads it, and a Check that wanted to would be
+	// deciding pass or fail from the level's name rather than from state.
+	LevelID string
+
 	// Snapshots reads the shell-local state files instrument.bash writes.
 	Snapshots Snapshots
 
@@ -86,11 +94,34 @@ type Check interface {
 // Spec is the declarative, unvalidated form of a check, as loaded from level
 // YAML. A Factory turns a Spec into a Check, validating Params along the
 // way.
+//
+// A Spec is either a leaf, naming a registered Type, or a composition node,
+// setting exactly one of AnyOf, AllOf and Not. Engine.Build refuses a Spec
+// that is both or neither.
+//
+// The three composition fields deliberately mirror internal/content's
+// CheckSpec, field for field and method for method, even though neither
+// package may import the other: they are peers at layer 3. Whatever converts
+// one into the other lives above both, and mirroring the shape is what keeps
+// that conversion a mechanical recursion rather than a translation with
+// judgement in it.
 type Spec struct {
 	// ID is the check's own id, unique within its level.
 	ID string
 
-	// Type names a registered check type, such as "file_exists".
+	// Text is the objective checklist line the learner reads, copied from the
+	// level's objectives list by whatever built this Spec. It is carried here
+	// rather than looked up later because the engine assembles the whole
+	// result, and an assembler that had ids but not text would push the join
+	// out to the renderer, where an id that matches no objective becomes a
+	// blank line instead of a build error.
+	//
+	// Empty is legal: a severity: warn check produces a note rather than a
+	// checklist line and needs no text.
+	Text string
+
+	// Type names a registered check type, such as "file_exists". It is empty
+	// on a composition node.
 	Type string
 
 	// OnFail is the message shown when the check fails. Required by the
@@ -117,6 +148,38 @@ type Spec struct {
 	// map of plain Go values (string, bool, float64, []any, and nested
 	// maps), never a typed struct. A Factory is what gives them meaning.
 	Params map[string]any
+
+	// AnyOf passes when at least one branch passes.
+	AnyOf []Spec
+
+	// AllOf passes when every branch passes.
+	AllOf []Spec
+
+	// Not passes when its single branch fails.
+	Not *Spec
+}
+
+// IsComposite reports whether the Spec is a composition node rather than a
+// leaf naming a registered type.
+func (s Spec) IsComposite() bool {
+	return len(s.AnyOf) > 0 || len(s.AllOf) > 0 || s.Not != nil
+}
+
+// Branches returns the child Specs of a composition node, in declaration
+// order, or nil for a leaf. It lets a caller walk a Spec tree without
+// repeating the three-way composition test.
+func (s Spec) Branches() []*Spec {
+	var out []*Spec
+	for i := range s.AnyOf {
+		out = append(out, &s.AnyOf[i])
+	}
+	for i := range s.AllOf {
+		out = append(out, &s.AllOf[i])
+	}
+	if s.Not != nil {
+		out = append(out, s.Not)
+	}
+	return out
 }
 
 // Factory builds a Check from a Spec. It returns an error on a malformed or

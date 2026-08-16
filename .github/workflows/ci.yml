@@ -301,9 +301,10 @@ jobs:
       # A current toolchain, deliberately NOT the go.mod floor. The security
       # tools track recent Go releases (govulncheck v1.6.0 needs Go 1.25+), and
       # setup-go v7 sets GOTOOLCHAIN=local so `go install ...@latest` cannot
-      # fetch a newer one for itself. A newer toolchain analyses a `go 1.23`
-      # module correctly, so nothing is lost here. The Test matrix keeps using
-      # go.mod, because verifying the declared floor is the point of that job.
+      # fetch a newer one for itself. A newer toolchain analyses a module
+      # declaring an older floor correctly, so nothing is lost here. The Test
+      # matrix keeps using go.mod, because verifying the declared floor is the
+      # point of that job.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
@@ -394,6 +395,32 @@ jobs:
             test ! -e /opt/shellforge/state || { echo "STALE: /opt/shellforge/state still exists"; exit 1; }
             echo "OK: image contents verified"
           '
+
+      - name: Set up Go for the golden tests
+        # This job runs no Go today, so the toolchain has to be installed here.
+        # Pinned by commit SHA like every other action: scripts/check-ci-gates.py
+        # rejects a tag pin.
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Every level through the golden contract
+        # The contract in docs/LEVEL-FORMAT.md section 7: set a level up, confirm
+        # every required check FAILS, run the level's own solution, confirm they
+        # PASS, confirm the checks changed nothing, tear down, confirm nothing was
+        # left behind.
+        #
+        # It lives in this job rather than in Test because the sandbox image is
+        # already built here. SHELLFORGE_GOLDEN is what keeps it OUT of Test:
+        # ubuntu-latest has a working Docker daemon, so a daemon-only gate would
+        # make `go test ./...` there start building the Containerfile and turn a
+        # seconds-long job into a minutes-long one.
+        env:
+          SHELLFORGE_GOLDEN: "1"
+        run: |
+          set -euo pipefail
+          docker tag shellforge-sandbox:ci shellforge-authortest:latest
+          go test -run '^TestEveryLevelGoldenPath$|^TestPipe05RejectsNearMisses$' -timeout 30m -v ./cmd/shellforge/...
 
       - name: The rootfs tarball exports cleanly
         run: |

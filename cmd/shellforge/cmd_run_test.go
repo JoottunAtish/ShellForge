@@ -36,7 +36,7 @@ func TestParseRunArgs(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			opts, err := parseRunArgs(tc.args)
+			opts, err := parseRunArgs(tc.args, "nav-01")
 			if err != nil {
 				t.Fatalf("parseRunArgs(%q): %v", tc.args, err)
 			}
@@ -65,7 +65,7 @@ func TestParseRunArgsRejections(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := parseRunArgs(tc.args)
+			_, err := parseRunArgs(tc.args, "nav-01")
 			if err == nil {
 				t.Fatalf("parseRunArgs(%q) accepted arguments it should refuse", tc.args)
 			}
@@ -74,17 +74,38 @@ func TestParseRunArgsRejections(t *testing.T) {
 	}
 }
 
-// TestCmdRunRefusesAnUnknownLevel asserts the only level id that reaches the
-// Docker path is the one that exists. Every other id must fail before
-// provisioning anything.
+// TestCmdRunRefusesAnUnknownLevel asserts an id that is not in the pack fails
+// before anything is provisioned, and that the message names the ids that are.
+//
+// The id here used to be nav-01, back when the only playable level was the
+// hardcoded demo. nav-01 is a real level now, so the test needs an id that is
+// genuinely absent or it would assert the opposite of what it says.
 func TestCmdRunRefusesAnUnknownLevel(t *testing.T) {
-	err := cmdRun(context.Background(), []string{"nav-01"})
+	err := cmdRun(context.Background(), []string{"nav-99"})
 	if err == nil {
-		t.Fatal("cmdRun accepted a level that does not exist yet")
+		t.Fatal("cmdRun accepted a level that is not in the pack")
 	}
 	assertUserFacing(t, err)
-	if !strings.Contains(err.Error(), "nav-01") {
+	if !strings.Contains(err.Error(), "nav-99") {
 		t.Errorf("the error should name the level the user asked for, got: %v", err)
+	}
+
+	var uxErr *ux.Error
+	if errors.As(err, &uxErr) {
+		if uxErr.DocAnchor != docAnchorLevelNotFound {
+			t.Errorf("DocAnchor = %q, want %q", uxErr.DocAnchor, docAnchorLevelNotFound)
+		}
+		// The remediation lists the real ids, which is what makes a typo
+		// recoverable without reading the documentation.
+		for _, want := range []string{"nav-01", "files-04"} {
+			if !strings.Contains(uxErr.Remediation, want) {
+				t.Errorf("the remediation does not list the real level %q: %q", want, uxErr.Remediation)
+			}
+		}
+		// The demo is not a campaign level and must never be suggested.
+		if strings.Contains(uxErr.Remediation, demoLevelID) {
+			t.Errorf("the remediation offers the demo level: %q", uxErr.Remediation)
+		}
 	}
 }
 
@@ -97,7 +118,7 @@ func TestCmdRunRefusesAnUnknownLevel(t *testing.T) {
 // no Attach assertion, which is why it passes on Windows and does not catch
 // this.
 func TestCheckInteractiveShellSupported(t *testing.T) {
-	err := checkInteractiveShellSupported()
+	err := checkInteractiveShellSupported("nav-01")
 
 	if goruntime.GOOS == "windows" {
 		if err == nil {
@@ -126,7 +147,7 @@ func TestCheckInteractiveShellSupported(t *testing.T) {
 // reported as an unknown level on every host, rather than being masked by the
 // Windows guard.
 func TestCmdRunChecksTheLevelBeforeThePlatform(t *testing.T) {
-	err := cmdRun(context.Background(), []string{"nav-01"})
+	err := cmdRun(context.Background(), []string{"nav-99"})
 	if err == nil {
 		t.Fatal("cmdRun accepted an unknown level")
 	}
@@ -209,7 +230,8 @@ func TestHandleControlVerb(t *testing.T) {
 					return runtime.ExecResult{ExitCode: tc.catExit, Stdout: []byte(tc.catStdout)}, nil
 				},
 			}
-			reply := handleControlVerb(context.Background(), s, level, tc.verb, "")
+			responder := &demoResponder{level: level, sess: s}
+			reply := responder.Reply(context.Background(), tc.verb, "")
 			if !strings.HasPrefix(strings.TrimSpace(reply), tc.wantPrefix) {
 				t.Errorf("reply = %q, want it to start with %q", reply, tc.wantPrefix)
 			}
@@ -228,7 +250,8 @@ func TestHandleControlVerbReportsABrokenRuntime(t *testing.T) {
 			return runtime.ExecResult{}, errors.New("the daemon went away")
 		},
 	}
-	reply := handleControlVerb(context.Background(), s, sandbox.Demo(), "check", "")
+	responder := &demoResponder{level: sandbox.Demo(), sess: s}
+	reply := responder.Reply(context.Background(), "check", "")
 	if !strings.Contains(reply, "could not run") {
 		t.Errorf("reply = %q, want it to say the check could not run", reply)
 	}
@@ -412,7 +435,7 @@ func TestLogCommandEventsStopsOnContextCancellation(t *testing.T) {
 // and how to submit before the prompt appears.
 func TestPrintBriefingShowsTheObjective(t *testing.T) {
 	var buf bytes.Buffer
-	printBriefing(&buf, sandbox.Demo())
+	(&demoLevel{level: sandbox.Demo()}).PrintBriefing(&buf, false)
 	out := buf.String()
 
 	for _, want := range []string{"report.txt", "logs/", "check"} {
@@ -427,7 +450,7 @@ func TestPrintBriefingShowsTheObjective(t *testing.T) {
 func TestBriefingDoesNotLeakTheAnswer(t *testing.T) {
 	level := sandbox.Demo()
 	var buf bytes.Buffer
-	printBriefing(&buf, level)
+	(&demoLevel{level: level}).PrintBriefing(&buf, false)
 
 	if strings.Contains(buf.String(), level.Answer()) {
 		t.Errorf("the briefing contains the answer %q", level.Answer())

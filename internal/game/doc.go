@@ -11,4 +11,27 @@
 //
 // Game mechanics subscribe to the event bus rather than being wired into the
 // orchestrator. That is what makes achievements and scoring pluggable.
+//
+// What exists today is Session, and only Session: load a level, set its world
+// up, hand out the briefing and the objective checklist, answer `check`, tear
+// the world down. There is no event bus, no scoring, no XP, no hint ladder, no
+// prerequisite gating, no unlock state and no write to the progress database.
+// Those are Day 4, and the paragraph above describes where they will attach
+// rather than what is here now.
+//
+// Two seams keep this package testable and honestly layered, and both follow
+// the pattern its neighbours already use. Verifier is declared here rather than
+// imported as *verify.Engine, the same way internal/content declares
+// TypeChecker and internal/verify declares JournalReader: the consumer owns the
+// interface, so a Session can be exercised with a two-method fake and no
+// registry, sandbox or real level. And a Session is handed an open
+// runtime.Session that it borrows and never closes, because one sandbox session
+// outlives one level, and because resolving or provisioning a backend would
+// mean importing a runtime implementation, which the rule above forbids.
+//
+// This package also holds the only conversion between internal/content's
+// CheckSpec and internal/verify's Spec. Those two are peers at layer 3 and
+// neither imports the other, which is what keeps the check registry independent
+// of the YAML shape; something has to sit above both and join them, and layer 4
+// is the lowest place that can.
 package game
