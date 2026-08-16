@@ -229,7 +229,22 @@ func levelOrder(pack *content.Pack) []string {
 // The demo is never listed. It is not a campaign level, and offering it to
 // somebody who mistyped a real one would send them somewhere that teaches them
 // nothing about what they were trying to do.
+//
+// order may be empty: a pack can have a valid pack.yaml and no levels/
+// directory at all (content.LoadPack allows it), and `shellforge author test
+// <id> --pack <such a dir>` reaches this function directly, bypassing
+// cmdRun's own empty-pack guard. Indexing order[0] unconditionally would
+// panic in front of a level author, which is exactly what non-negotiable 6
+// exists to prevent.
 func unknownLevel(id string, order []string) error {
+	if len(order) == 0 {
+		return ux.Fail(
+			fmt.Sprintf("play level %q", id),
+			nil,
+			fmt.Sprintf("There is no level called %q, because this pack contains no levels at all. Check that the pack directory has a levels/ directory.", id),
+			docAnchorLevelNotFound,
+		)
+	}
 	return ux.Fail(
 		fmt.Sprintf("play level %q", id),
 		nil,
@@ -512,7 +527,14 @@ func play(ctx context.Context, opts runOptions, sess runtime.Session, lvl playab
 	sandboxPTY, err := sess.Attach(ctx, runtime.AttachOpts{
 		User:    sandboxUser,
 		WorkDir: sandboxHome,
-		Env:     map[string]string{"SF_STATE": lvl.StateDir()},
+		Env: map[string]string{
+			"SF_STATE": lvl.StateDir(),
+			// Read by instrument.bash so the message it prints after the
+			// state directory vanishes (a destructive command wiped it along
+			// with everything else) names a real, copy-pasteable command
+			// rather than a placeholder.
+			"SF_LEVEL_ID": lvl.LevelID(),
+		},
 	})
 	if err != nil {
 		return ux.Fail(

@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -83,6 +85,39 @@ func TestAuthorTestRefusesAPackPathThatIsNotAPack(t *testing.T) {
 			}
 			assertUserFacing(t, err)
 		})
+	}
+}
+
+// TestAuthorTestRefusesAnUnknownLevelInAnEmptyPack covers the path that used
+// to panic: content.LoadPack accepts a pack.yaml with no levels/ directory at
+// all (that is the normal state of a pack being filled in), so order comes
+// back empty. Naming a level id explicitly reaches resolveLevels and then
+// unknownLevel directly, bypassing runAuthorTest's own len(ids) == 0 guard,
+// which only fires when no ids are given at all.
+func TestAuthorTestRefusesAnUnknownLevelInAnEmptyPack(t *testing.T) {
+	dir := t.TempDir()
+	packYAML := "id: empty-pack\n" +
+		"name: \"Empty Pack\"\n" +
+		"version: 0.1.0\n" +
+		"content_api: 1\n" +
+		"author: \"Test\"\n" +
+		"license: MIT\n" +
+		"description: \"A pack with no levels, for testing the empty-pack path.\"\n" +
+		"acts: []\n"
+	if err := os.WriteFile(filepath.Join(dir, "pack.yaml"), []byte(packYAML), 0o644); err != nil {
+		t.Fatalf("writing fixture pack.yaml: %v", err)
+	}
+
+	err := runAuthorTest(context.Background(), &bytes.Buffer{}, authorTestOptions{
+		ids:     []string{"nav-01"},
+		packDir: dir,
+	})
+	if err == nil {
+		t.Fatal("accepted a level id against a pack with no levels at all")
+	}
+	assertUserFacing(t, err)
+	if !strings.Contains(err.Error(), "nav-01") {
+		t.Errorf("the error should name the level the user asked for, got: %v", err)
 	}
 }
 
