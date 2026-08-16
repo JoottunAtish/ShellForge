@@ -666,11 +666,34 @@ func (v *validator) validateCheckType(lvl *Level, field string, c *CheckSpec, ga
 	// check inside a required composite would otherwise satisfy the rule
 	// node by node while the objective as a whole still turned on a signal
 	// the learner can forge.
-	if journalCheckTypes[c.Type] && gating {
+	switch {
+	case journalCheckTypes[c.Type] && gating:
 		v.errorf(file, id, field, c.Line,
 			"a %s check must not decide whether a level is passed. The journal records what the learner typed, and the learner can forge it from inside the sandbox. Set optional: true or severity: warn on the outermost check of this objective, or move this check into an objective of its own.",
 			c.Type)
+	case journalCheckTypes[c.Type]:
+		// A legitimately optional or severity: warn journal check is exactly
+		// the shape the rule above steers an author toward, and today it is
+		// silently useless: no runtime session in this build wires a real
+		// verify.JournalReader (issue #88), so every command list this check
+		// sees is empty. That degrades into a wrong answer rather than an
+		// error, which is worse than either check type refusing to load, so
+		// this warns instead of staying quiet.
+		v.warnf(file, id, field,
+			"%s reads the command journal, and no runtime session in this build wires a real one yet (issue #88): every command list it sees is empty. %s until then. This is harmless, since a journal check may never gate passing, but the check verifies nothing yet.",
+			c.Type, journalNeverOutcome(c.Type))
 	}
+}
+
+// journalNeverOutcome names what a journal check does today, with nothing
+// populating the journal it reads from. The two check types fail in opposite
+// directions: command_matched can never pass, and command_not_matched can
+// never fire.
+func journalNeverOutcome(checkType string) string {
+	if checkType == "command_not_matched" {
+		return "It can never fire, so the anti-pattern it warns about goes uncaught"
+	}
+	return "It can never pass"
 }
 
 // validateObjectiveCorrespondence enforces the one-to-one relationship in
