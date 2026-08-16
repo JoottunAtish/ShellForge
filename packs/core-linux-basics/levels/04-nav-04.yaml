@@ -128,6 +128,7 @@ hints:
 
 solution: |
   man ls
+  apropos time
   ls -ltr ~/quest/logs
   echo "r t" > ~/quest/flags.txt
 

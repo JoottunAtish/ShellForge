@@ -20,7 +20,9 @@ briefing: |
   Today's rotated logs are in `~/quest/logs/`. There are three of them and they
   are long enough that scrolling is not a plan.
 
-  Find out how bad it is, then find out which failures are involved.
+  Find out how bad it is, then find out which failures are involved. Leave the
+  answers behind in `~/quest/`: the total in `report.txt`, and the codes in
+  `codes.txt`.
 
 objectives:
   - id: obj1
@@ -48,9 +50,10 @@ checks:
     match: trimmed_equals
     value: "147"
     on_fail: >-
-      report.txt is missing, or the number in it is not the total. Are you
-      searching every file in logs/, rather than one of them? `grep` can take a
-      whole directory if you tell it to look inside.
+      report.txt is missing, or the number in it is not the total. It has to be
+      `~/quest/report.txt`: your shell starts in your home directory, not in
+      `quest`. Are you searching every file in logs/, rather than one of them?
+      `grep` can take a whole directory if you tell it to look inside.
 
   - id: obj2
     type: file_content
@@ -97,7 +100,10 @@ hints:
   - cost: 25
     text: >-
       For the codes, `grep -o` prints only the part that matched rather than the
-      whole line, and `-E` lets you write a pattern like `E[0-9]{3}`.
+      whole line, and `-E` lets you write a pattern like `E[0-9]{3}`. A
+      recursive search also prefixes each match with the file it came from;
+      `-h` turns that off, which matters when you want the codes and nothing
+      else.
   - cost: 40
     reveal_solution: true
 

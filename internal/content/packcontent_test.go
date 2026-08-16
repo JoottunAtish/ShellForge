@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"path"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -140,6 +141,106 @@ func TestShippedLevelsHaveDistinctRoots(t *testing.T) {
 			}
 		}
 		roots[root] = lvl.ID
+	}
+}
+
+// TestCommandMatchedBonusesAreReachableByTheirOwnSolution closes the class of
+// defect nav-01's used-pwd was: an authored bonus objective that the level's
+// own reference solution cannot earn.
+//
+// It needs no container and no journal: only the pack. For every
+// command_matched check, at least one line of the level's solution must
+// match its pattern, the same way the golden harness's solution runner would
+// have to satisfy it once the journal is wired. That is a cheap, permanent
+// guard against a check anchored so tightly that solving the level the
+// authored way still fails the bonus it is meant to reward.
+func TestCommandMatchedBonusesAreReachableByTheirOwnSolution(t *testing.T) {
+	pack, err := Embedded()
+	if err != nil {
+		t.Fatalf("load the embedded pack: %v", err)
+	}
+
+	var checked int
+	for i := range pack.Levels {
+		lvl := &pack.Levels[i]
+		lines := strings.Split(strings.TrimRight(lvl.Solution, "\n"), "\n")
+
+		for _, c := range walkChecks(lvl.Checks) {
+			if c.Type != "command_matched" {
+				continue
+			}
+			pattern, _ := c.Params["pattern"].(string)
+			if pattern == "" {
+				continue
+			}
+			re, err := regexp.Compile(pattern)
+			if err != nil {
+				t.Errorf("%s: %s: check %q has an unparseable pattern %q: %v", lvl.SourceFile, lvl.ID, c.ID, pattern, err)
+				continue
+			}
+			checked++
+
+			matched := false
+			for _, line := range lines {
+				if re.MatchString(line) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				t.Errorf("%s: %s: check %q (pattern %q) matches no line of the level's own solution:\n%s\n"+
+					"The reference solution cannot earn the bonus it is meant to demonstrate.",
+					lvl.SourceFile, lvl.ID, c.ID, pattern, lvl.Solution)
+			}
+		}
+	}
+
+	if checked == 0 {
+		t.Error("no command_matched check was found in the shipped pack, so this test proved nothing; it should be covering nav-01's used-pwd")
+	}
+}
+
+// TestCommandNotMatchedGuardsDoNotCondemnTheirOwnSolution is the inverse
+// check: an anti-pattern guard that matches the level's own reference
+// solution would fail the learner for doing it the intended way.
+func TestCommandNotMatchedGuardsDoNotCondemnTheirOwnSolution(t *testing.T) {
+	pack, err := Embedded()
+	if err != nil {
+		t.Fatalf("load the embedded pack: %v", err)
+	}
+
+	var checked int
+	for i := range pack.Levels {
+		lvl := &pack.Levels[i]
+		lines := strings.Split(strings.TrimRight(lvl.Solution, "\n"), "\n")
+
+		for _, c := range walkChecks(lvl.Checks) {
+			if c.Type != "command_not_matched" {
+				continue
+			}
+			pattern, _ := c.Params["pattern"].(string)
+			if pattern == "" {
+				continue
+			}
+			re, err := regexp.Compile(pattern)
+			if err != nil {
+				t.Errorf("%s: %s: check %q has an unparseable pattern %q: %v", lvl.SourceFile, lvl.ID, c.ID, pattern, err)
+				continue
+			}
+			checked++
+
+			for _, line := range lines {
+				if re.MatchString(line) {
+					t.Errorf("%s: %s: check %q (pattern %q) matches a line of the level's own solution: %q\n"+
+						"The anti-pattern guard would condemn the reference answer.",
+						lvl.SourceFile, lvl.ID, c.ID, pattern, line)
+				}
+			}
+		}
+	}
+
+	if checked == 0 {
+		t.Error("no command_not_matched check was found in the shipped pack, so this test proved nothing; it should be covering pipe-05's nocheat")
 	}
 }
 
