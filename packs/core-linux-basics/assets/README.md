@@ -45,5 +45,7 @@ answer, then update the level's checks, its briefing and its hints together. Do
 not adjust a check to match an edited asset without rereading the level.
 
 They were produced by the deterministic generator in
-`internal/sandbox/demo_level.go`, which has its own consistency tests, rather
-than written by hand. That is why the numbers are trustworthy.
+`internal/sandbox/demo_level.go` rather than written by hand. That generator is
+slated for deletion under #96; the durable guarantee is
+`internal/content/pipe05_assets_test.go`, which recomputes the answers from the
+committed bytes on every run. That is why the numbers are trustworthy.

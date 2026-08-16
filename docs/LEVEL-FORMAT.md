@@ -203,7 +203,7 @@ whether a level's world is already in place.
 
 ---
 
-## 3. Check catalogue (v0.1 - 13 types)
+## 3. Check catalogue (v0.1, 14 types)
 
 Common fields on every check: `id` (R), `on_fail` (R), `optional` (O, default false), `severity` (O: `fail`|`warn`), `timeout_seconds` (O).
 
@@ -361,12 +361,12 @@ and for anti-pattern warnings.
     {"id":"obj2","text":"codes.txt lists the distinct error codes, sorted","status":"fail",
      "message":"codes.txt should hold the distinct codes, one per line, sorted."},
     {"id":"obj3","text":"Counted with a single pipeline","status":"fail","optional":true,
-     "message":"You got there - but there's a one-liner."}
+     "message":"You got there, but there is a one-liner."}
   ],
   "primary_failure": {"id":"obj2","text":"codes.txt lists the distinct error codes, sorted",
                       "status":"fail",
                       "message":"codes.txt should hold the distinct codes, one per line, sorted."},
-  "notes": ["You got there - but there's a one-liner.",
+  "notes": ["You got there, but there is a one-liner.",
             "Hardcoding the answer works, but you won't learn the pipeline."],
   "score": {"base":150,"hint_penalty":20,"efficiency_bonus":15,"first_try":0,"total":145},
   "duration_ms": 412
@@ -437,7 +437,6 @@ setup:
     - { path: logs/app-1.log, source: assets/app-1.log }
     - { path: logs/app-2.log, source: assets/app-2.log }
     - { path: logs/billing.log, source: assets/billing.log }
-  script: chown -R learner:learner .
 
 checks:
   - id: obj1
@@ -459,7 +458,7 @@ checks:
     type: command_matched
     pattern: 'grep[^|]*\|\s*wc\s+-l'
     scope: level
-    on_fail: "You got there - but there's a one-liner hiding in this. Try connecting grep straight into wc."
+    on_fail: "You got there, but there is a one-liner hiding in this. Try connecting grep straight into wc."
 
   - id: nocheat
     severity: warn

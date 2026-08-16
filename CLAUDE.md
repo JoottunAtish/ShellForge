@@ -186,7 +186,7 @@ gofmt -s -w . && go vet ./... && go test ./... && ./scripts/check-punctuation.sh
 
 - Don't use an em dash or an en dash. See Rule 0.
 - Don't build the TUI. Plain CLI only this week. It is on the cut list for a reason.
-- Don't add check types beyond the 13 in `docs/LEVEL-FORMAT.md`. Use `type: script`.
+- Don't add check types beyond the 14 in `docs/LEVEL-FORMAT.md`. Use `type: script`.
 - Don't implement Podman, bwrap, native, or SSH runtimes.
 - Don't add remote content pack downloading. Embedded pack only.
 - Don't build a command string and pass it to a host shell.

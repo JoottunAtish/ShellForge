@@ -510,11 +510,7 @@ the files that implement them, so a name you read in the campaign plan may not b
 playable yet.
 
 **Fix:** The error lists every level in the pack, in campaign order. Pick one
-from that list. To see the list on its own, without triggering the error:
-
-```
-shellforge author validate packs/core-linux-basics
-```
+from that list.
 
 If you meant to start at the beginning:
 

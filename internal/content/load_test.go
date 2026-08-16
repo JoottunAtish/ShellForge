@@ -83,9 +83,12 @@ func TestWorkedExampleRoundTrips(t *testing.T) {
 	if lvl.Setup.Files[0].Source != "assets/app-1.log" {
 		t.Errorf("setup.files[0] = %+v", lvl.Setup.Files[0])
 	}
-	if lvl.Setup.Script == "" {
-		t.Error("setup.script did not decode")
-	}
+	// The worked example has no setup.script at all, deliberately: the
+	// shipped pipe-05.yaml has none either, which is the right model, and
+	// the example used to close with the trailing chown this PR removed from
+	// every level. setup.Script decoding itself is covered by
+	// setupspec_test.go and setup_script_test.go, against fixtures that carry
+	// one.
 
 	if len(lvl.Objectives) != 3 || !lvl.Objectives[2].Optional {
 		t.Errorf("objectives = %+v", lvl.Objectives)
