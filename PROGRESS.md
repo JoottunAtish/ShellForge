@@ -31,7 +31,7 @@ formally cut.
 | Pack loading and validation | Done in `internal/content` (issue #53). `LoadPack`, `Embedded`, `Pack.Level`, `Pack.Order`, and `Validate` with a `TypeChecker` the caller supplies, so `internal/content` and `internal/verify` stay peers rather than one importing the other. `shellforge author validate <pack>` reports every problem one per line and supports `--json`. A legal `command_matched` or `command_not_matched` check now gets a warning naming issue #88: no runtime session wires a real journal yet, so the check verifies nothing until then, and the validator says so rather than staying quiet. |
 | Level setup and teardown runner | Done in `internal/content/setup` (issue #50). `Runner.Setup`, `Teardown`, and `IsSetUp` materialize and remove a level's world inside the sandbox: teardown-first idempotency, a `loglines` content generator behind a registered kind, CRLF stripping on the host side before a `runtime.FileEntry` is built, rollback on any failure via `context.WithoutCancel`, and a `SETUP_OK` sentinel written under the state directory rather than the level root. Not wired into the game orchestrator or the CLI: no caller constructs a `Runner` yet outside its own tests. That wiring, plus the pack loader and validator that produce a real `content.Level`, is #52, #53, and #54. |
 | Runtimes | `Runtime` and `Session` interfaces plus their value types and sentinel errors are defined in `internal/runtime`, the reusable contract suite is in `internal/runtime/runtimetest`, and `internal/runtime/docker` implements both by shelling out to the `docker` CLI. The contract suite is green against it on Windows with Docker Desktop's Linux engine, except one subtest documented below. `WslRuntime` is not started. |
-| PTY multiplexer and OSC parser | Both done. Parser: streaming OSC 133 and OSC 7 state machine, fuzzed, with a recorded vim session passing through byte-identical. Multiplexer (`internal/pty/mux.go`): host stdin forwarded to the sandbox verbatim including Ctrl-C, host terminal raw mode restored across every exit path including a panic, initial resize plus SIGWINCH on unix, and CommandEvent assembly from the marker stream. `CommandEvent.Raw` is always empty pending #51. Windows resize watching is a Day 3 stub. |
+| PTY multiplexer and OSC parser | Both done. Parser: streaming OSC 133 and OSC 7 state machine, fuzzed, with a recorded vim session passing through byte-identical. Multiplexer (`internal/pty/mux.go`): host stdin forwarded to the sandbox verbatim including Ctrl-C, host terminal raw mode restored across every exit path including a panic, initial resize plus SIGWINCH on unix, and CommandEvent assembly from the marker stream. `CommandEvent.Raw` is always empty pending #51. Windows resize watching (issue #68) polls `GetConsoleScreenBufferInfo` through the same injectable `getSize`/`resize` fields the unix watcher uses, every 250ms by default, and forwards a change the same way SIGWINCH does on unix. |
 | Verification engine | Done in `internal/verify` (issue #52). `Engine`, `NewEngine`, `WithCheckTimeout`, `WithLevelTimeout`, `Build` and `Run`, the `any_of`/`all_of`/`not` composition nodes, and `LevelResult` matching `docs/LEVEL-FORMAT.md` section 5 field for field. Checks are built once at level load and run on every `check`. 262 tests and subtests. The hermetic half of the purity guarantee is `internal/verify/purity_test.go`, which asserts every check type runs only read-only commands; the filesystem-hash half is in the golden harness and needs Docker. |
 | Progress database | `internal/store` (schema, migrations) and `internal/journal` (the command journal) are both built and unit tested, per #51. Nothing calls `store.Open` outside their own tests: not wired into `cmd/shellforge`, `internal/game`, or `internal/pty`. `CommandEvent.Raw` on the host-side event stream is still always empty. |
 | Documentation | Design record complete. User docs are outlines. |
@@ -45,6 +45,7 @@ formally cut.
 | Issue templates | Four forms, including a self-contained implementation ticket |
 | MCP servers | `.mcp.json` auto-connects jCodemunch and jDocmunch |
 | `internal/platform` (paths) | Tested. Every function in `paths.go` has at least one test. `DataDir` rejects a relative `XDG_DATA_HOME` instead of silently returning a relative path. The Windows `CacheDir`/`DataDir` collision (#40) is fixed: `CacheDir` nests a `cache` element below `DataDir`, so a cache clear cannot delete progress or the WSL disk image. |
+| `internal/platform` (console mode, issue #68) | Done. `EnableVirtualTerminal`, `SupportsVirtualTerminal`, and `IsWindowsTerminal` in `console.go`, `console_windows.go` (`golang.org/x/sys/windows`), and `console_other.go`. On Windows, `EnableVirtualTerminal` sets `ENABLE_VIRTUAL_TERMINAL_PROCESSING`/`ENABLE_VIRTUAL_TERMINAL_INPUT` and its restore reverts both modes exactly, idempotently; on every other platform both are no-ops. Not yet wired into `main`: that is the CLI ticket's job, out of scope here. Manual confirmation on real Windows 11 hardware, that resizing mid-`vim` no longer corrupts the display, is still outstanding and belongs in the pull request per the ticket's own acceptance criteria; this environment has no Windows console to verify against, only the Linux and cross-compiled Windows builds and the automated suite. |
 | Rootfs release artifact | CI, `make rootfs`, and `.\make.ps1 rootfs` now all produce `rootfs.tar.gz` plus a `sha256sum`-format sidecar with reproducible `gzip -9 -n`, CI uploads both as a build artifact on every run and attaches them to the GitHub release on a tag push, and CI asserts the tarball contains `/etc/wsl.conf`, `/home/learner`, `/opt/shellforge/bin/check`, `/opt/shellforge/.sandbox-id`, and a man page. Not verified here: this environment has no Docker daemon, so the whole `image` job and the two scripts' actual output rest on CI, and the cross-platform digest match between a Linux runner's gzip and Git for Windows' gzip is expected but unproven pending a manual check on both platforms. |
 
 **There is no release and nothing to install.**
@@ -3023,6 +3024,64 @@ problem the issue named, and bakes in the marker file the WSL destroy path
   reasonably founded expectation (both are the same GNU gzip implementation)
   rather than a proven one, and stays that way until someone with both
   platforms records the two digests by hand, per the issue's own test plan.
+
+### Day 3, 2026-08-17: Windows console VT mode and the resize watcher
+
+Issue #68, Day 3 ticket D. Replaces the Day 1 no-op stub and adds the console
+mode handling the doctor ticket and the CLI ticket both consume next.
+
+- **`internal/platform`** gained `EnableVirtualTerminal`, `SupportsVirtualTerminal`,
+  and `IsWindowsTerminal`, split across `console.go` (portable, no build tag:
+  `IsWindowsTerminal` is a `WT_SESSION` check plus a `runtime.GOOS` branch,
+  nothing Windows-specific to call), `console_windows.go`
+  (`golang.org/x/sys/windows`'s `GetConsoleMode`/`SetConsoleMode`, real
+  `ENABLE_VIRTUAL_TERMINAL_PROCESSING`/`ENABLE_VIRTUAL_TERMINAL_INPUT` handling),
+  and `console_other.go` (`!windows`, both functions are no-ops that always
+  succeed). `EnableVirtualTerminal`'s restore is idempotent via `sync.Once`,
+  matching the discipline `Mux.restoreOnce` already uses for the host terminal.
+  A failure enabling VT input rolls stdout's mode back before returning, so a
+  caller that gives up after the error is not left with the two handles in
+  different states.
+- **`golang.org/x/sys` moves from indirect to direct** in `go.mod`, same
+  v0.34.0 pin, no version change, and gained a row in the go-style skill's
+  Dependencies table: `TestGoModDirectDependenciesAreApproved` in
+  `internal/archtest` enforces that every direct dependency is listed there,
+  and it was right to fail until the row existed.
+- **`internal/pty/raw_windows.go`** replaces the stub. Windows has no
+  SIGWINCH, so the watcher polls `m.getSize`, the same injectable field
+  `raw_unix.go`'s SIGWINCH handler and `Mux.Run`'s own initial resize both
+  use, every 250ms by default, and calls `m.resize` only when the reported
+  size actually changed. The alternative, reading `WINDOW_BUFFER_SIZE_EVENT`
+  off the console input handle, was rejected for the reason the ticket gave:
+  `Mux.Run` already forwards the host's stdin to the sandbox verbatim, and
+  draining console input events in a second place here would swallow the
+  learner's keystrokes. `Mux` gained one new field, `resizePollInterval`,
+  zero by default (meaning "use `raw_windows.go`'s own 250ms constant"), so
+  a test can shrink it rather than waiting on the real interval; unix's
+  watcher never reads it.
+- **Tests.** `internal/pty/raw_windows_test.go` (`go:build windows`) drives
+  `startResizeWatcher` directly through the injectable `getSize` field and
+  the existing `fakePTY`/`newTestMux` harness from `mux_test.go`: a changed
+  size resizes with the clamped rows-then-cols order, an unchanged size
+  never calls resize, and calling stop provably ends the goroutine rather
+  than merely coinciding with a quiet tick. `internal/platform/console_test.go`
+  runs on every platform, branching on `runtime.GOOS`: the portable
+  `IsWindowsTerminal` answers are pinned on both sides of that branch, the
+  Windows-only tests cover the real `GetConsoleMode`/`SetConsoleMode` round
+  trip when a real console is attached and fall back to asserting a clean
+  error, never a panic, with a nil restore, when it is not, since a CI
+  runner's stdout is not reliably a console either way. A third Windows-only
+  test forces that failure path deterministically by swapping `os.Stdout`
+  for a pipe. `go test -race ./internal/pty/... ./internal/platform/...` is
+  green on Linux; the Windows build, `go vet`, and both packages' test
+  binaries all compile clean under `GOOS=windows` cross-compilation from
+  this environment, which has no Windows host to run them on.
+- **What is honestly not verified here.** The manual acceptance criterion,
+  resizing the host terminal during a full screen program inside the sandbox
+  on real Windows 11 and confirming the host terminal's arrow keys still
+  behave after exit, needs a Windows machine this environment does not have.
+  It is unverified pending that check, same shape as the prior two Day 3
+  entries' Docker-gated and cross-platform gaps.
 
 ## Day 6: hardening, CI, packaging
 
