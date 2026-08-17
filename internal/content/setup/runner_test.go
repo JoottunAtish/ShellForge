@@ -433,10 +433,12 @@ func TestSetupNeverChownsADirectoryAwayFromTheLearner(t *testing.T) {
 	}
 
 	declared := root + "/warehouse/secret.txt"
+	var restores int
 	for _, c := range chownCalls(f) {
 		if equalArgv(c.argv, []string{"chown", "-R", DefaultOwner, "--", root}) {
 			continue // the blanket chown, not a restore
 		}
+		restores++
 		for _, a := range c.argv {
 			if a == "-R" {
 				t.Errorf("restore chown %v carries -R, which could reach a directory", c.argv)
@@ -452,6 +454,9 @@ func TestSetupNeverChownsADirectoryAwayFromTheLearner(t *testing.T) {
 		if last != declared {
 			t.Errorf("restore chown %v targets %q, want exactly the declared file %q", c.argv, last, declared)
 		}
+	}
+	if restores == 0 {
+		t.Fatal("no restore chown was recorded at all: this test's per-call assertions never ran, so it proves nothing about the safety invariant it names")
 	}
 }
 
