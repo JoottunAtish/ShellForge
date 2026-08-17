@@ -2991,12 +2991,18 @@ problem the issue named, and bakes in the marker file the WSL destroy path
   that one job; the workflow level stays `contents: read`.
 - **`/opt/shellforge/.sandbox-id` now exists in the image**: a fixed string,
   owned root, mode 0444, written before the directory's own `chown -R` so it
-  is not a separate ownership pass. Root owns it and mode 0444 means even
-  the learner cannot rewrite or delete it, which is what makes it usable as
-  a refusal precondition rather than a convention: the WSL destroy path
-  (issue #69, which depends on this one) can check for its presence before
-  `wsl --unregister` and refuse when it is absent, rather than trusting that
-  whatever it is about to unregister is really one of ours.
+  is not a separate ownership pass. Mode 0444 means a learner cannot rewrite
+  its content; the directory it lives in stays root-owned mode 0755 as it
+  already was, so a learner cannot delete or recreate it either, and neither
+  protection comes from the file's own bits alone. The contract is presence,
+  not an exact string match: the `destructive-safety` skill asks for
+  confirmation that a marker file exists, not that it holds a specific
+  value, so the WSL destroy path (issue #69, which depends on this one) only
+  needs to check the file is there before `wsl --unregister`, and refuse
+  when it is absent, rather than trusting that whatever it is about to
+  unregister is really one of ours. The `v1` in the string is future proofing
+  in case the marker format itself ever needs to change in a way that check
+  would need to tell apart, not a value anything reads today.
 - `scripts/tests/test_ci_yml_rootfs_artifact.py` is new, modeled on
   `test_ci_yml_fuzz_upload_step.py`: it asserts the tag trigger, the job's
   `contents: write` permission, the upload step's name and both file paths

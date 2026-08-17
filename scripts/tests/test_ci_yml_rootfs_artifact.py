@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import importlib.util
 import pathlib
+import re
 
 import yaml
 
@@ -84,9 +85,15 @@ def test_upload_rootfs_artifacts_step_exists_with_both_files() -> None:
     )
     assert upload_step is not None, f"no step named {UPLOAD_STEP_NAME!r} found"
 
+    # Whole lines, not substrings: "rootfs.tar.gz" is a substring of
+    # "rootfs.tar.gz.sha256", so removing the raw tarball line and leaving
+    # only the sidecar would still satisfy an `in` check against the string
+    # this way, and the regression this test exists to catch is exactly
+    # that: the raw tarball silently stops being published.
     path = upload_step["with"]["path"]
-    assert "rootfs.tar.gz" in path
-    assert "rootfs.tar.gz.sha256" in path
+    lines = {line.strip() for line in path.splitlines() if line.strip()}
+    assert "rootfs.tar.gz" in lines, lines
+    assert "rootfs.tar.gz.sha256" in lines, lines
 
 
 def test_upload_rootfs_artifacts_uses_the_pinned_upload_artifact_action() -> None:
@@ -122,6 +129,10 @@ def test_release_attach_step_runs_after_upload_on_tag_push_only() -> None:
     assert "github.event_name == 'push'" in condition
     assert "refs/tags/" in condition
 
+    # Not just that both commands appear, but that upload is tried first and
+    # create is the fallback: a reordering, an unconditional pair, or `&&`
+    # instead of `||` are all broken in a real way (create errors against an
+    # existing release; upload can never reach an unconditional create) and
+    # two independent `in` checks would not catch any of them.
     run = release_step["run"]
-    assert "gh release upload" in run
-    assert "gh release create" in run
+    assert re.search(r"gh release upload.*\|\|\s*\n?\s*gh release create", run, re.DOTALL), run

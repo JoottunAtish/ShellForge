@@ -196,6 +196,12 @@ switch ($Target.ToLowerInvariant()) {
             exit 1
         }
         New-Item -ItemType Directory -Force -Path 'images/out' | Out-Null
+        # Clear output from the old scheme (uncompressed rootfs.tar plus a
+        # Get-FileHash-shaped rootfs.tar.sha256): New-Item -Force only
+        # ensures the directory exists, it does not remove old files, and a
+        # stale sidecar in the wrong shape sitting next to the new one is
+        # confusing rather than harmless.
+        Remove-Item -Path 'images/out/rootfs.tar', 'images/out/rootfs.tar.sha256' -ErrorAction SilentlyContinue
         Invoke-Step "image ($engine)" { & $engine build -f images/Containerfile -t "${Image}:${Tag}" images/ }
         & $engine rm -f "$Image-export" 2>$null | Out-Null
         Invoke-Step 'create' { & $engine create --name "$Image-export" "${Image}:${Tag}" /bin/true }
@@ -213,7 +219,15 @@ switch ($Target.ToLowerInvariant()) {
         # implementation produced them.
         Invoke-Step 'gzip -9 -n' { & $gzip '-9' '-n' '-f' $tarPath }
         $hash = (Get-FileHash -Algorithm SHA256 $gzPath).Hash.ToLowerInvariant()
-        "$hash  rootfs.tar.gz" | Out-File -FilePath 'images/out/rootfs.tar.gz.sha256' -Encoding ascii
+        # Write the sidecar with an explicit LF, not Out-File's platform
+        # default: Out-File writes CRLF on Windows, and a trailing CR in a
+        # sha256sum-format line is not what "works unchanged with
+        # sha256sum -c" means, even though a mismatch here fails closed
+        # rather than silently.
+        [System.IO.File]::WriteAllText(
+            (Join-Path (Get-Location) 'images/out/rootfs.tar.gz.sha256'),
+            "$hash  rootfs.tar.gz`n"
+        )
         Write-Host "exported images/out/rootfs.tar.gz" -ForegroundColor Green
         Write-Host "sha256 $hash"
     }
