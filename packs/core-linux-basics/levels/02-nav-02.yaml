@@ -85,7 +85,6 @@ checks:
       have not seen it yet, the listing is what to change.
 
   - id: human-readable
-    optional: true
     type: command_matched
     pattern: 'ls\s+-[a-zA-Z]*l[a-zA-Z]*h|ls\s+-[a-zA-Z]*h[a-zA-Z]*l|ls\s+(-[a-zA-Z]+\s+)*-l\s+.*-h|ls\s+(-[a-zA-Z]+\s+)*-h\s+.*-l'
     scope: level

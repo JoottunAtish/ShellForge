@@ -498,6 +498,25 @@ func (v *validator) validateChecks(lvl *Level) {
 		v.errorf(file, id, "objectives", 0, "a level must declare at least one objective")
 	}
 
+	// bonus is keyed by objective id and is the sole answer to "is this
+	// objective optional": issue #97 gave optional a single home on
+	// Objective, so this is the only place gating may read the flag from. A
+	// check id with no entry reads as false, which is the safe default: an
+	// orphan check (one whose id matches no objective) still gates, and the
+	// missing correspondence is reported on its own by
+	// validateObjectiveCorrespondence below. An objective with no id is
+	// skipped rather than folded into an entry for "", so that an unnamed
+	// optional objective can never make an unnamed check look non-gating; a
+	// duplicate objective id ORs together, which is the safe direction for
+	// a shape validateObjectiveCorrespondence already refuses on its own.
+	bonus := make(map[string]bool, len(lvl.Objectives))
+	for _, o := range lvl.Objectives {
+		if o.ID == "" {
+			continue
+		}
+		bonus[o.ID] = bonus[o.ID] || o.Optional
+	}
+
 	required := 0
 	checkIDs := map[string]bool{}
 	for i := range lvl.Checks {
@@ -512,10 +531,11 @@ func (v *validator) validateChecks(lvl *Level) {
 		checkIDs[c.ID] = true
 
 		// Whether this check tree decides pass or fail. Only the outermost
-		// node carries that: optional and severity have no defined meaning
-		// on a composition branch, since the engine evaluates a composite
-		// structurally.
-		gating := !c.Optional && c.Severity != SeverityWarn
+		// node carries that, and it is read from this check's own
+		// objective, never from the check itself: severity has no defined
+		// meaning on a composition branch either, since the engine
+		// evaluates a composite structurally.
+		gating := !bonus[c.ID] && c.Severity != SeverityWarn
 
 		// A tree that asserts nothing about sandbox state never counts
 		// toward the required total, even when it is written as required.
@@ -532,7 +552,7 @@ func (v *validator) validateChecks(lvl *Level) {
 
 	if required == 0 && len(lvl.Checks) > 0 {
 		v.errorf(file, id, "checks", 0,
-			"a level needs at least one check that is neither optional nor severity: warn: a level you cannot fail is not a level")
+			"a level needs at least one check that neither sits on an optional objective nor sets severity: warn: a level you cannot fail is not a level")
 	}
 
 	v.validateObjectiveCorrespondence(lvl, checkIDs)
@@ -563,16 +583,25 @@ func (v *validator) validateCheckTree(lvl *Level, field string, c *CheckSpec, ga
 		v.errorf(file, id, field+".timeout_seconds", c.Line, "must not be negative")
 	}
 
+	// optional is never a field a check may declare, at any composition
+	// depth: issue #97 gave it a single home on the objective, so a check
+	// cannot become a bonus, or stop being one, by writing the word itself.
+	// Refusing it here, rather than silently ignoring it, is what stops an
+	// author from believing a check they marked optional is exempt from
+	// gating when its objective still says otherwise, and it is what stops
+	// the shape pipe-05's old obj3 shipped with, optional declared on both
+	// the objective and the check, from ever shipping again.
+	if c.optionalDeclared {
+		v.errorf(file, id, field+".optional", c.Line,
+			"belongs on the objective, not on the check: mark the objective with the same id optional: true instead")
+	}
+
 	// Refusing these on a branch is the other half of the gating fix. An
-	// author who writes optional: true on a branch believes they have made
+	// author who writes severity: warn on a branch believes they have made
 	// that branch not count, and they have not: the enclosing objective
 	// still passes or fails as a whole. Silently ignoring the field is how
-	// a level ends up gating on something its author thought was a bonus.
+	// a level ends up gating on something its author thought was exempt.
 	if branch {
-		if c.Optional {
-			v.errorf(file, id, field+".optional", c.Line,
-				"means nothing on a composition branch: it describes a whole objective, and only the outermost check of an objective may declare it")
-		}
 		if c.Severity != "" {
 			v.errorf(file, id, field+".severity", c.Line,
 				"means nothing on a composition branch: it describes a whole objective, and only the outermost check of an objective may declare it")
@@ -662,14 +691,15 @@ func (v *validator) validateCheckType(lvl *Level, field string, c *CheckSpec, ga
 		}
 	}
 
-	// gating, not this node's own optional and severity. Nesting a journal
-	// check inside a required composite would otherwise satisfy the rule
-	// node by node while the objective as a whole still turned on a signal
-	// the learner can forge.
+	// gating, resolved by the caller from this check's own objective, not
+	// from anything the node declares about itself. Nesting a journal check
+	// inside a required composite would otherwise satisfy the rule node by
+	// node while the objective as a whole still turned on a signal the
+	// learner can forge.
 	switch {
 	case journalCheckTypes[c.Type] && gating:
 		v.errorf(file, id, field, c.Line,
-			"a %s check must not decide whether a level is passed. The journal records what the learner typed, and the learner can forge it from inside the sandbox. Set optional: true or severity: warn on the outermost check of this objective, or move this check into an objective of its own.",
+			"a %s check must not decide whether a level is passed. The journal records what the learner typed, and the learner can forge it from inside the sandbox. Set optional: true on this check's objective, or severity: warn on the check itself, or move this check into an objective of its own.",
 			c.Type)
 	case journalCheckTypes[c.Type]:
 		// A legitimately optional or severity: warn journal check is exactly

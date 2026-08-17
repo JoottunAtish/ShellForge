@@ -71,7 +71,7 @@ objectives:                    # R  ≥1; ids must match check ids
     text: "report.txt contains the error count"
   - id: obj2
     text: "Solved in one pipeline"
-    optional: true             # optional = bonus XP, never blocks passing
+    optional: true             # O  bonus XP, never blocks passing; declared here and nowhere else
   - id: obj3
     text: "important/ is untouched"
     preserves: true            # already true at setup; earned by not breaking it
@@ -190,22 +190,23 @@ whether a level's world is already in place.
 | `id` matches `[a-z0-9][a-z0-9-]*`, first character alphanumeric | A leading hyphen makes the id flag-shaped; see the security skill |
 | Every check has a non-empty `on_fail` | Generic failure messages are the #1 quality killer |
 | Every `objectives[].id` has a matching check `id` and vice versa | Keeps the HUD checklist honest |
-| A `severity: warn` check needs no objective | It produces a note (§5), never a checklist line, so there is nothing to correspond to. An `optional: true` bonus check is still shown to the learner and still needs one. |
-| `optional`, `severity` and `id` appear only on the outermost check of an objective, never on a composition branch | They describe a whole objective; the engine evaluates a composite structurally, so on a branch they would be silently ignored |
+| A `severity: warn` check needs no objective | It produces a note (§5), never a checklist line, so there is nothing to correspond to. A bonus objective is shown to the learner, so the check behind an `optional: true` objective still needs its objective; only a warn note is exempt. |
+| `severity` and `id` appear only on the outermost check of an objective, never on a composition branch | They describe a whole objective; the engine evaluates a composite structurally, so on a branch they would be silently ignored |
+| `optional` appears on the objective, never on a check or a composition branch | It describes the checklist line the learner reads. One home means a level cannot present a bonus and gate on it at the same time |
 | `solution` present and non-empty | Golden tests need it |
 | ≥2 hints | One hint is a cliff |
 | `setup.root` under `/home/learner/` | Reset safety |
 | No `source:` pointing outside the pack | Reproducibility |
 | DAG acyclic, all `prerequisites` resolve | Unlock logic |
-| Non-optional checks ≥1 | A level you can't fail isn't a level |
-| `command_matched` and `command_not_matched` must set `optional: true` or `severity: warn` | The journal is learner-influenced and may never decide pass or fail |
+| Checks whose objective is not `optional` ≥1 | A level you can't fail isn't a level |
+| `command_matched` and `command_not_matched` must sit on an `optional: true` objective, or set `severity: warn` on the check | The journal is learner-influenced and may never decide pass or fail |
 | A check declares no parameter outside the set its type accepts | A mistyped `sha526` or `compare-to` used to be dropped in silence, leaving a check that asserted something other than what the author wrote. The error names the bad key and lists what the type takes. |
 
 ---
 
 ## 3. Check catalogue (v0.1, 14 types)
 
-Common fields on every check: `id` (R), `on_fail` (R), `optional` (O, default false), `severity` (O: `fail`|`warn`), `timeout_seconds` (O).
+Common fields on every check: `id` (R), `on_fail` (R), `severity` (O: `fail`|`warn`), `timeout_seconds` (O). `optional` is not a check field: it is declared on the objective (section 2), and a check that sets it is refused when the level loads.
 
 Checks are **read-only**. A check that mutates state is a bug and CI catches it (§ purity test).
 
@@ -313,19 +314,19 @@ a composition node.
 
 ### Journal / behavioural
 
-**A journal check may never gate passing.** It must set `optional: true` or
-`severity: warn`, and `shellforge author validate` rejects a level where one
-does neither. The journal records what the learner typed, and the shell
-instrumentation writes it from inside the sandbox, where a learner can forge an
-entry with a `printf` of the right escape sequence. A level that stakes passing
-on that signal can be beaten without solving it, and, worse, can fail a learner
-who solved it a way the pattern did not anticipate. Use these for bonus
-objectives, for the handful of levels where the syntax genuinely is the lesson,
-and for anti-pattern warnings.
+**A journal check may never gate passing.** Its objective must be `optional:
+true`, or the check must set `severity: warn`, and `shellforge author validate`
+rejects a level where neither is true. The journal records what the learner
+typed, and the shell instrumentation writes it from inside the sandbox, where a
+learner can forge an entry with a `printf` of the right escape sequence. A
+level that stakes passing on that signal can be beaten without solving it,
+and, worse, can fail a learner who solved it a way the pattern did not
+anticipate. Use these for bonus objectives, for the handful of levels where
+the syntax genuinely is the lesson, and for anti-pattern warnings.
 
 ```yaml
-- type: command_matched
-  optional: true             # R  optional: true or severity: warn
+- id: obj3
+  type: command_matched        # R  its objective must be optional: true (see section 2)
   pattern: 'grep.*\|\s*wc\s+-l'
   scope: level               # level | last_n:5 | last
 ```
@@ -357,7 +358,7 @@ and for anti-pattern warnings.
     - { type: file_content, path: /tmp/out, match: regex, value: '^seventeen$' }
   on_fail: "The count doesn't look right."
 ```
-`all_of` and `not` follow the same shape. Top-level `checks` is an implicit `all_of` over non-optional entries.
+`all_of` and `not` follow the same shape. Top-level `checks` is an implicit `all_of` over the entries that gate passing, that is, those whose objective is not `optional` and whose `severity` is not `warn`.
 
 ### Deferred to v0.2 (do not implement this week)
 `port_listening`, `service_active`, `cron_entry_exists`, `user_exists`, `group_membership`, `package_installed`, `disk_usage_under`, `alias_defined`, `function_defined`, `shopt_set`, `mtime_within`, `hardlink_count`, `output_contains`, `command_count_under`, `solved_within_seconds`.
@@ -406,8 +407,8 @@ and for anti-pattern warnings.
 are deliberately distinct from `fail`, because "you have not solved it" and "we could not
 tell" need different words in front of a beginner.
 
-`primary_failure` is the first failing check that is **neither `optional` nor
-`severity: warn`**, per §4.5, and it repeats that objective rather than referring to it by
+`primary_failure` is the first failing check that is **neither a bonus objective
+nor `severity: warn`**, per §4.5, and it repeats that objective rather than referring to it by
 id. A bonus objective is never the primary failure: presenting one as the headline reason
 a level failed teaches the learner that a bonus was mandatory. It is absent, not null, when
 nothing blocking failed.
@@ -481,7 +482,6 @@ checks:
     on_fail: "codes.txt should hold the distinct codes, one per line, sorted. `sort` and `uniq` are friends."
 
   - id: obj3
-    optional: true
     type: command_matched
     pattern: 'grep[^|]*\|\s*wc\s+-l'
     scope: level

@@ -101,7 +101,6 @@ checks:
       exactly.
 
   - id: quick-return
-    optional: true
     type: command_matched
     pattern: '^\s*cd\s*$|^\s*cd\s+~\s*$|^\s*cd\s+-\s*$'
     scope: level

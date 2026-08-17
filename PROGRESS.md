@@ -3024,6 +3024,125 @@ problem the issue named, and bakes in the marker file the WSL destroy path
   rather than a proven one, and stays that way until someone with both
   platforms records the two digests by hand, per the issue's own test plan.
 
+### Day 3 follow-up, 2026-08-17: optional has one home, the objective
+
+Issue #97. `internal/content`, `internal/game`, six level files, and the docs
+that describe them. No new Go dependency, no `internal/archtest` edge, and
+`internal/verify` untouched throughout.
+
+- **The decision.** `optional` used to live on both `content.Objective` and
+  `content.CheckSpec`, and the two could disagree; `internal/game.verifySpecs`
+  resolved a disagreement by letting either side's `true` win, marked
+  `TODO(v0.2)` at the time (see the Day 2, 2026-08-14 entry above). This
+  ticket deletes `CheckSpec.Optional` outright rather than picking a winner at
+  runtime: every one of the 15 `optional` hits in the shipped pack resolved to
+  8 objective-side declarations and 7 check-side ones, and every check-side
+  hit already had an identical objective-side twin in place, so the objective
+  was a pure deletion away from being the only declaration anywhere.
+  `optional` is also meaningless without an objective, since it describes a
+  checklist line the learner reads, while `severity` is not: the validator
+  already exempted a `severity: warn` check from needing an objective and
+  refused that same exemption to an `optional` one. One home means the
+  objective's checklist and the engine's pass or fail verdict can no longer
+  disagree about the same check.
+- **`optionalDeclared`, not a decode error.** The YAML key `optional` stays
+  reserved on a check's mapping, so it never falls into `Params` and never
+  reaches the check registry as an unrecognized parameter. `decodeField`
+  records only that the key was present, in an unexported
+  `CheckSpec.optionalDeclared`, and does not decode its value: `optional:
+  "yes"` on a check now gets the validator's "belongs on the objective"
+  message, not a bare type complaint. The validator rejects the key at every
+  composition depth, not only on a branch as the old rule did, because a
+  check can no longer declare it correctly anywhere now that the field exists
+  only on `Objective`.
+- **`gating` recomputed from the check's own objective, and this is a
+  security fix, not a refactor.** The rule that a `command_matched` or
+  `command_not_matched` check may never decide pass or fail depends on
+  knowing whether a check is gating. Before this ticket, `validateChecks`
+  read that off `CheckSpec.Optional`, the field this ticket deletes. After
+  it, `gating` is read from a `map[string]bool` built from `lvl.Objectives`,
+  keyed by objective id: an objective declared `optional: true` makes every
+  check with a matching id non-gating, and a check whose id matches no
+  objective defaults to gating, the safe direction, since the missing
+  correspondence is refused on its own by
+  `validateObjectiveCorrespondence`. An objective with an empty id is
+  skipped when the map is built, so an unnamed optional objective can never
+  make an unnamed check look non-gating by both reading as key `""`.
+  `TestValidateGatingReadsEachObjectivesOwnOptionalFlag` pins the keyed-by-id
+  part specifically: an implementation that collapsed every objective's flag
+  into one shared boolean, or that ORed all of them together, would still
+  pass the simpler tests and fail that one.
+- **The latent defect this fixes.** Before this ticket, the validator's
+  `required` counter for "a level you cannot fail is not a level" also read
+  `CheckSpec.Optional`, while `internal/game.verifySpecs` computed
+  `verify.Spec.Optional` by ORing in the objective's own flag. A level whose
+  only check sat under an objective-only `optional: true`, with the check
+  itself declaring nothing, counted as `required == 1` at validation time
+  while the engine already treated the same check as optional at runtime:
+  the validator certified as failable a level that could not be failed. No
+  shipped level hit this, because every optional objective in the pack was
+  already backed by a journal-type check, which `hasStateLeaf` already
+  excludes from the required count for an unrelated reason.
+  `TestValidateEveryObjectiveOptionalIsALevelYouCannotFail` is red against the
+  pre-ticket code for exactly this reason and is the test that proves the
+  fix.
+- **Level pack.** Seven check-side `optional: true` lines deleted across six
+  files (`01-nav-01.yaml`, `02-nav-02.yaml`, `03-nav-03.yaml`,
+  `04-nav-04.yaml` twice, `05-files-01.yaml`, `14-pipe-05.yaml`); every one
+  had an identical objective-side declaration already in place, so no
+  level's behavior changes. `06-files-02.yaml`'s `no-flooding` check was not
+  touched at all: it already gated through `severity: warn` alone and never
+  carried `optional`. `TestEmbeddedPackValidatesAgainstTheRealRegistry` is
+  the acceptance test for these seven deletions: it goes red the moment the
+  validator rule lands and green only once every one of them is gone.
+- **Docs.** `docs/LEVEL-FORMAT.md` section 2's invariant table, the check
+  catalogue's common-fields line, the journal section's requirement sentence
+  and its `command_matched` example, the composition section's implicit
+  `all_of` description, and the `primary_failure` sentence in section 5 all
+  described the two-homes schema and now describe the one-home version.
+  Section 6's worked example dropped its own check-side `optional: true`,
+  which `TestWorkedExampleValidates` now enforces by going red until it is
+  gone. `docs/CURRICULUM.md`'s journal-check paragraph got the same
+  rewording. `docs/design/ARCHITECTURE.md` was left alone on purpose: it
+  describes intent, and the intent did not change, only which field
+  expresses it.
+- **Mutation check.** Reverting `gating := !bonus[c.ID] && c.Severity !=
+  SeverityWarn` to `!c.optionalDeclared && c.Severity != SeverityWarn`, the
+  old check-side reading, turned `TestValidateJournalChecksCannotGatePassing`
+  (both its `optional is accepted` subtests),
+  `TestValidateGatingReadsEachObjectivesOwnOptionalFlag`, and
+  `TestEmbeddedPackValidatesAgainstTheRealRegistry` (on all seven levels
+  whose check-side line was deleted) red, which is what proves the new tests
+  are load-bearing rather than incidentally passing. Restored immediately
+  after confirming it, and the full suite was green again afterward.
+- **What could not run locally, same as every recent entry on this page.**
+  The docker daemon is down in this environment, so the golden harness,
+  `author test`, and `make golden` could not run; CI's Sandbox image job is
+  the only witness that the nine shipped levels still pass their golden
+  contract with the seven deleted lines gone. That is a reasoned expectation
+  rather than one this session proved end to end, though a strongly founded
+  one: no level's `verify.Spec.Optional` or `gating` value changes for any
+  existing check, since every optional objective in the pack was already
+  backed by a journal check that `hasStateLeaf` excludes from the required
+  count regardless. `govulncheck`, `python3`, and `pytest` are absent from
+  this environment, so `scripts/check-ci-gates.py` and `scripts/tests`
+  stayed CI's to run alone, same as `govulncheck ./...`. `gofmt -s -w .`,
+  `go vet ./...`, `go build ./...`, `go test ./...`, `go test -race ./...`,
+  `go test ./internal/archtest/...`, `bash scripts/check-punctuation.sh`,
+  `bash scripts/check-links.sh`, `bash scripts/check-cli-package.sh`, and
+  `gosec ./...` all ran locally and are green.
+
+One thing found and deliberately not fixed under this same ticket: this
+session found an eighth place carrying the old wording, not counted among
+the fifteen `optional` hits because it names no such key: `cmd/shellforge`'s
+`TestValidateFailureModes`'s `journal check gating a pass` case asserted the
+literal string `optional: true or severity: warn` through the `author
+validate` CLI path, one layer above where the ticket's own plan looked.
+Updated to the same new wording as `TestValidateJournalChecksCannotGatePassing`,
+since it exercises the identical validator message through a different
+caller rather than a different rule, and the wording change was already this
+ticket's own decision to make.
+
 ## Day 6: hardening, CI, packaging
 
 - [ ] CI green on both platforms

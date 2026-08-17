@@ -91,7 +91,6 @@ checks:
       to confirm.
 
   - id: one-command
-    optional: true
     type: command_matched
     pattern: 'mkdir\s+(-[a-zA-Z]*\s+)*-[a-zA-Z]*p'
     scope: level
