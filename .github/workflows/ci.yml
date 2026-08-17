@@ -449,10 +449,18 @@ jobs:
           sha256sum rootfs.tar.gz > rootfs.tar.gz.sha256
           cat rootfs.tar.gz.sha256
 
+          # Captured once, not piped straight into grep -q: grep -q stops
+          # reading the moment it has a match, tar gets SIGPIPE writing the
+          # rest of the listing, and under pipefail that turns into "tar:
+          # stdout: write error" and a nonzero pipeline status regardless of
+          # whether grep actually matched. Command substitution drains tar to
+          # completion first, so there is no early reader to break the pipe.
+          tar_listing=$(tar -tzf rootfs.tar.gz)
+
           missing=0
           for path in etc/wsl.conf home/learner opt/shellforge/bin/check \
                       opt/shellforge/.sandbox-id usr/share/man/man1/ls.1.gz; do
-            if ! tar -tzf rootfs.tar.gz | grep -qE "^\.?/?${path//./\\.}/?$"; then
+            if ! grep -qE "^\.?/?${path//./\\.}/?$" <<< "$tar_listing"; then
               echo "MISSING from rootfs.tar.gz: $path"
               missing=1
             fi
