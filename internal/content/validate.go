@@ -506,9 +506,18 @@ func (v *validator) validateChecks(lvl *Level) {
 	// missing correspondence is reported on its own by
 	// validateObjectiveCorrespondence below. An objective with no id is
 	// skipped rather than folded into an entry for "", so that an unnamed
-	// optional objective can never make an unnamed check look non-gating; a
-	// duplicate objective id ORs together, which is the safe direction for
-	// a shape validateObjectiveCorrespondence already refuses on its own.
+	// optional objective can never make an unnamed check look non-gating.
+	//
+	// A duplicate objective id is reduced with OR. That is not the stricter
+	// direction for every rule that reads this map, and it is worth being
+	// honest about which way it cuts: OR means more objectives read as a
+	// bonus, so the journal rule below refuses fewer checks, while the
+	// "level you cannot fail" count refuses more. The reason to pick OR is
+	// not strictness, it is agreement: verifySpecs in internal/game reduces
+	// the same list the same way, and nothing calls Validate on the path a
+	// learner runs, so a disagreement here would let the validator see a
+	// bonus objective while the engine gated on it. The duplicate itself is
+	// separately an error from validateObjectiveCorrespondence.
 	bonus := make(map[string]bool, len(lvl.Objectives))
 	for _, o := range lvl.Objectives {
 		if o.ID == "" {
@@ -591,9 +600,17 @@ func (v *validator) validateCheckTree(lvl *Level, field string, c *CheckSpec, ga
 	// gating when its objective still says otherwise, and it is what stops
 	// the shape pipe-05's old obj3 shipped with, optional declared on both
 	// the objective and the check, from ever shipping again.
+	//
+	// The message names deletion first and the objective second, because
+	// only the presence of the key is recorded and never its value, so
+	// optional: false lands here too. An author who wrote optional: false
+	// asked for the default, and telling them to set optional: true on the
+	// objective would talk them into turning a required objective into a
+	// bonus, changing what the level gates on. Deleting the line is the
+	// right next action for both values.
 	if c.optionalDeclared {
 		v.errorf(file, id, field+".optional", c.Line,
-			"belongs on the objective, not on the check: mark the objective with the same id optional: true instead")
+			"belongs on the objective, not on the check: delete it here, and set optional: true on the objective with the same id if this objective is meant to be a bonus")
 	}
 
 	// Refusing these on a branch is the other half of the gating fix. An

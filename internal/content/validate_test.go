@@ -251,6 +251,70 @@ func TestValidateOptionalOnACheckNamesTheObjective(t *testing.T) {
 		report := validateFixture(t, fixturePack("", lvl))
 		requireProblem(t, report, "nav-01", "checks[1].optional", ProblemError, "belongs on the objective, not on the check")
 	})
+
+	// The rule is about the key being present, not about what it says, so
+	// optional: false is refused too. That is the case where the wording of
+	// the message matters most: an author who wrote false asked for the
+	// default, and advice to set optional: true on the objective would talk
+	// them into turning a required objective into a bonus. So this asserts
+	// the message tells them to delete the line.
+	t.Run("the check says false, which is still not its field", func(t *testing.T) {
+		lvl := defaultLevel()
+		lvl.Objectives += "  - id: obj2\n    text: \"A second thing to check\"\n"
+		lvl.Checks += "  - id: obj2\n    optional: false\n    type: file_exists\n    path: /home/learner/quest/bonus.txt\n    on_fail: \"No bonus.txt yet.\"\n"
+
+		report := validateFixture(t, fixturePack("", lvl))
+		requireProblem(t, report, "nav-01", "checks[1].optional", ProblemError, "delete it here")
+	})
+}
+
+// TestDuplicateObjectiveIDReducesTheSameWayAsVerifySpecs pins the OR reduction
+// in validateChecks.
+//
+// It matters because internal/game's verifySpecs builds the same map from the
+// same list, and the two must agree. Nothing calls Validate on the path a
+// learner runs, so if the validator read a duplicated objective id as a bonus
+// while the engine read it as required, the validator would report a legal
+// journal check while the engine gated on a signal the learner can forge.
+// TestDuplicateObjectiveIDReducesTheSameWayAsTheValidator is the other half of
+// this pair, in internal/game.
+//
+// The duplicate id is separately an error. This asserts the reduction anyway,
+// because "it is already refused elsewhere" is exactly the reasoning that
+// leaves a rule unpinned until something else stops refusing it.
+func TestDuplicateObjectiveIDReducesTheSameWayAsVerifySpecs(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		first string
+	}{
+		{name: "the optional copy is declared first", first: "    optional: true\n"},
+		{name: "the required copy is declared first", first: ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			second := "    optional: true\n"
+			if tt.first != "" {
+				second = ""
+			}
+
+			lvl := defaultLevel()
+			lvl.Objectives += "  - id: obj2\n    text: \"A duplicated objective\"\n" + tt.first
+			lvl.Objectives += "  - id: obj2\n    text: \"A duplicated objective\"\n" + second
+			lvl.Checks += "  - id: obj2\n    type: command_matched\n    pattern: '^\\s*pwd\\s*$'\n    on_fail: \"Try pwd.\"\n"
+
+			report := validateFixture(t, fixturePack("", lvl))
+
+			// Either declaration saying optional makes the objective a
+			// bonus, whichever order they appear in, so the journal check
+			// is never refused for gating. Asserted as "no error at this
+			// field" rather than with requireNoProblem, because a legal
+			// journal check still draws the issue #88 warning there.
+			for _, p := range report.Problems {
+				if p.LevelID == "nav-01" && p.Field == "checks[1]" && p.Level == ProblemError {
+					t.Errorf("one copy of obj2 is optional: true, so the journal check must not be refused for gating: %s", p.Message)
+				}
+			}
+		})
+	}
 }
 
 // TestValidateOptionalOnABranchNamesTheObjectiveToo is the depth-independent
@@ -666,6 +730,12 @@ func TestValidateObjectiveCorrespondence(t *testing.T) {
 // does for a check id with no corresponding objective: it must read as
 // gating (the safe default), never panic on the miss, and an unnamed
 // optional objective must not be confused with an unnamed check.
+//
+// Honest about which subtests are load bearing: the first two hold for the
+// pre-issue-97 code as well, since a check-side flag that nobody set also read
+// as gating, so they are pins on the safe default rather than red-first
+// drivers. Only the third fails if the empty-objective-id guard is dropped
+// from the bonus map, which was confirmed by mutation.
 func TestValidateAnUnmatchedCheckIDDefaultsToGating(t *testing.T) {
 	t.Run("a journal check with no objective is still refused", func(t *testing.T) {
 		lvl := defaultLevel()

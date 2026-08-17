@@ -312,6 +312,51 @@ func TestVerifySpecsToleratesACheckWithNoObjective(t *testing.T) {
 	}
 }
 
+// TestDuplicateObjectiveIDReducesTheSameWayAsTheValidator pins that verifySpecs
+// reduces a duplicated objective id with OR, matching validateChecks in
+// internal/content.
+//
+// The two must agree. A duplicate objective id is a validation error, but
+// nothing calls content.Validate on the path a learner runs, so if this
+// reduction disagreed with the validator's then the validator could report a
+// journal check as a legal bonus while the engine gated on it, and a journal
+// signal is one the learner can forge from inside the sandbox. Last-wins here
+// against OR there is exactly that divergence, which is why the order of the
+// two declarations is the axis of this table.
+//
+// TestDuplicateObjectiveIDReducesTheSameWayAsVerifySpecs is the other half of
+// this pair, in internal/content.
+func TestDuplicateObjectiveIDReducesTheSameWayAsTheValidator(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		firstOpt  bool
+		secondOpt bool
+	}{
+		{name: "the optional copy is declared first", firstOpt: true, secondOpt: false},
+		{name: "the required copy is declared first", firstOpt: false, secondOpt: true},
+		{name: "both copies agree they are optional", firstOpt: true, secondOpt: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			specs, err := verifySpecs(
+				[]content.CheckSpec{
+					{ID: "obj1", Type: "file_exists", OnFail: "a message",
+						Params: map[string]any{"path": "/a"}},
+				},
+				[]content.Objective{
+					{ID: "obj1", Text: "the first copy", Optional: tt.firstOpt},
+					{ID: "obj1", Text: "the second copy", Optional: tt.secondOpt},
+				},
+			)
+			if err != nil {
+				t.Fatalf("verifySpecs: %v", err)
+			}
+			if !specs[0].Optional {
+				t.Error("Optional = false, want true: either declaration saying optional must make the objective a bonus, whichever order the two appear in, because internal/content's validateChecks reduces the same list with OR and the two must not disagree")
+			}
+		})
+	}
+}
+
 // TestVerifySpecRejectsAmbiguousShapes covers the shapes the engine also
 // refuses. Refusing here as well is what lets the message name the line in the
 // level file, which the engine cannot see.

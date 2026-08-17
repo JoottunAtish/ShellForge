@@ -3115,22 +3115,32 @@ that describe them. No new Go dependency, no `internal/archtest` edge, and
   whose check-side line was deleted) red, which is what proves the new tests
   are load-bearing rather than incidentally passing. Restored immediately
   after confirming it, and the full suite was green again afterward.
-- **What could not run locally, same as every recent entry on this page.**
-  The docker daemon is down in this environment, so the golden harness,
-  `author test`, and `make golden` could not run; CI's Sandbox image job is
-  the only witness that the nine shipped levels still pass their golden
-  contract with the seven deleted lines gone. That is a reasoned expectation
-  rather than one this session proved end to end, though a strongly founded
-  one: no level's `verify.Spec.Optional` or `gating` value changes for any
-  existing check, since every optional objective in the pack was already
-  backed by a journal check that `hasStateLeaf` excludes from the required
-  count regardless. `govulncheck`, `python3`, and `pytest` are absent from
-  this environment, so `scripts/check-ci-gates.py` and `scripts/tests`
-  stayed CI's to run alone, same as `govulncheck ./...`. `gofmt -s -w .`,
-  `go vet ./...`, `go build ./...`, `go test ./...`, `go test -race ./...`,
-  `go test ./internal/archtest/...`, `bash scripts/check-punctuation.sh`,
-  `bash scripts/check-links.sh`, `bash scripts/check-cli-package.sh`, and
-  `gosec ./...` all ran locally and are green.
+- **The golden contract ran locally, which is a first for this page.** The
+  docker daemon came up part way through this session, so unlike every
+  recent entry above, the nine shipped levels were played for real against a
+  live Linux container from a developer machine rather than left to CI. Both
+  entry points ran and both passed all nine: the Go test
+  `TestEveryLevelGoldenPath`, and the CLI path `shellforge author test --all`,
+  which also exercises the purity and teardown phases per level. So the claim
+  that no level's behaviour changes with the seven deleted lines gone is
+  proved end to end here, not merely reasoned from the fact that no level's
+  `verify.Spec.Optional` or `gating` value changes.
+- **What genuinely could not run locally.** `govulncheck`, `python3`, and
+  `pytest` are absent from this environment, so `scripts/check-ci-gates.py`,
+  `scripts/tests`, and `govulncheck ./...` stayed CI's to run alone. Nothing
+  else was skipped. `gofmt -s -w .`, `go vet ./...`, `go build ./...`,
+  `go test ./...`, `go test -race ./...`, `go test ./internal/archtest/...`,
+  `bash scripts/check-punctuation.sh`, `bash scripts/check-links.sh`,
+  `bash scripts/check-cli-package.sh`, `bash scripts/check-allowlist-regexp.sh`,
+  and `gosec -quiet -exclude-dir=docs ./...` all ran locally and are green.
+- **A trap for the next person who runs the sandbox tests locally.** A stale
+  `shellforge-controltest` image built before the Containerfile gained its
+  `/home/learner/.shellforge` step makes `TestControlChannelAnswersTheShim`
+  fail with `mkfifo: cannot create fifo ... No such file or directory`, which
+  reads as a code defect in the control channel and is not one. Confirmed
+  identical on `main`, so it is not from this branch. Untagging the stale
+  image and letting the test rebuild it fixes it. CI never sees this because
+  it always builds the image fresh.
 
 One thing found and deliberately not fixed under this same ticket: this
 session found an eighth place carrying the old wording, not counted among

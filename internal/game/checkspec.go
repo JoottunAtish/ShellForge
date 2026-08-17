@@ -51,7 +51,17 @@ func verifySpecs(checks []content.CheckSpec, objectives []content.Objective) ([]
 	optional := make(map[string]bool, len(objectives))
 	for _, obj := range objectives {
 		text[obj.ID] = obj.Text
-		optional[obj.ID] = obj.Optional
+
+		// Reduced with OR, matching validateChecks in internal/content
+		// exactly. The two must agree: a duplicate objective id is a
+		// validation error, but nothing calls Validate on the path a
+		// learner actually runs, so if this reduction disagreed with the
+		// validator's then the validator could see a bonus objective while
+		// the engine gated on it. For a journal check that is the forgeable
+		// signal deciding a level, which is the whole thing the gating rule
+		// exists to prevent. TestDuplicateObjectiveIDReducesTheSameWayAsTheValidator
+		// pins the agreement from this side.
+		optional[obj.ID] = optional[obj.ID] || obj.Optional
 	}
 
 	specs := make([]verify.Spec, 0, len(checks))
