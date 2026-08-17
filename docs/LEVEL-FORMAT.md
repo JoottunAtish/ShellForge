@@ -231,6 +231,25 @@ Checks are **read-only**. A check that mutates state is a bug and CI catches it 
   ignore_case: false         # O
 ```
 
+`value` is required on every match mode, but an empty one means different
+things and is not always legal:
+
+| Match mode | `value: ""` |
+|---|---|
+| `exact` | Legal. Asserts the file is empty. |
+| `trimmed_equals` | Legal. Asserts the file is empty or only whitespace. |
+| `contains` | **Refused when the level loads.** An empty substring is in every file, so the check could never fail. |
+| `regex` | **Refused when the level loads.** The empty pattern matches everything, so the check could never fail. |
+| `line_count` | Refused when the level loads, since it is not an integer. |
+| `sha256` | Accepted, but nothing hashes to the empty string, so the check always fails. |
+
+The three refusals happen when the level loads, not when a learner runs
+`check`. A blank placeholder nobody filled in is the way an empty value reaches
+a pack, and an objective that passes whatever the learner typed is worse than
+one that is missing. `sha256` is left alone because it errs the other way: a
+level author sees their own check failing rather than a learner being told they
+solved something they did not.
+
 ```yaml
 - type: dir_exists
   path: .../logs
@@ -247,8 +266,16 @@ Checks are **read-only**. A check that mutates state is a bug and CI catches it 
 - type: file_mode
   path: .../deploy.sh
   mode: "0700"               # exact octal
-  # or: any_of: ["0700","0750"]
+  # or: modes: ["0700","0750"]
 ```
+
+Set `mode` for one acceptable mode, or `modes` for several. One of the two is
+required, and `modes` wins if both are set.
+
+The list parameter is `modes`, not `any_of`. `any_of` is a composition key
+(see Composition below), so a check that writes it is read as a composition
+node rather than as a `file_mode` check, and a check cannot be both a type and
+a composition node.
 
 ```yaml
 - type: file_owner

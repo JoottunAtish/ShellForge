@@ -126,10 +126,15 @@ func TestBuildRejectsAnUnknownType(t *testing.T) {
 	}
 }
 
-// TestBuildRejectsTypeAndCompositionTogether is the shape that makes the
-// documented file_mode `any_of` parameter unreachable from YAML. internal/content
-// already refuses it, but Build cannot assume its caller validated: it is a
-// library entry point and pack data is not this process's own.
+// TestBuildRejectsTypeAndCompositionTogether is the shape a check written with
+// a composition key as a parameter decodes into. It is what a pack written
+// against the pre-#95 documentation produced, when file_mode's list of
+// acceptable modes was spelled `any_of`; that parameter is `modes` now, and
+// the shape stays reachable for any future collision.
+//
+// internal/content already refuses it, but Build cannot assume its caller
+// validated: it is a library entry point and pack data is not this process's
+// own.
 func TestBuildRejectsTypeAndCompositionTogether(t *testing.T) {
 	factories := stubFactories(map[string]Status{"leaf": StatusPass})
 	e := testEngine(t, factories)
