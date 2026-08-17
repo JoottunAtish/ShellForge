@@ -140,11 +140,29 @@ RUN set -eux; \
 
 # Game mount point. Bind-mounted read-only at run time and holding the
 # instrumentation rc file, the in-sandbox shims, and the level payload.
-# This is the ONLY host path visible inside the sandbox.
+# This is the ONLY host path visible inside the sandbox. If that bind mount
+# ever covers this whole directory on the Docker backend rather than a
+# narrower subpath, it would shadow the baked-in files below for a live
+# Docker container; it does not affect the WSL rootfs tarball, which is a
+# plain filesystem export of this image with no runtime mount involved.
+#
+# .sandbox-id is a fixed identifying marker, owned root and mode 0444, so a
+# process running as learner can read it but never rewrite it; deletion is
+# blocked by this directory staying root-owned mode 0755 below, not by the
+# file's own mode. The WSL destroy path (issue #69) checks for this file
+# before it unregisters a distribution, and refuses when it is absent, so a
+# marker a learner could delete would be a hole in that refusal rather than
+# a safety net. Presence is the contract, not this exact string: the
+# destructive-safety skill asks for confirmation that a marker file exists,
+# not that it holds a specific value. The v1 suffix is future proofing in
+# case the marker format itself needs to change in a way #69's check would
+# need to tell apart, not a value anything reads today.
 RUN set -eux; \
     mkdir -p /opt/shellforge/bin /opt/shellforge/rc; \
+    printf 'shellforge-sandbox-v1\n' > /opt/shellforge/.sandbox-id; \
     chown -R root:root /opt/shellforge; \
-    chmod 0755 /opt/shellforge
+    chmod 0755 /opt/shellforge; \
+    chmod 0444 /opt/shellforge/.sandbox-id
 
 COPY rc/instrument.bash /opt/shellforge/rc/instrument.bash
 COPY bin/ /opt/shellforge/bin/

@@ -125,8 +125,14 @@ image:
 rootfs: image
 	@mkdir -p images/out
 	$(CONTAINER_ENGINE) create --name $(IMAGE_NAME)-export $(IMAGE_NAME):$(IMAGE_TAG) /bin/true
-	$(CONTAINER_ENGINE) export $(IMAGE_NAME)-export | gzip -9 > images/out/rootfs.tar.gz
+	@rm -f images/out/rootfs.tar images/out/rootfs.tar.sha256
+	# Export to a file first, then gzip the file in place: a Make recipe has
+	# no pipefail by default, so `docker export | gzip > file` would let a
+	# failed export still report success, since gzip happily compresses
+	# whatever partial bytes it received before EOF and exits 0.
+	$(CONTAINER_ENGINE) export $(IMAGE_NAME)-export -o images/out/rootfs.tar
 	$(CONTAINER_ENGINE) rm -f $(IMAGE_NAME)-export
+	gzip -9 -n -f images/out/rootfs.tar
 	@cd images/out && sha256sum rootfs.tar.gz > rootfs.tar.gz.sha256
 	@echo "exported images/out/rootfs.tar.gz"
 	@cat images/out/rootfs.tar.gz.sha256
