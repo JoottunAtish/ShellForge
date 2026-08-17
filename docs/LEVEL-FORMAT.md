@@ -118,6 +118,24 @@ teardown:                      # O  default: rm -rf setup.root
 tags: [text-processing, must-know]   # O
 ```
 
+A `setup.files` entry sets exactly one of `source`, `content`, and `generate`; the
+runner refuses an entry that sets none or more than one. An explicit `content:` key
+counts as choosing content even when the value is empty, which is not the same
+question as whether the key was present at all: `files-01`'s `.gitkeep` is authored as
+`content: ""` for exactly this reason, to materialize a real, empty file. An absent
+`content:` key is not the same as an empty one.
+
+`mode` is a quoted string such as `"0644"`, not a bare `0644`. An unquoted `0644` is
+YAML 1.1 octal, which most YAML parsers, including this one, read as the number 420
+rather than the permission bits an author meant. The runner parses the string with
+`strconv.ParseUint(s, 8, 32)` and refuses anything above `0o777`, so a malformed value
+is a load error naming the file, not a silently wrong permission bit.
+
+`teardown:` may carry a `script:`, as shown above, or may be `{}`, as shown in
+section 6's worked example, when a level needs no teardown step beyond the default
+`rm -rf setup.root`; `script:` on both `setup` and `teardown` accepts the block
+scalar form shown above and the plain scalar form (`script: "true"`) alike.
+
 ### Setup and teardown execution
 
 `setup.script` runs as **`learner`**, inside the sandbox, after every file in
@@ -387,6 +405,19 @@ the syntax genuinely is the lesson, and for anti-pattern warnings.
 5. **Only the first failing required check's `on_fail` is displayed.** Optional/warn results are shown as notes below.
 6. Default timeout 10 s per check, 60 s per level. Timeout = fail with a distinct message.
 
+`any_of`, `all_of`, and `not` are structural, not registered check types: the catalogue
+in section 3 stays at fourteen, and there is no `type: any_of`. A composition node's
+branches have no `id`, never appear in `objectives`, and rule 4's "no short-circuit"
+applies to objectives, not to a composite's internal branches: once a composite's own
+answer is decided, evaluating its remaining branches would cost sandbox round trips and
+tell the learner nothing, so it stops. The checklist stays complete either way, because
+the composite itself is the objective and is always reported.
+
+When the 60 second level budget is exhausted, the checks that have not yet run are
+**marked** as not evaluated rather than silently dropped, for the same reason rule 4
+exists: a learner reading the result sees a complete checklist, one that says "we ran
+out of time on this one" rather than one with entries missing.
+
 ---
 
 ## 5. Result shape (engine → UI)
@@ -436,6 +467,13 @@ without a special case.
 ledger and the command count, which live with the learner's progress rather than with the
 sandbox. The engine's own result type omits the field entirely and the game layer adds it,
 so a caller reading this document sees one shape either way.
+
+The engine's `Run` returns this result and never an error. A cancelled run still
+produces a complete checklist rather than a bare failure: every check that did not get
+to run is marked the way the level budget's timeout is (§4), not omitted. A caller that
+needs to know whether the learner interrupted the run rather than the level genuinely
+failing inspects `ctx.Err()` itself, rather than being handed a second, competing signal
+to reconcile against this result.
 
 ---
 
@@ -557,3 +595,12 @@ protect something its own setup never created. It is **not** the same as
 `optional`: a learner who deletes `important/` still fails the level. And it cannot
 be used to quiet the gate, because step 2 also requires that at least one required
 non-preserving objective failed.
+
+`author test` **refuses** when it cannot reach a Linux Docker daemon, rather than
+skipping. A `make golden` that reports success having tested nothing is worse than one
+that reports it could not run: the whole point of the golden contract is that every
+level's checks and solution were actually exercised against the sandbox, not merely
+that the command exited zero. The Go golden test carrying the same six steps is gated
+on the `SHELLFORGE_GOLDEN=1` environment variable as well as a Linux daemon, so
+`go test ./...` in the fast CI job never builds the Containerfile or spins up a
+container; only the job that sets that variable does.
