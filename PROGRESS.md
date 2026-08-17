@@ -3024,6 +3024,68 @@ problem the issue named, and bakes in the marker file the WSL destroy path
   rather than a proven one, and stays that way until someone with both
   platforms records the two digests by hand, per the issue's own test plan.
 
+### Day 2 follow-up, 2026-08-17: the doc anchor gate that was checking one comment
+
+Issue #86. The `Docs` job's "Every doc anchor emitted by Go code exists in the
+docs" step grepped for the struct-literal form, `DocAnchor:\s*"..."`. Every real
+call site in this repository writes the positional form instead,
+`ux.Fail(op, err, remediation, "...")`, and running the gate's own grep over the
+tree found exactly one match: a comment in `internal/verify/snapshot.go`, not a
+line of code. All 85 real call sites were invisible to it. The gate had been
+reporting green while checking nothing since the day it was written, and the two
+places in this file that credited it with keeping anchors honest were more
+optimistic than it was.
+
+`internal/docanchor` replaces the grep with a Go test, following
+`internal/archtest`'s own shape as the precedent for a module-wide governance
+test: parse every non-test `.go` file, find both the positional form and the
+struct-literal one (`ux.Error{DocAnchor: "..."}`, since the type is constructible
+directly), resolve a string literal or a same-package string constant, and check
+every resolved anchor against a heading in `docs/05-troubleshooting.md`. Anything
+else, a function parameter, a call result, is reported as unverifiable rather
+than silently skipped, which is the whole point: a silently-skipped anchor is
+exactly how the old grep went blind. Registered in `internal/archtest`'s own
+layer table at 99, alongside `internal/archtest` itself, since it is governance
+over the whole module rather than a layer.
+
+Running it against the tree found 17 real anchors and zero missing headings, so
+there was nothing to reconcile; the gate had been silently correct in outcome
+while being unable to prove it, which the ticket's context section already
+suspected ("nothing is broken today, and that is the problem").
+
+Two false positives showed up while building it, and both were bugs in this new
+code rather than the repository, caught before either reached the tree:
+
+- The heading-match direction was backwards on the first pass: it tested whether
+  a heading line appeared inside the short anchor string, rather than the anchor
+  inside the heading, so all 17 real anchors briefly reported as missing despite
+  having correct headings. `internal/archtest`'s own `dependencies_test.go`
+  precedent wasn't the model here; `strings.Contains(heading, anchor)`, the
+  direction that already existed in `cmd/shellforge`'s local #103 gate, is.
+- `ux.Fail` itself constructs `&Error{..., DocAnchor: docAnchor, ...}` from its
+  own parameter, which the composite-literal detector flagged as unverifiable on
+  every single run: correct behavior applied to the wrong site, since every real
+  anchor that function can ever carry is already checked at the call site that
+  supplied it. Suppressed specifically inside `internal/platform/ux`, and a
+  matching case added so a hypothetical unqualified `Fail(...)` called from
+  inside that package, the shape a same-package caller would actually write,
+  is still caught rather than exempted along with the plumbing.
+
+Verified against a deliberate violation twice, once in each shape a real call
+site could take: a qualified `ux.Fail(...)` from an unrelated package with an
+invented anchor, and a bare `Fail(...)` from inside `internal/platform/ux`
+itself. Both were caught, both removed afterward. Twelve fixture tests pin the
+mechanism independently of what the repository currently contains, including one
+proving an unrelated function that merely happens to be named `Fail` outside the
+`ux` package is not mistaken for it, and one proving a `// DocAnchor: "..."`
+comment is not treated as code.
+
+The `Docs` job now runs `go test ./internal/docanchor/...`, which needed
+`actions/setup-go` added to that job for the first time. The same test also
+runs for free inside `go test ./...` in both `Test` jobs, so a developer
+finds a missing heading locally before pushing, which was the whole appeal of
+option 2 over widening the grep.
+
 ## Day 6: hardening, CI, packaging
 
 - [ ] CI green on both platforms

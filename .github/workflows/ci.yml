@@ -335,26 +335,19 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
       - name: Every doc anchor emitted by Go code exists in the docs
-        # A doctor probe that points at a heading nobody wrote is worse than no
-        # link at all: the learner follows it and lands nowhere.
-        run: |
-          set -uo pipefail
-          missing=0
-          anchors=$(grep -rhoE 'DocAnchor:\s*"[a-z0-9-]+"' --include='*.go' . \
-                    | sed -E 's/.*"([a-z0-9-]+)".*/\1/' | sort -u || true)
-          if [ -z "$anchors" ]; then
-            echo "No doc anchors emitted yet, nothing to verify."
-            exit 0
-          fi
-          for a in $anchors; do
-            if ! grep -qE "^#{1,4} .*$a" docs/05-troubleshooting.md 2>/dev/null; then
-              echo "FAIL: doc anchor '$a' has no heading in docs/05-troubleshooting.md"
-              missing=1
-            fi
-          done
-          [ "$missing" -eq 0 ] && echo "OK: every doc anchor resolves"
-          exit $missing
+        # This used to be a grep for the struct-literal form, DocAnchor: "...".
+        # Every real call site in this repository uses the positional form,
+        # ux.Fail(op, err, remediation, "..."), which the grep could not see:
+        # it was finding one match, a comment, and reporting green while
+        # checking nothing. internal/docanchor parses the module properly and
+        # replaces it. See issue #86.
+        run: go test ./internal/docanchor/...
 
       - name: No broken relative links in Markdown
         run: ./scripts/check-links.sh

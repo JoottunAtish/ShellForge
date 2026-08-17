@@ -128,6 +128,7 @@ its tables and justify it in the commit message. Do not delete the test.
 cmd/shellforge/                     CLI entry point and command table
 internal/{doctor,runtime,sandbox,pty,journal,content,verify,game,store,platform}/
 internal/archtest/                  layer dependency enforcement
+internal/docanchor/                 every ux.Fail anchor resolves to a doc heading
 packs/core-linux-basics/            pack.yaml, levels/, assets/
 images/                             Containerfile, wsl.conf, rc/, bin/
 docs/                               user docs; docs/design/ holds the design record
