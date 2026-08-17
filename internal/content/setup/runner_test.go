@@ -654,6 +654,99 @@ func TestBuildManifestRefusesAnOversizedManifest(t *testing.T) {
 	}
 }
 
+// TestBuildManifestRefusesAnAncestorPair pins the #93 fix: a level declaring
+// both a directory-shaped path and a path underneath it must be refused
+// outright, rather than left to whatever the runtime's own untar conflict
+// resolution decides. Without this, "sub" could land as either a file or a
+// directory depending on Docker behaviour this package never controls, which
+// is exactly what would make docs/LEVEL-FORMAT.md's "a directory always
+// belongs to the learner" claim false.
+func TestBuildManifestRefusesAnAncestorPair(t *testing.T) {
+	lvl := &content.Level{ID: "nav-01", Setup: content.Setup{Root: "/home/learner/quest", Files: []content.FileSpec{
+		{Path: "sub", ContentSet: true, Content: "x", Owner: "root:root"},
+		{Path: "sub/deep.txt", ContentSet: true, Content: "y"},
+	}}}
+	r := NewRunner(&fakeSession{}, nil)
+
+	entries, err := r.buildManifest(lvl, lvl.Setup.Root)
+	if err == nil {
+		t.Fatalf("buildManifest: want a refusal for an ancestor pair, got %d entries", len(entries))
+	}
+	if !errors.Is(err, ErrInvalidLevelPack) {
+		t.Errorf("buildManifest: err = %v, want it to wrap ErrInvalidLevelPack", err)
+	}
+	if entries != nil {
+		t.Errorf("buildManifest: entries = %+v, want nil on refusal", entries)
+	}
+}
+
+// TestBuildManifestRefusesAnExactDuplicatePair covers the other half of the
+// same rule: two entries resolving to the identical absolute path, including
+// the "x" versus "./x" spelling, which both clean to the same path.
+func TestBuildManifestRefusesAnExactDuplicatePair(t *testing.T) {
+	tests := []struct {
+		name  string
+		paths [2]string
+	}{
+		{name: "identical spelling", paths: [2]string{"x.txt", "x.txt"}},
+		{name: "same path spelled with a leading ./", paths: [2]string{"x.txt", "./x.txt"}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			lvl := &content.Level{ID: "nav-01", Setup: content.Setup{Root: "/home/learner/quest", Files: []content.FileSpec{
+				{Path: tc.paths[0], ContentSet: true, Content: "x", Owner: "root:root"},
+				{Path: tc.paths[1], ContentSet: true, Content: "y"},
+			}}}
+			r := NewRunner(&fakeSession{}, nil)
+
+			entries, err := r.buildManifest(lvl, lvl.Setup.Root)
+			if err == nil {
+				t.Fatalf("buildManifest(%v): want a refusal for a duplicate pair, got %d entries", tc.paths, len(entries))
+			}
+			if !errors.Is(err, ErrInvalidLevelPack) {
+				t.Errorf("buildManifest(%v): err = %v, want it to wrap ErrInvalidLevelPack", tc.paths, err)
+			}
+			if entries != nil {
+				t.Errorf("buildManifest(%v): entries = %+v, want nil on refusal", tc.paths, entries)
+			}
+		})
+	}
+}
+
+// TestBuildManifestAcceptsSiblingPaths is the acceptance half: two paths
+// under the same directory, neither an ancestor of the other, must still
+// build a manifest. /a/bc and /a/b pin the segment comparison specifically:
+// a naive string prefix test would wrongly treat "/a/bc" as a descendant of
+// "/a/b", refusing a level that never declared an ancestor pair at all.
+func TestBuildManifestAcceptsSiblingPaths(t *testing.T) {
+	tests := []struct {
+		name  string
+		paths [2]string
+	}{
+		{name: "two files under the same subdirectory", paths: [2]string{"sub/a.txt", "sub/b.txt"}},
+		{name: "a segment prefix lookalike is not an ancestor", paths: [2]string{"a/bc", "a/b"}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			lvl := &content.Level{ID: "nav-01", Setup: content.Setup{Root: "/home/learner/quest", Files: []content.FileSpec{
+				{Path: tc.paths[0], ContentSet: true, Content: "x"},
+				{Path: tc.paths[1], ContentSet: true, Content: "y"},
+			}}}
+			r := NewRunner(&fakeSession{}, nil)
+
+			entries, err := r.buildManifest(lvl, lvl.Setup.Root)
+			if err != nil {
+				t.Fatalf("buildManifest(%v): unexpected refusal: %v", tc.paths, err)
+			}
+			if len(entries) != 2 {
+				t.Errorf("buildManifest(%v): got %d entries, want 2", tc.paths, len(entries))
+			}
+		})
+	}
+}
+
 // TestSetupScriptRunsAsTheLearnerAfterTheFiles pins criterion 4: the script step
 // runs as the learner, in the resolved root, as one argv element to bash -c,
 // after PushFiles.

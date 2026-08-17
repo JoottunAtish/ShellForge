@@ -460,6 +460,26 @@ func (r *Runner) buildManifest(lvl *content.Level, root string) ([]runtime.FileE
 		if err != nil {
 			return nil, err
 		}
+
+		// Refuse two entries whose resolved absolute paths are the same, or
+		// where one is an ancestor directory of the other. Without this, a
+		// level could declare both "sub" and "sub/deep.txt" with different
+		// owners, and whether "sub" lands as a file or a directory when the
+		// chown reaches it is decided by the runtime's own untar conflict
+		// resolution, not by anything in this package. Refusing the shape
+		// outright makes the doc's "a directory always belongs to the
+		// learner" invariant true by construction instead of true by
+		// inheriting the runtime's behaviour.
+		for j := range entries {
+			if !pathIsOrContains(entry.Path, entries[j].Path) {
+				continue
+			}
+			other := lvl.Setup.Files[j]
+			return nil, ux.Fail("read the level definition",
+				fmt.Errorf("setup.files entries %q and %q resolve to the same path, or one is a directory containing the other: %w", other.Path, spec.Path, ErrInvalidLevelPack),
+				remediationLevelPackInvalid, "level-pack-invalid")
+		}
+
 		total += len(entry.Content)
 		if total > maxManifestBytes {
 			return nil, ux.Fail("read the level assets",
@@ -469,6 +489,25 @@ func (r *Runner) buildManifest(lvl *content.Level, root string) ([]runtime.FileE
 		entries = append(entries, entry)
 	}
 	return entries, nil
+}
+
+// pathIsOrContains reports whether cleaned absolute paths a and b are equal,
+// or one is an ancestor directory of the other, compared segment by segment
+// rather than by string prefix. A string prefix test would wrongly treat
+// "/a/bc" as a descendant of "/a/b"; comparing whole path segments does not.
+func pathIsOrContains(a, b string) bool {
+	as := strings.Split(strings.Trim(a, "/"), "/")
+	bs := strings.Split(strings.Trim(b, "/"), "/")
+	short, long := as, bs
+	if len(long) < len(short) {
+		short, long = bs, as
+	}
+	for i, seg := range short {
+		if long[i] != seg {
+			return false
+		}
+	}
+	return true
 }
 
 // fileAbsPath is the one place a FileSpec's relative path becomes the
