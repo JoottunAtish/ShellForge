@@ -1733,6 +1733,15 @@ Works:
   that distinction has to be real. Everything else the decoder does is what
   strict struct decoding would have done anyway, including refusing an
   unknown key.
+- **Fixed (#100): the blanket `chown -R learner:learner` that follows
+  `PushFiles` was reverting a declared `owner:` on a `setup.files` entry a
+  moment after `PushFiles` applied it, which made it impossible for a level
+  to set up root-owned state at all.** `Runner.Setup` now re-applies every
+  declared owner, grouped into one `chown` per distinct owner, immediately
+  after the blanket chown, and only ever names the declared file's own
+  absolute path, never a directory, so teardown's `rm -rf` as the learner
+  stays safe. Proven by unit test at the runner; perm-02 is the first shipped
+  level that will exercise it end to end.
 - Every user-facing error is a `*ux.Error` from `ux.Fail`, with three new
   doc anchors, `unsafe-level-root`, `level-pack-invalid`, and
   `setup-script-failed`, each with a heading in

@@ -83,7 +83,7 @@ setup:                         # R
     - path: logs/app-1.log     # relative to root
       source: assets/app-1.log # from pack; \r stripped on materialize
       mode: "0644"             # O  default 0644
-      owner: "learner:learner" # O  default learner:learner
+      owner: "learner:learner" # O  default learner:learner; see "declaring root-owned state" below
     - path: notes.txt
       content: |               # O  inline alternative to `source`
         Kofi was here.
@@ -142,8 +142,19 @@ bypass ordinary permission checks. The level root has already been chowned to
 the learner by the time a script runs, mode 0755, which makes root *other* on
 it: a script doing `mkdir -p reports` as root fails with `EACCES`. The learner
 owns the tree, so the learner is the identity that can work in it. The runner
-chowns everything `setup.files` materialized before your script starts, so
-there is nothing left for a script to chown.
+chowns the level root and everything under it to the learner, then re-applies
+any `owner:` a `setup.files` entry declared, so a script still has nothing to
+chown, and a declared owner survives to when your script runs.
+
+**Declaring root-owned state.** A level that needs a file owned by someone
+other than the learner, such as `root`, declares `owner:` on that
+`setup.files` entry rather than trying to chown it from a script: `PushFiles`
+extracts through the daemon, which is outside the container's own capability
+set, so this is the only place in a level that can create root-owned state.
+Only a **file** can carry a declared owner. A directory always belongs to the
+learner, no matter what its contents declare, so that teardown's `rm -rf` as
+the learner can always remove it. `setup.script` cannot create root-owned
+state either way: it runs as the learner.
 
 This bit real levels. `files-03` and `files-04` both shipped with a
 `mkdir -p` in their setup script and both were silently missing that directory,

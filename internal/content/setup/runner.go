@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"path"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -369,6 +370,50 @@ func (r *Runner) Setup(ctx context.Context, lvl *content.Level) error {
 			remediationSandboxUnhealthy, "sandbox-unhealthy"))
 	}
 
+	// The blanket chown above just reverted any owner: a setup.files entry
+	// declared, because PushFiles applies a declared owner and this chown
+	// runs immediately afterward, unconditionally, on the same tree. Restore
+	// every declared exception now rather than narrowing the blanket chown
+	// itself: narrowing would need either a find inside the sandbox or a
+	// copy of PushFiles' own knowledge of which directories it creates,
+	// moved into this package. Leaving the blanket chown untouched and
+	// re-applying declared owners afterward is what keeps the invariant
+	// provable: only a regular file named by a setup.files entry is ever
+	// re-chowned, so no directory inside the level root can ever end up
+	// owned by anyone but the learner, which is what keeps teardown's
+	// rm -rf as the learner working: unlinking a file needs write and
+	// execute on the containing directory, not ownership of the file
+	// itself.
+	//
+	// TODO(v0.2): chown clears a regular file's set-user-ID and
+	// set-group-ID bits. Not a live issue: buildFileEntry already refuses a
+	// mode above 0o777, so neither bit is expressible in a level today. Note
+	// it so a future widening of the mode cap does not walk into it.
+	byOwner := map[string][]string{}
+	for _, spec := range lvl.Setup.Files {
+		if spec.Owner == "" || spec.Owner == DefaultOwner {
+			continue
+		}
+		byOwner[spec.Owner] = append(byOwner[spec.Owner], fileAbsPath(root, spec.Path))
+	}
+	owners := make([]string, 0, len(byOwner))
+	for owner := range byOwner {
+		owners = append(owners, owner)
+	}
+	sort.Strings(owners)
+	for _, owner := range owners {
+		argv := append([]string{"chown", owner, "--"}, byOwner[owner]...)
+		res, err := r.sess.Exec(ctx, argv, runtime.ExecOpts{User: userRoot})
+		if err != nil {
+			return r.rollback(ctx, lvl, ux.Fail("materialise the level world", err, remediationSandboxUnhealthy, "sandbox-unhealthy"))
+		}
+		if res.ExitCode != 0 {
+			return r.rollback(ctx, lvl, ux.Fail("materialise the level world",
+				fmt.Errorf("chown %s exited %d: %s", owner, res.ExitCode, res.Stderr),
+				remediationSandboxUnhealthy, "sandbox-unhealthy"))
+		}
+	}
+
 	if lvl.Setup.Script != "" {
 		timeout := DefaultTimeout
 		if lvl.Setup.TimeoutSeconds > 0 {
@@ -426,6 +471,13 @@ func (r *Runner) buildManifest(lvl *content.Level, root string) ([]runtime.FileE
 	return entries, nil
 }
 
+// fileAbsPath is the one place a FileSpec's relative path becomes the
+// absolute path Setup materializes it at, shared by buildFileEntry and the
+// restore-owner step so the two can never drift apart.
+func fileAbsPath(root, specPath string) string {
+	return path.Join(root, path.Clean(specPath))
+}
+
 // buildFileEntry validates one FileSpec and produces the FileEntry Setup
 // will push. Carriage returns are stripped here, on the host side, before
 // the content ever reaches a runtime.FileEntry: Session.PushFiles keeps its
@@ -463,7 +515,7 @@ func (r *Runner) buildFileEntry(spec content.FileSpec, root string) (runtime.Fil
 				remediationLevelPackInvalid, "level-pack-invalid")
 		}
 	}
-	abs := path.Join(root, path.Clean(spec.Path))
+	abs := fileAbsPath(root, spec.Path)
 	if abs == root || !strings.HasPrefix(abs, root+"/") {
 		return runtime.FileEntry{}, ux.Fail("read the level definition",
 			fmt.Errorf("file path %q escapes or is equal to setup.root: %w", spec.Path, ErrInvalidLevelPack),

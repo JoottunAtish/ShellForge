@@ -309,6 +309,174 @@ func TestCRLFScriptRunsInsideTheSandbox(t *testing.T) {
 	t.Skip("needs a live Linux Docker daemon; see internal/sandbox/demo_golden_test.go for the same shape once a runtime.Session fixture is wired here")
 }
 
+// chownCalls returns every recorded chown Exec call, in order.
+func chownCalls(f *fakeSession) []execCall {
+	var out []execCall
+	for _, c := range f.execCalls {
+		if len(c.argv) > 0 && c.argv[0] == "chown" {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// TestSetupRestoresADeclaredOwnerAfterTheBlanketChown pins the #100 fix: the
+// blanket chown -R learner:learner that follows PushFiles reverts any
+// owner: a setup.files entry declared, because PushFiles applies it and the
+// blanket chown runs immediately afterward. The runner must re-apply the
+// declared owner, and only for the file that declared one.
+func TestSetupRestoresADeclaredOwnerAfterTheBlanketChown(t *testing.T) {
+	const root = "/home/learner/quest"
+	f := &fakeSession{}
+	r := NewRunner(f, nil)
+	lvl := &content.Level{ID: "nav-01", Setup: content.Setup{Root: root, Files: []content.FileSpec{
+		{Path: "secret.txt", ContentSet: true, Content: "x", Owner: "root:root"},
+		{Path: "normal.txt", ContentSet: true, Content: "y"},
+	}}}
+
+	if err := r.Setup(context.Background(), lvl); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+
+	blanket := []string{"chown", "-R", DefaultOwner, "--", root}
+	blanketIdx := -1
+	for i, c := range f.execCalls {
+		if equalArgv(c.argv, blanket) {
+			blanketIdx = i
+			break
+		}
+	}
+	if blanketIdx == -1 {
+		t.Fatalf("no blanket chown %v recorded among %v", blanket, f.execCalls)
+	}
+
+	secretAbs := root + "/secret.txt"
+	normalAbs := root + "/normal.txt"
+
+	var restoreIdx = -1
+	for i, c := range f.execCalls {
+		if len(c.argv) >= 2 && c.argv[0] == "chown" && c.argv[1] == "root:root" {
+			restoreIdx = i
+			if c.argv[len(c.argv)-1] != secretAbs {
+				t.Errorf("restore chown %v does not name %q", c.argv, secretAbs)
+			}
+			for _, a := range c.argv {
+				if a == normalAbs {
+					t.Errorf("restore chown %v names %q, which declared no owner", c.argv, normalAbs)
+				}
+			}
+		}
+	}
+	if restoreIdx == -1 {
+		t.Fatalf("no restore chown for root:root recorded among %v", f.execCalls)
+	}
+	if restoreIdx < blanketIdx {
+		t.Errorf("restore chown at index %d ran before the blanket chown at index %d, want it after", restoreIdx, blanketIdx)
+	}
+}
+
+// TestSetupNeverChownsADirectoryAwayFromTheLearner is the safety half of the
+// #100 fix. Every restore chown must target exactly a declared file's own
+// absolute path: never -R, never the level root, never an ancestor
+// directory. A root-owned directory cannot be emptied by the learner, so
+// teardown's rm -rf as the learner would fail on a world it cannot clean.
+func TestSetupNeverChownsADirectoryAwayFromTheLearner(t *testing.T) {
+	const root = "/home/learner/quest"
+	f := &fakeSession{}
+	r := NewRunner(f, nil)
+	lvl := &content.Level{ID: "nav-01", Setup: content.Setup{Root: root, Files: []content.FileSpec{
+		{Path: "warehouse/secret.txt", ContentSet: true, Content: "x", Owner: "root:root"},
+	}}}
+
+	if err := r.Setup(context.Background(), lvl); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+
+	declared := root + "/warehouse/secret.txt"
+	for _, c := range chownCalls(f) {
+		if equalArgv(c.argv, []string{"chown", "-R", DefaultOwner, "--", root}) {
+			continue // the blanket chown, not a restore
+		}
+		for _, a := range c.argv {
+			if a == "-R" {
+				t.Errorf("restore chown %v carries -R, which could reach a directory", c.argv)
+			}
+			if a == root {
+				t.Errorf("restore chown %v names the level root itself", c.argv)
+			}
+			if a == root+"/warehouse" {
+				t.Errorf("restore chown %v names an ancestor directory of a declared file", c.argv)
+			}
+		}
+		last := c.argv[len(c.argv)-1]
+		if last != declared {
+			t.Errorf("restore chown %v targets %q, want exactly the declared file %q", c.argv, last, declared)
+		}
+	}
+}
+
+// TestSetupGroupsRestoreChownsByOwner pins the batching: files sharing an
+// owner cost one Exec, not one per file, which is a per-file sandbox round
+// trip for no reason.
+func TestSetupGroupsRestoreChownsByOwner(t *testing.T) {
+	const root = "/home/learner/quest"
+	f := &fakeSession{}
+	r := NewRunner(f, nil)
+	lvl := &content.Level{ID: "nav-01", Setup: content.Setup{Root: root, Files: []content.FileSpec{
+		{Path: "a.txt", ContentSet: true, Content: "x", Owner: "root:root"},
+		{Path: "b.txt", ContentSet: true, Content: "y", Owner: "root:root"},
+		{Path: "c.txt", ContentSet: true, Content: "z", Owner: "daemon:daemon"},
+	}}}
+
+	if err := r.Setup(context.Background(), lvl); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+
+	var restores int
+	for _, c := range chownCalls(f) {
+		if !equalArgv(c.argv, []string{"chown", "-R", DefaultOwner, "--", root}) {
+			restores++
+		}
+	}
+	if restores != 2 {
+		t.Errorf("recorded %d restore chown call(s), want exactly 2 (one per distinct declared owner)", restores)
+	}
+}
+
+// TestTeardownChownsBackBeforeTheRecursiveDelete pins the ordering that
+// makes it safe to leave a root-owned file behind: Teardown's best-effort
+// chown -R learner:learner must run, as root, strictly before rm -rf, as the
+// learner. If that ordering were ever lost, a level that used a declared
+// owner would leave a file rm -rf as the learner cannot delete.
+func TestTeardownChownsBackBeforeTheRecursiveDelete(t *testing.T) {
+	const root = "/home/learner/quest"
+	f := &fakeSession{}
+	r := NewRunner(f, nil)
+
+	if err := r.Teardown(context.Background(), rootLevel(root)); err != nil {
+		t.Fatalf("Teardown: %v", err)
+	}
+
+	chownIdx, rmIdx := -1, -1
+	for i, c := range f.execCalls {
+		if chownIdx == -1 && equalArgv(c.argv, []string{"chown", "-R", DefaultOwner, "--", root}) {
+			chownIdx = i
+		}
+		if rmIdx == -1 && len(c.argv) >= 2 && c.argv[0] == "rm" && c.argv[1] == "-rf" {
+			rmIdx = i
+		}
+	}
+	if chownIdx == -1 {
+		t.Fatal("no chown -R learner:learner recorded")
+	}
+	if rmIdx == -1 {
+		t.Fatal("no rm -rf recorded")
+	}
+	if chownIdx >= rmIdx {
+		t.Errorf("chown at index %d did not run before rm -rf at index %d", chownIdx, rmIdx)
+	}
+}
+
 // TestBuildFileEntryRefusesInvalidSpecs pins blocking finding 2 from the #83
 // review: every validation branch in buildFileEntry, deleted five at once in
 // the review's scratch copy plus the ownerPattern check on its own, left the
