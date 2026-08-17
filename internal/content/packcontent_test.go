@@ -125,24 +125,34 @@ var scanPathPattern = regexp.MustCompile(`/[A-Za-z0-9_./-]+`)
 
 // learnerPathsOutsideRoot returns every absolute path in body that is under
 // platform.LearnerHomePrefix, or is /home/learner itself, but not under
-// root, in the order they appear.
+// root, in the order they appear, reported in their cleaned form.
+//
+// Every candidate is run through path.Clean before either comparison. An
+// earlier version compared the raw regex match instead, so a body containing
+// a .. segment, such as root + "/../.shellforge/journal.tsv", passed the raw
+// HasPrefix(candidate, root+"/") test and was never flagged even though it
+// resolves outside root. Cleaning first closes that gap: containment is
+// judged on the same resolved path a shell would actually reach.
 //
 // A path outside /home/learner/ entirely is deliberately not judged: a level
 // may legitimately teach a system path, such as perm-03's /opt/atlas, and
 // flagging those would refuse a real curriculum shape rather than the leak
-// this helper exists to catch. TODO(v0.2): whether this graduates into a
-// validator rule needs a decision on system paths first.
+// this helper exists to catch. The scan also does not follow a shell
+// variable and does not unwrap a heredoc, so a path built either way is
+// invisible to it. TODO(v0.2): whether this graduates into a validator rule
+// needs a decision on system paths first.
 func learnerPathsOutsideRoot(body, root string) []string {
 	clean := path.Clean(root)
 	var out []string
 	for _, candidate := range scanPathPattern.FindAllString(body, -1) {
-		if candidate != "/home/learner" && !strings.HasPrefix(candidate, platform.LearnerHomePrefix) {
+		resolved := path.Clean(candidate)
+		if resolved != "/home/learner" && !strings.HasPrefix(resolved, platform.LearnerHomePrefix) {
 			continue // not under the learner's home at all: out of scope
 		}
-		if candidate == clean || strings.HasPrefix(candidate, clean+"/") {
+		if resolved == clean || strings.HasPrefix(resolved, clean+"/") {
 			continue // inside this level's own root: fine
 		}
-		out = append(out, candidate)
+		out = append(out, resolved)
 	}
 	return out
 }
@@ -196,6 +206,21 @@ func TestLearnerPathsOutsideRoot(t *testing.T) {
 			name: "several on one line, both reported in order",
 			body: "diff /home/learner/other/a.txt /home/learner/another/b.txt",
 			want: []string{"/home/learner/other/a.txt", "/home/learner/another/b.txt"},
+		},
+		{
+			name: "a .. traversal out to the state directory is flagged, not defeated by the raw prefix match",
+			body: "cat /home/learner/quest/../.shellforge/journal.tsv",
+			want: []string{"/home/learner/.shellforge/journal.tsv"},
+		},
+		{
+			name: "a .. traversal out to a sibling level is flagged, not defeated by the raw prefix match",
+			body: "cat /home/learner/quest/../other/notes.txt",
+			want: []string{"/home/learner/other/notes.txt"},
+		},
+		{
+			name: "a mixed ./ and multiple .. segments still resolves outside the root and is flagged",
+			body: "cat /home/learner/quest/./../../learner/other/x",
+			want: []string{"/home/learner/other/x"},
 		},
 	}
 
