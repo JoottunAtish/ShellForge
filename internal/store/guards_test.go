@@ -185,12 +185,18 @@ func TestStorePackageCallsNoFilesystemRemoval(t *testing.T) {
 // declaredDocAnchors walks every production .go file in this package (via
 // storeProductionFiles, so a test file's own fixture constants can never
 // contribute one) and returns the string value of every constant whose name
-// has the "anchor" prefix. It is the AST-derived source of truth
-// TestDocAnchorsHaveTroubleshootingHeadings checks against, so that a
-// seventh anchor added later is checked automatically instead of depending
-// on someone remembering to extend a hardcoded list. See the floor inside
-// TestDocAnchorsHaveTroubleshootingHeadings itself for what happens if this
-// walk ever goes blind.
+// has the "anchor" prefix, declared with either const or var. It is the
+// AST-derived source of truth TestDocAnchorsHaveTroubleshootingHeadings checks
+// against, so that a seventh anchor added later is checked automatically
+// instead of depending on someone remembering to extend a hardcoded list. See
+// the floor inside TestDocAnchorsHaveTroubleshootingHeadings itself for what
+// happens if this walk ever goes blind.
+//
+// Every anchor-prefixed declaration it cannot evaluate is a test failure
+// naming the identifier, never a silent skip. That distinction is the whole
+// value of the walk: an anchor this helper quietly passed over would be
+// verified by nothing at all, since the CI Docs job cannot see a positional
+// ux.Fail argument either (issue #86).
 func declaredDocAnchors(t *testing.T) []string {
 	t.Helper()
 	fset := token.NewFileSet()
@@ -202,12 +208,26 @@ func declaredDocAnchors(t *testing.T) []string {
 		}
 		for _, decl := range f.Decls {
 			gen, ok := decl.(*ast.GenDecl)
-			if !ok || gen.Tok != token.CONST {
+			// var as well as const: an anchor declared with var would
+			// otherwise be invisible to this walk and so unverified.
+			if !ok || (gen.Tok != token.CONST && gen.Tok != token.VAR) {
 				continue
 			}
 			for _, spec := range gen.Specs {
 				vs, ok := spec.(*ast.ValueSpec)
-				if !ok || len(vs.Values) != len(vs.Names) {
+				if !ok {
+					continue
+				}
+				// A spec whose names and values do not pair up one to one
+				// cannot be read positionally. Rather than skip it, which is
+				// how an anchor goes unverified, name it and fail.
+				if len(vs.Values) != len(vs.Names) {
+					for _, ident := range vs.Names {
+						if strings.HasPrefix(ident.Name, "anchor") {
+							t.Errorf("%s in %s declares %d name(s) against %d value(s), so this walk cannot read it. Declare each anchor as its own name and string literal, or teach this walk the new shape: an anchor this walk cannot read is an anchor nothing verifies",
+								ident.Name, name, len(vs.Names), len(vs.Values))
+						}
+					}
 					continue
 				}
 				for i, ident := range vs.Names {
@@ -216,6 +236,12 @@ func declaredDocAnchors(t *testing.T) []string {
 					}
 					lit, ok := vs.Values[i].(*ast.BasicLit)
 					if !ok || lit.Kind != token.STRING {
+						// Anything other than a plain string literal, a
+						// concatenation or a function call for instance, cannot
+						// be evaluated here. Silently skipping it is how an
+						// anchor with no heading ships, so this is loud.
+						t.Errorf("%s in %s is not a plain string literal, so this walk cannot evaluate it and its heading goes unchecked. Declare it as a single quoted string, or teach this walk the new shape",
+							ident.Name, name)
 						continue
 					}
 					value, err := strconv.Unquote(lit.Value)

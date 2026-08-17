@@ -3173,20 +3173,48 @@ fails its very first pragma before `Migrate` is ever called. All of
   `TestOpenOnAnExistingUnwritableParentReportsUnwritable`, the real bug
   reproduction, which needs POSIX mode bits and **skips on Windows**; CI's
   Linux job is its only witness.
-- **#90: `ErrForeignDatabase`, `userTableCount`, `refuseIfForeign`.** `Open`
-  now refuses, rather than silently migrating, a SQLite database that
-  records no `schema_version` and already holds a table Shellforge did not
-  create. The identity check is one query, verbatim from the ticket:
-  `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE
-  'sqlite_%'`, run only when `current == 0` inside `Migrate`, after the
-  `current > latest` refusal and before the apply loop. It fails closed: a
-  query that cannot complete is refused with the same anchor as a confirmed
-  foreign database, never treated as evidence the file is ours. New anchor
+- **#90: `ErrForeignDatabase`, `userObjectCount`, `looksLikeOurs`,
+  `refuseIfForeign`.** `Open` now refuses, rather than silently migrating, a
+  SQLite database that is not provably a Shellforge progress file and already
+  holds objects Shellforge did not create. It fails closed: a query that
+  cannot complete is refused with the same anchor as a confirmed foreign
+  database, never treated as evidence the file is ours. New anchor
   `progress-db-not-ours`, this package's sixth, with its heading in
   `docs/05-troubleshooting.md` naming `DataDir`'s per-OS path rather than
   staying abstract. The remediation never suggests deleting, renaming,
   overwriting, or moving anything, which is the point when the file may
   belong to another program.
+- **The identity test is provenance first, and it took two rounds to get
+  right.** The first version asked "does this record no version and hold a
+  table?", ran inside `Migrate`'s `current == 0` branch, and filtered
+  `sqlite_master` on `type = 'table'`. The independent review found two ways
+  a foreign file routed around it, both reproduced by measurement rather than
+  argued:
+  - **A foreign database carrying its own `schema_version` table reached the
+    version arithmetic and was told to rename itself.** `schema_version` is a
+    common name, older Flyway and much hand rolled migration code included.
+    Because the gate only ran when the recorded version was zero, a file with
+    someone else's `schema_version` fell through to `anchorMigrationFailed`
+    or `anchorTooNew`, and both of those remediations tell the learner to
+    rename the file. Telling a learner to rename another program's database
+    is the exact outcome this gate exists to make impossible.
+  - **A database whose only objects were views was adopted**, because a view
+    is not a `table`. Shellforge wrote its own tables into it and narrowed
+    its mode, which is both harms #90 names, on a file it did not create.
+    `internal/store/doc.go` and the troubleshooting entry both promise that
+    never happens, so the promise was false rather than merely incomplete.
+
+  Both are fixed by changing what the question is. Provenance is now decided
+  first, before any version arithmetic, by `looksLikeOurs`: a file is ours
+  when `sqlite_master` holds both objects `001_init.sql` creates,
+  `schema_version` and `events`. `events` is the load bearing half, since
+  `schema_version` alone is not evidence of anything. A file that is provably
+  ours is left alone, extra tables the learner added included. A file that is
+  not provably ours is refused if it holds any non-`sqlite_` object at all,
+  views and indexes included, and adopted only when it holds nothing.
+  `TestAFreshlyMigratedDatabaseIsProvablyOurs` is what stops the two named
+  tables going stale: if a later migration renames either, that test fails
+  rather than the gate silently starting to refuse real progress files.
 - **The chmod moved from before `Migrate` to after it, not made
   conditional.** A file `Migrate` is about to refuse now has nothing at all
   done to it. A conditional chmod would need either a second
@@ -3197,7 +3225,15 @@ fails its very first pragma before `Migrate` is ever called. All of
   the process umask default for the duration of the migrations rather than
   one pragma, inside the 0700 directory `EnsureDir` created throughout, and
   `001_init.sql` creates only empty tables, so no learner data exists in the
-  file during the widened window.
+  file during the widened window. Two secondary effects are improvements: a
+  database refused for `ErrSchemaTooNew`, and one refused through
+  `anchorMigrationFailed`, are no longer chmodded before the refusal either.
+  A third is a small regression and is recorded rather than buried: a fresh
+  database whose migration fails is now left at the umask default
+  permanently, because `Open` returns before reaching the chmod. It sits
+  inside the 0700 directory, a failed migration commits nothing, and the next
+  successful `Open` tightens it, so the exposure is a file with no learner
+  data in a directory only the learner can enter.
 - **The byte-identity criterion is not literally satisfiable, and the test
   says so precisely instead of claiming otherwise.** Measured directly,
   using this package's own already-shipped `execPragmaWithRetry` against a

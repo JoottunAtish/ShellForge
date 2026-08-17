@@ -484,15 +484,20 @@ been renamed or deleted.
 
 **Fix:**
 
-Leave that file where it is. To see the exact path Shellforge wants, run:
+Leave that file where it is. Do not rename it or delete it: it is not
+Shellforge's, and Shellforge does not need it moved.
+
+Shellforge cannot yet be pointed at a different progress file, so there is no
+flag to set. On Linux and macOS you can move Shellforge's whole data directory
+by setting `XDG_DATA_HOME` to a folder you own, which changes the path above.
+On Windows there is no supported override yet.
+
+Work out what else writes to that path. Another tool that picked the same
+folder name is the usual cause. Then run:
 
 ```
 shellforge doctor
 ```
-
-Then work out what else writes there. Another tool that picked the same
-folder name is the usual cause, and Shellforge needs a path of its own before
-it can start.
 
 **Still stuck?** This should be rare, so it is worth telling us about. Run
 `shellforge bug-report` and say which program you think wrote the file. Do

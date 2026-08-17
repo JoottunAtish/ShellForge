@@ -64,6 +64,29 @@ func catalogueNames(t *testing.T, path string) []string {
 	return names
 }
 
+// assertRemediationSuggestsNothingDestructive fails when a remediation tells
+// the learner to disturb a file that may belong to another program.
+//
+// The path is stripped out before the words are looked for, because t.TempDir
+// embeds the calling test's own name in the path and a test named
+// ...Removed... or ...Renamed... would otherwise trip a naive match on its own
+// directory rather than on the message.
+func assertRemediationSuggestsNothingDestructive(t *testing.T, remediation, path string) {
+	t.Helper()
+	if remediation == "" {
+		t.Fatal("Remediation is empty")
+	}
+	if !strings.Contains(remediation, path) {
+		t.Errorf("Remediation does not name the path: %q", remediation)
+	}
+	lower := strings.ToLower(strings.ReplaceAll(remediation, path, ""))
+	for _, bad := range []string{"delete", "rename", "overwrite", "move", "back up"} {
+		if strings.Contains(lower, bad) {
+			t.Errorf("Remediation says %q, which is unsafe for a file that may belong to another program: %q", bad, remediation)
+		}
+	}
+}
+
 // hashRegion returns a sha256 hex digest of b, so a mismatch prints a short
 // fixed-width string instead of dumping a raw byte slice.
 func hashRegion(t *testing.T, b []byte) string {
@@ -505,10 +528,10 @@ func TestRefuseIfForeignFailsClosedWhenItCannotRead(t *testing.T) {
 	}
 }
 
-// TestUserTableCountIgnoresSQLiteInternalTables is the supporting unit for
+// TestUserObjectCountIgnoresSQLiteInternalObjects is the supporting unit for
 // the sqlite_ exclusion, covered independently of the fresh-path case so
 // mutation M4 has a witness that does not merely ride on M3's.
-func TestUserTableCountIgnoresSQLiteInternalTables(t *testing.T) {
+func TestUserObjectCountIgnoresSQLiteInternalObjects(t *testing.T) {
 	t.Run("one user table plus sqlite_sequence", func(t *testing.T) {
 		dbPath := filepath.Join(t.TempDir(), "progress.db")
 		writeForeignDatabase(t, dbPath,
@@ -533,9 +556,9 @@ func TestUserTableCountIgnoresSQLiteInternalTables(t *testing.T) {
 		}
 		defer db.Close()
 
-		count, err := userTableCount(context.Background(), db)
+		count, err := userObjectCount(context.Background(), db)
 		if err != nil {
-			t.Fatalf("userTableCount: %v", err)
+			t.Fatalf("userObjectCount: %v", err)
 		}
 		if count != 1 {
 			t.Errorf("count = %d, want 1 (sqlite_sequence must not be counted)", count)
@@ -563,12 +586,170 @@ func TestUserTableCountIgnoresSQLiteInternalTables(t *testing.T) {
 		}
 		defer db.Close()
 
-		count, err := userTableCount(context.Background(), db)
+		count, err := userObjectCount(context.Background(), db)
 		if err != nil {
-			t.Fatalf("userTableCount: %v", err)
+			t.Fatalf("userObjectCount: %v", err)
 		}
 		if count != 0 {
 			t.Errorf("count = %d, want 0", count)
 		}
 	})
+}
+
+// TestOpenRefusesAForeignDatabaseThatHasItsOwnSchemaVersionTable is the
+// regression test for the gate's worst failure mode.
+//
+// schema_version is a common name: older Flyway and a great deal of hand
+// rolled migration code create a table called exactly that. An earlier
+// version of this gate ran only when the recorded version was zero, so a file
+// holding someone else's schema_version reached Migrate's version arithmetic
+// instead, and both arms down there tell the learner to rename the file.
+// Telling a learner to rename another program's database is the one outcome
+// this gate exists to make impossible, so all three shapes are covered: a
+// version column this package cannot parse, one it can parse as a number
+// newer than it understands, and a table with no rows at all.
+func TestOpenRefusesAForeignDatabaseThatHasItsOwnSchemaVersionTable(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		statements []string
+	}{
+		{
+			name: "a version this package cannot parse",
+			statements: []string{
+				"CREATE TABLE customers (id INTEGER, name TEXT)",
+				"CREATE TABLE schema_version (version TEXT)",
+				"INSERT INTO schema_version (version) VALUES ('1.2.3')",
+			},
+		},
+		{
+			name: "a numeric version newer than this build",
+			statements: []string{
+				"CREATE TABLE customers (id INTEGER, name TEXT)",
+				"CREATE TABLE schema_version (version INTEGER)",
+				"INSERT INTO schema_version (version) VALUES (999)",
+			},
+		},
+		{
+			name: "a version table with no rows",
+			statements: []string{
+				"CREATE TABLE customers (id INTEGER, name TEXT)",
+				"CREATE TABLE schema_version (version INTEGER)",
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dbPath := filepath.Join(t.TempDir(), "progress.db")
+			writeForeignDatabase(t, dbPath, tt.statements...)
+
+			before, err := os.ReadFile(dbPath)
+			if err != nil {
+				t.Fatalf("read the fixture: %v", err)
+			}
+
+			s, err := Open(context.Background(), dbPath)
+			if err == nil {
+				s.Close()
+				t.Fatal("Open succeeded against a foreign database carrying its own schema_version table")
+			}
+
+			if !errors.Is(err, ErrForeignDatabase) {
+				t.Errorf("errors.Is(err, ErrForeignDatabase) = false, want true: a foreign schema_version must not be mistaken for provenance. got %v", err)
+			}
+
+			var uerr *ux.Error
+			if !errors.As(err, &uerr) {
+				t.Fatalf("error is not a *ux.Error: %v", err)
+			}
+			if uerr.DocAnchor != anchorForeignDatabase {
+				t.Errorf("DocAnchor = %q, want %q", uerr.DocAnchor, anchorForeignDatabase)
+			}
+
+			// The whole point: no arm reachable from this input may tell the
+			// learner to disturb a file that is not ours.
+			assertRemediationSuggestsNothingDestructive(t, uerr.Remediation, dbPath)
+
+			// And the file itself is still theirs.
+			for _, name := range []string{"events", "sqlite_sequence"} {
+				for _, got := range catalogueNames(t, dbPath) {
+					if got == name {
+						t.Errorf("Shellforge wrote %q into a foreign database", name)
+					}
+				}
+			}
+			after, err := os.ReadFile(dbPath)
+			if err != nil {
+				t.Fatalf("read the fixture back: %v", err)
+			}
+			if len(before) != len(after) {
+				t.Errorf("file length changed: before %d, after %d", len(before), len(after))
+			}
+		})
+	}
+}
+
+// TestOpenRefusesADatabaseWhoseOnlyObjectsAreViews covers the other way a
+// foreign file used to slip through.
+//
+// The catalogue query filtered on type = 'table', so a database whose only
+// user objects were views counted as empty and was adopted: Shellforge wrote
+// its own tables into it and narrowed its mode. internal/store/doc.go and
+// docs/05-troubleshooting.md both promise that never happens, and a promise a
+// learner reads has to be true for every shape, not only for tables.
+func TestOpenRefusesADatabaseWhoseOnlyObjectsAreViews(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "progress.db")
+	writeForeignDatabase(t, dbPath,
+		"CREATE VIEW saved AS SELECT 1 AS id, 'a value' AS payload",
+	)
+
+	// Precondition: the fixture really has no tables, so this test cannot
+	// pass for the trivial reason that a table was present after all.
+	for _, name := range catalogueNames(t, dbPath) {
+		if name == "saved" {
+			continue
+		}
+		t.Fatalf("fixture precondition failed: unexpected catalogue entry %q", name)
+	}
+
+	s, err := Open(context.Background(), dbPath)
+	if err == nil {
+		s.Close()
+		t.Fatal("Open succeeded against a database whose only object is a view")
+	}
+	if !errors.Is(err, ErrForeignDatabase) {
+		t.Errorf("errors.Is(err, ErrForeignDatabase) = false, want true: got %v", err)
+	}
+
+	for _, got := range catalogueNames(t, dbPath) {
+		if got == "events" || got == "schema_version" {
+			t.Errorf("Shellforge wrote %q into a database it did not create", got)
+		}
+	}
+}
+
+// TestAFreshlyMigratedDatabaseIsProvablyOurs guards the ourObjectNames pair
+// against a future migration.
+//
+// looksLikeOurs decides provenance from two hardcoded object names. If a
+// later migration renames either one, or 001_init.sql stops creating both in
+// the same transaction, then every existing progress database silently stops
+// being provably ours: the gate would start counting the learner's own tables
+// as foreign and refuse to open their real progress file. This test fails the
+// moment that happens, which is the only reason it is safe for looksLikeOurs
+// to name the two tables literally.
+func TestAFreshlyMigratedDatabaseIsProvablyOurs(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "progress.db")
+	s, err := Open(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("Open on a fresh path: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+
+	ours, err := looksLikeOurs(context.Background(), s.db)
+	if err != nil {
+		t.Fatalf("looksLikeOurs: %v", err)
+	}
+	if !ours {
+		t.Errorf("a database this package just created is not recognised as ours: looksLikeOurs = false. Both %q and %q must exist after the migrations, or the foreign gate will refuse real progress files",
+			ourVersionTable, ourEventsTable)
+	}
 }
