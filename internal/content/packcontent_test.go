@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/JoottunAtish/ShellForge/internal/platform"
 )
 
 // scopedLines returns the solution lines a command_matched or
@@ -113,6 +115,125 @@ func TestLevelAssetHashesMatchTheirContent(t *testing.T) {
 	}
 }
 
+// scanPathPattern matches an absolute path token: a run of characters that
+// looks like a filesystem path, starting at a "/". It is intentionally
+// simple, per plan D7: it does not follow a shell variable and it does not
+// unwrap a heredoc, so it stops at the first character that cannot appear in
+// a bare path token. That is enough to find a literal path written directly
+// into a script check's run: body, which is the leak this exists to catch.
+var scanPathPattern = regexp.MustCompile(`/[A-Za-z0-9_./-]+`)
+
+// learnerPathsOutsideRoot returns every absolute path in body that is under
+// platform.LearnerHomePrefix, or is /home/learner itself, but not under
+// root, in the order they appear, reported in their cleaned form.
+//
+// Every candidate is run through path.Clean before either comparison. An
+// earlier version compared the raw regex match instead, so a body containing
+// a .. segment, such as root + "/../.shellforge/journal.tsv", passed the raw
+// HasPrefix(candidate, root+"/") test and was never flagged even though it
+// resolves outside root. Cleaning first closes that gap: containment is
+// judged on the same resolved path a shell would actually reach.
+//
+// A path outside /home/learner/ entirely is deliberately not judged: a level
+// may legitimately teach a system path, such as perm-03's /opt/atlas, and
+// flagging those would refuse a real curriculum shape rather than the leak
+// this helper exists to catch. The scan also does not follow a shell
+// variable and does not unwrap a heredoc, so a path built either way is
+// invisible to it. TODO(v0.2): whether this graduates into a validator rule
+// needs a decision on system paths first.
+func learnerPathsOutsideRoot(body, root string) []string {
+	clean := path.Clean(root)
+	var out []string
+	for _, candidate := range scanPathPattern.FindAllString(body, -1) {
+		resolved := path.Clean(candidate)
+		if resolved != "/home/learner" && !strings.HasPrefix(resolved, platform.LearnerHomePrefix) {
+			continue // not under the learner's home at all: out of scope
+		}
+		if resolved == clean || strings.HasPrefix(resolved, clean+"/") {
+			continue // inside this level's own root: fine
+		}
+		out = append(out, resolved)
+	}
+	return out
+}
+
+// TestLearnerPathsOutsideRoot exercises the helper on its own, table driven,
+// before it is trusted to scan every shipped level's script checks.
+func TestLearnerPathsOutsideRoot(t *testing.T) {
+	const root = "/home/learner/quest"
+
+	cases := []struct {
+		name string
+		body string
+		want []string
+	}{
+		{
+			name: "inside the root is fine",
+			body: "find /home/learner/quest/important -type f",
+			want: nil,
+		},
+		{
+			name: "the root itself is fine",
+			body: "ls /home/learner/quest",
+			want: nil,
+		},
+		{
+			name: "a sibling level's world leaks",
+			body: "cat /home/learner/other/notes.txt",
+			want: []string{"/home/learner/other/notes.txt"},
+		},
+		{
+			name: "the state directory leaks",
+			body: "cat /home/learner/.shellforge/journal.tsv",
+			want: []string{"/home/learner/.shellforge/journal.tsv"},
+		},
+		{
+			name: "the learner home itself leaks",
+			body: "ls /home/learner",
+			want: []string{"/home/learner"},
+		},
+		{
+			name: "a system path is not judged",
+			body: "wc -l < /dev/null; /bin/bash --version; cat /proc/1/status",
+			want: nil,
+		},
+		{
+			name: "a prefix lookalike is not flagged: it is outside /home/learner/ and so out of scope",
+			body: "cat /home/learner2/quest/x",
+			want: nil,
+		},
+		{
+			name: "several on one line, both reported in order",
+			body: "diff /home/learner/other/a.txt /home/learner/another/b.txt",
+			want: []string{"/home/learner/other/a.txt", "/home/learner/another/b.txt"},
+		},
+		{
+			name: "a .. traversal out to the state directory is flagged, not defeated by the raw prefix match",
+			body: "cat /home/learner/quest/../.shellforge/journal.tsv",
+			want: []string{"/home/learner/.shellforge/journal.tsv"},
+		},
+		{
+			name: "a .. traversal out to a sibling level is flagged, not defeated by the raw prefix match",
+			body: "cat /home/learner/quest/../other/notes.txt",
+			want: []string{"/home/learner/other/notes.txt"},
+		},
+		{
+			name: "a mixed ./ and multiple .. segments still resolves outside the root and is flagged",
+			body: "cat /home/learner/quest/./../../learner/other/x",
+			want: []string{"/home/learner/other/x"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := learnerPathsOutsideRoot(tc.body, root)
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("learnerPathsOutsideRoot(%q, %q) = %v, want %v", tc.body, root, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestShippedLevelsKeepLearnerOutputInsideTheirRoot enforces the convention
 // docs/CURRICULUM.md records: everything a level touches lives under its own
 // setup.root.
@@ -120,6 +241,12 @@ func TestLevelAssetHashesMatchTheirContent(t *testing.T) {
 // Teardown removes setup.root and may go no further, so a check pointing at a
 // path outside it is describing a file that will survive the level and leak
 // into the next one.
+//
+// A script check's run: body gets the same treatment as path and compare_to,
+// through learnerPathsOutsideRoot, which is the narrow scan and stated
+// limitation from plan D7: it catches a literal leaked path, not one built
+// from a variable or hidden inside a heredoc, and it does not judge a path
+// outside /home/learner/ at all, since a level may teach a system path.
 func TestShippedLevelsKeepLearnerOutputInsideTheirRoot(t *testing.T) {
 	pack, err := Embedded()
 	if err != nil {
@@ -147,6 +274,18 @@ func TestShippedLevelsKeepLearnerOutputInsideTheirRoot(t *testing.T) {
 					t.Errorf("%s: %s: check %q names %s in %s, which is outside setup.root %s, so teardown will not clean it up",
 						lvl.SourceFile, lvl.ID, c.ID, target, key, root)
 				}
+			}
+
+			if c.Type != "script" {
+				continue
+			}
+			run, ok := c.Params["run"].(string)
+			if !ok || run == "" {
+				continue
+			}
+			for _, leak := range learnerPathsOutsideRoot(run, root) {
+				t.Errorf("%s: %s: check %q's run body names %s, which is outside setup.root %s, so teardown will not clean it up",
+					lvl.SourceFile, lvl.ID, c.ID, leak, root)
 			}
 		}
 	}

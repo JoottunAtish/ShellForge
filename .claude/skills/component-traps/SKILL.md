@@ -119,8 +119,10 @@ already-diagnosed trap.
 
 ## internal/content
 
-- **Strip `\r` from every file materialized into the sandbox.** `.gitattributes` is
-  the first defence and this is the second. Both are deliberate.
+- **Strip the `\r` of a `\r\n` pair from every file materialized into the
+  sandbox, leaving a lone `\r` untouched.** `.gitattributes` is the first
+  defence and this is the second. Both are deliberate: an unconditional strip
+  would corrupt a binary asset containing byte `0x0d`.
 - **Setup is transactional:** stage, checksum, move, run script, write the
   `SETUP_OK` sentinel. Any failure rolls back and reports cleanly.
 - **Teardown always runs before setup**, so setup is idempotent by construction.

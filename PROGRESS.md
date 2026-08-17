@@ -1726,6 +1726,22 @@ Works:
   the package's own source for `os.Remove`, `os.RemoveAll`, `os.Mkdir`, and
   similar calls, alongside a second parser test banning the whole `net`
   family of imports from this package and from `internal/content`.
+- `FileSpec`'s YAML decoder (`internal/content/setupspec.go`,
+  `FileSpec.UnmarshalYAML`) is hand-rolled for one reason: `ContentSet`.
+  Struct tag decoding cannot tell an absent `content` key from an empty one,
+  and files-01 materializes a `.gitkeep` that exists only to be empty, so
+  that distinction has to be real. Everything else the decoder does is what
+  strict struct decoding would have done anyway, including refusing an
+  unknown key.
+- **Fixed (#100): the blanket `chown -R learner:learner` that follows
+  `PushFiles` was reverting a declared `owner:` on a `setup.files` entry a
+  moment after `PushFiles` applied it, which made it impossible for a level
+  to set up root-owned state at all.** `Runner.Setup` now re-applies every
+  declared owner, grouped into one `chown` per distinct owner, immediately
+  after the blanket chown, and only ever names the declared file's own
+  absolute path, never a directory, so teardown's `rm -rf` as the learner
+  stays safe. Proven by unit test at the runner; perm-02 is the first shipped
+  level that will exercise it end to end.
 - Every user-facing error is a `*ux.Error` from `ux.Fail`, with three new
   doc anchors, `unsafe-level-root`, `level-pack-invalid`, and
   `setup-script-failed`, each with a heading in
@@ -1920,27 +1936,31 @@ Declined:
 
 Answers to the review's two questions:
 
-- **`stripCRLF` versus `CLAUDE.md` non-negotiable 7.** They disagree as
-  written. `stripCRLF` rewrites only the `\r` in a `\r\n` pair; rule 7 says
-  to strip `\r` from every materialized file, unqualified, which would also
-  cover a classic Mac lone-CR line ending. The narrower behavior is the one
-  this session defends: an unconditional strip is not safe for a binary
-  asset that happens to contain a lone `0x0d`, and v0.1 has no binary-asset
-  concept to exempt one (tracked as `// TODO(v0.2)` in `runner.go`). That
-  makes this specification drift, not a bug to silently work around: rule 7
-  as written is broader than what ships, and this session is not editing
-  CLAUDE.md to narrow it. Flagged for the main session to open a drift
-  issue, either narrowing rule 7's wording to the CRLF-pair case or widening
-  the strip once a binary flag exists.
-- **The `content.Level` contract with #53.** The review is right that the
-  contract is fragile: it lives only in a doc comment on
-  `internal/content/setupspec.go` and a PROGRESS.md paragraph, its only
-  enforcement is that a second declaration of `Level` fails to compile, and
-  that failure mode only fires after whoever picks up #53 has already
-  written the competing type. This session cannot open the ratification
-  issue against #53 or link it from the doc comment, since it does not
-  touch GitHub state. Recorded again here, plainly, as a gap the main
-  session should close before #53 starts.
+- **`stripCRLF` versus `CLAUDE.md` non-negotiable 7: resolved by #84.**
+  `stripCRLF` and its docker-side twin `stripCR` both rewrite only the `\r`
+  in a `\r\n` pair, and always did; rule 7 read as an unconditional strip of
+  `\r`, which was the specification drift, not the code. #84 resolved as
+  option 1, narrowing rule 7's wording (and six other copies of the same
+  claim) to match what every implementation already does, rather than
+  option 2, widening every strip and adding a `FileSpec.binary` field no
+  shipped asset needs. The evidence for narrowing: no packed asset is
+  anything but `yaml`, `log`, `md`, or `go`; a lone-CR line ending has not
+  been produced by a mainstream tool since Mac OS 9; and
+  `internal/pty/testdata/vim-session.bin`, already marked binary in
+  `.gitattributes`, proves a byte sequence an unconditional strip would
+  corrupt already exists in this repository.
+  `TestStripCRLFLeavesALoneCarriageReturn` is the test that keeps the
+  narrowed rule enforced, since `internal/content/setup` had no direct
+  `stripCRLF` test before it.
+- **The `content.Level` contract with #53: ratified by #85.** The contract
+  held exactly as this session predicted: `Level` moved to
+  `internal/content/level.go` as #53 was permitted to do, nothing was
+  redeclared, and `SourceFile` carries `yaml:"-"`. `Mode` stayed a string,
+  `Teardown` stayed a one-field struct, and `content: ""` was answered by a
+  third route neither this session nor #85 anticipated: `FileSpec.ContentSet`,
+  set by a hand-rolled `UnmarshalYAML`, distinguishes an absent `content:`
+  key from a present, empty one, which is what lets `files-01`'s `.gitkeep`
+  exist. #85 is closed by the PR that carries this paragraph.
 
 Not touched, reported instead: the review's `ci.yml` doc-anchor gate
 finding is correct (`grep`ing only the struct-literal `DocAnchor: "..."`
@@ -2606,6 +2626,31 @@ test caught it.
 A rendering failure is never fatal: the raw markdown is printed between the
 existing rules. Refusing to start a level because a formatting library choked
 would be indefensible when the markdown is readable.
+
+**#93 item 7, `files-04`'s golden test contract, was already closed** by #94
+and #99: `Objective.Preserves`, the `preserves: true` inversion at golden
+step 2, and the guarding tests
+`TestPreservesObjectivesAreNotAlsoOptional` and
+`TestEveryPreservingObjectiveIsADestructiveLevel` all shipped before this
+PR. See `docs/LEVEL-FORMAT.md`'s "Golden test contract" section, the
+paragraphs on `preserves: true`, for the written contract. Nothing to do
+here beyond recording that item 7 needed no further work.
+
+**#98's decisions 11, 12, and 13 are ratified as shipped**, PR
+`chore/issue-93`. 12 is this project-specific glamour style and the
+measurement behind it: the 352 byte briefing becoming 5,698 bytes with 669
+escape sequences under every standard style, and every standard style,
+`ascii` and `notty` included, leaving the `##` heading marker in the output,
+which is the evidence that a hand-rolled renderer stays a live alternative
+worth keeping rather than a detour back to `WithStandardStyle`. 13 is
+already the behavior above: with colour off, nothing is styled, bold
+included, because `TERM=dumb` cannot render attributes and a redirected
+stream is a file where an escape is noise. 11, that `hint` and `reset`
+answer honestly rather than partially, is ratified against the shipped CLI
+dispatcher's current state: both verbs are still stubs that fail through
+`ux.Fail` (see the CLI dispatcher row above), so "answer honestly" today
+means refusing cleanly rather than pretending to work; the decision binds
+whichever session wires either verb to `internal/game`.
 
 **pipe-05 and its three committed assets.** The logs were produced by the
 deterministic generator in `internal/sandbox/demo_level.go`, which already has

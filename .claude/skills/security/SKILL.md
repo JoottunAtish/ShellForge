@@ -82,7 +82,9 @@ highest-risk code in the project.
 - **Never use a host path on the sandbox side, or a sandbox path on the host side.**
   Case sensitivity differs, and this is how you get a level that works on Linux and
   silently corrupts on Windows.
-- Strip `\r` from every file materialized into the sandbox.
+- Strip the `\r` of a `\r\n` pair from every file materialized into the sandbox,
+  leaving a lone `\r` untouched: an unconditional strip would corrupt a binary
+  asset containing byte `0x0d`.
 
 ## Artifact and supply chain integrity
 

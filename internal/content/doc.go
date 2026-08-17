@@ -10,5 +10,6 @@
 // pack directory, and a `path:` must resolve under setup.root, which must itself
 // be under /home/learner/. Reject traversal, do not sanitize it.
 //
-// Strip carriage returns from every file materialized into the sandbox.
+// Strip the \r of a \r\n pair from every file materialized into the sandbox,
+// per the reason recorded on stripCRLF in internal/content/setup.
 package content

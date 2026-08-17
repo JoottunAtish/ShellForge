@@ -81,9 +81,9 @@ setup:                         # R
   root: /home/learner/quest    # R  everything lives here; reset = rm -rf this
   files:                       # O
     - path: logs/app-1.log     # relative to root
-      source: assets/app-1.log # from pack; \r stripped on materialize
+      source: assets/app-1.log # from pack; \r\n normalised on materialize
       mode: "0644"             # O  default 0644
-      owner: "learner:learner" # O  default learner:learner
+      owner: "learner:learner" # O  default learner:learner; see "declaring root-owned state" below
     - path: notes.txt
       content: |               # O  inline alternative to `source`
         Kofi was here.
@@ -118,6 +118,24 @@ teardown:                      # O  default: rm -rf setup.root
 tags: [text-processing, must-know]   # O
 ```
 
+A `setup.files` entry sets exactly one of `source`, `content`, and `generate`; the
+runner refuses an entry that sets none or more than one. An explicit `content:` key
+counts as choosing content even when the value is empty, which is not the same
+question as whether the key was present at all: `files-01`'s `.gitkeep` is authored as
+`content: ""` for exactly this reason, to materialize a real, empty file. An absent
+`content:` key is not the same as an empty one.
+
+`mode` is a quoted string such as `"0644"`, not a bare `0644`. An unquoted `0644` is
+YAML 1.1 octal, which most YAML parsers, including this one, read as the number 420
+rather than the permission bits an author meant. The runner parses the string with
+`strconv.ParseUint(s, 8, 32)` and refuses anything above `0o777`, so a malformed value
+is a load error naming the file, not a silently wrong permission bit.
+
+`teardown:` may carry a `script:`, as shown above, or may be `{}`, as shown in
+section 6's worked example, when a level needs no teardown step beyond the default
+`rm -rf setup.root`; `script:` on both `setup` and `teardown` accepts the block
+scalar form shown above and the plain scalar form (`script: "true"`) alike.
+
 ### Setup and teardown execution
 
 `setup.script` runs as **`learner`**, inside the sandbox, after every file in
@@ -142,8 +160,25 @@ bypass ordinary permission checks. The level root has already been chowned to
 the learner by the time a script runs, mode 0755, which makes root *other* on
 it: a script doing `mkdir -p reports` as root fails with `EACCES`. The learner
 owns the tree, so the learner is the identity that can work in it. The runner
-chowns everything `setup.files` materialized before your script starts, so
-there is nothing left for a script to chown.
+chowns the level root and everything under it to the learner, then re-applies
+any `owner:` a `setup.files` entry declared, so a script still has nothing to
+chown, and a declared owner survives to when your script runs.
+
+**Declaring root-owned state.** A level that needs a file owned by someone
+other than the learner, such as `root`, declares `owner:` on that
+`setup.files` entry rather than trying to chown it from a script. The
+ownership `PushFiles` applies through the daemon does not survive on its
+own: the runner's blanket `chown -R learner:learner` immediately after
+`PushFiles` reverts it. What actually creates the root-owned state is the
+runner re-applying every declared `owner:` afterward, in the sandbox, as
+root holding `CAP_CHOWN`. Only a **file** can carry a declared owner. A
+directory always belongs to the learner, no matter what its contents
+declare, because the runner refuses to load a level whose `setup.files`
+entries name the same path twice or make one an ancestor of another, which
+is the only shape that could otherwise leave a directory owned by anyone but
+the learner. That is what lets teardown's `rm -rf` as the learner always
+remove it. `setup.script` cannot create root-owned state either way: it
+runs as the learner.
 
 This bit real levels. `files-03` and `files-04` both shipped with a
 `mkdir -p` in their setup script and both were silently missing that directory,
@@ -376,6 +411,19 @@ the syntax genuinely is the lesson, and for anti-pattern warnings.
 5. **Only the first failing required check's `on_fail` is displayed.** Optional/warn results are shown as notes below.
 6. Default timeout 10 s per check, 60 s per level. Timeout = fail with a distinct message.
 
+`any_of`, `all_of`, and `not` are structural, not registered check types: the catalogue
+in section 3 stays at fourteen, and there is no `type: any_of`. A composition node's
+branches have no `id`, never appear in `objectives`, and rule 4's "no short-circuit"
+applies to objectives, not to a composite's internal branches: once a composite's own
+answer is decided, evaluating its remaining branches would cost sandbox round trips and
+tell the learner nothing, so it stops. The checklist stays complete either way, because
+the composite itself is the objective and is always reported.
+
+When the 60 second level budget is exhausted, the checks that have not yet run are
+**marked** as not evaluated rather than silently dropped, for the same reason rule 4
+exists: a learner reading the result sees a complete checklist, one that says "we ran
+out of time on this one" rather than one with entries missing.
+
 ---
 
 ## 5. Result shape (engine → UI)
@@ -425,6 +473,13 @@ without a special case.
 ledger and the command count, which live with the learner's progress rather than with the
 sandbox. The engine's own result type omits the field entirely and the game layer adds it,
 so a caller reading this document sees one shape either way.
+
+The engine's `Run` returns this result and never an error. A cancelled run still
+produces a complete checklist rather than a bare failure: every check that did not get
+to run is marked the way the level budget's timeout is (§4), not omitted. A caller that
+needs to know whether the learner interrupted the run rather than the level genuinely
+failing inspects `ctx.Err()` itself, rather than being handed a second, competing signal
+to reconcile against this result.
 
 ---
 
@@ -546,3 +601,12 @@ protect something its own setup never created. It is **not** the same as
 `optional`: a learner who deletes `important/` still fails the level. And it cannot
 be used to quiet the gate, because step 2 also requires that at least one required
 non-preserving objective failed.
+
+`author test` **refuses** when it cannot reach a Linux Docker daemon, rather than
+skipping. A `make golden` that reports success having tested nothing is worse than one
+that reports it could not run: the whole point of the golden contract is that every
+level's checks and solution were actually exercised against the sandbox, not merely
+that the command exited zero. The Go golden test carrying the same six steps is gated
+on the `SHELLFORGE_GOLDEN=1` environment variable as well as a Linux daemon, so
+`go test ./...` in the fast CI job never builds the Containerfile or spins up a
+container; only the job that sets that variable does.
