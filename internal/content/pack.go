@@ -100,7 +100,8 @@ func (p *Pack) Level(id string) (*Level, bool) {
 // level can never become invisible by being left out of pack.yaml.
 //
 // Order returns an error when the prerequisites form a cycle, naming the ids
-// that are stuck. It is the only failure a caller has to handle here.
+// on the cycle itself, not every id merely stuck behind it. It is the only
+// failure a caller has to handle here.
 func (p *Pack) Order() ([]string, error) {
 	loaded := make(map[string]*Level, len(p.Levels))
 	for i := range p.Levels {
@@ -200,7 +201,59 @@ func topoSort(ids []string, position map[string]int, loaded map[string]*Level) (
 			}
 		}
 		sort.Strings(stuck)
-		return nil, fmt.Errorf("prerequisites form a cycle among %v", stuck)
+
+		if onCycle := cycleMembers(stuck, dependents); len(onCycle) > 0 {
+			return nil, fmt.Errorf("prerequisites form a cycle among %v: remove one prerequisite edge inside that group, then run shellforge author validate", onCycle)
+		}
+		return nil, fmt.Errorf("prerequisites form a cycle, or depend on one, among %v: remove one prerequisite edge, then run shellforge author validate", stuck)
 	}
 	return out, nil
+}
+
+// cycleMembers narrows stuck, the set of ids topoSort could never place, down
+// to the ids that are actually on a cycle, as opposed to an id merely stuck
+// behind one.
+//
+// An id is on a cycle exactly when following prerequisite edges forward from
+// it (id depends on nothing directly; dependents walks the reverse edge,
+// from a prerequisite to the levels that require it) eventually reaches it
+// again. The walk is iterative breadth-first search over an explicit
+// frontier, restricted to stuck, rather than a recursive walk: a pack is
+// untrusted content, and topoSort's own doc comment already made that choice
+// for the same reason.
+func cycleMembers(stuck []string, dependents map[string][]string) []string {
+	inStuck := make(map[string]bool, len(stuck))
+	for _, id := range stuck {
+		inStuck[id] = true
+	}
+
+	var onCycle []string
+	for _, start := range stuck {
+		visited := map[string]bool{}
+		frontier := append([]string{}, dependents[start]...)
+		reached := false
+		for len(frontier) > 0 && !reached {
+			var next []string
+			for _, id := range frontier {
+				if !inStuck[id] {
+					continue
+				}
+				if id == start {
+					reached = true
+					break
+				}
+				if visited[id] {
+					continue
+				}
+				visited[id] = true
+				next = append(next, dependents[id]...)
+			}
+			frontier = next
+		}
+		if reached {
+			onCycle = append(onCycle, start)
+		}
+	}
+	sort.Strings(onCycle)
+	return onCycle
 }
