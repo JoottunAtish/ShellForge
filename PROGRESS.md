@@ -1726,6 +1726,13 @@ Works:
   the package's own source for `os.Remove`, `os.RemoveAll`, `os.Mkdir`, and
   similar calls, alongside a second parser test banning the whole `net`
   family of imports from this package and from `internal/content`.
+- `FileSpec`'s YAML decoder (`internal/content/setupspec.go`,
+  `FileSpec.UnmarshalYAML`) is hand-rolled for one reason: `ContentSet`.
+  Struct tag decoding cannot tell an absent `content` key from an empty one,
+  and files-01 materializes a `.gitkeep` that exists only to be empty, so
+  that distinction has to be real. Everything else the decoder does is what
+  strict struct decoding would have done anyway, including refusing an
+  unknown key.
 - Every user-facing error is a `*ux.Error` from `ux.Fail`, with three new
   doc anchors, `unsafe-level-root`, `level-pack-invalid`, and
   `setup-script-failed`, each with a heading in

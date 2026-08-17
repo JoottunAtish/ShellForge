@@ -19,11 +19,13 @@ import "embed"
 // FS's paths begin with the pack directory name.
 //
 // The all: prefix matters and is not decoration. Without it, embed silently
-// skips every file whose name begins with a dot or an underscore, and level
-// assets include deliberately hidden files: nav-02 teaches `ls -a` and needs a
-// dotfile to find. A pack that embedded everything except its hidden files
-// would fail at play time, in a level about hidden files, which is the worst
-// possible place to discover a build-time exclusion rule.
+// skips every file whose name begins with a dot or an underscore. No shipped
+// asset needs that today: nav-02's own dotfile, .kofi-notes, is inline
+// content in the level YAML, not a pack asset. But a level that teaches
+// `ls -a` may need a real dotfile asset to find, and a pack that embedded
+// everything except its hidden files would fail at play time, in a level
+// about hidden files, which is the worst possible place to discover a
+// build-time exclusion rule. The prefix stays as the defensive default.
 //
 //go:embed all:core-linux-basics
 var FS embed.FS
