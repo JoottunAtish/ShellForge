@@ -271,6 +271,46 @@ func TestMaterializedFilesHaveNoCarriageReturns(t *testing.T) {
 	}
 }
 
+// TestStripCRLFLeavesALoneCarriageReturn locks in #84's narrowed rule:
+// stripCRLF rewrites only the \r of a \r\n pair, never a lone \r. Mirrors
+// internal/runtime/docker's TestStripCR, which pins the same rule for
+// PushFiles' own copy.
+//
+// This is the one mutation this test defends against: a later reader who
+// finds CLAUDE.md's old, unqualified "strip \r" wording and "fixes"
+// stripCRLF to bytes.ReplaceAll(b, []byte("\r"), nil) would corrupt a binary
+// asset containing a lone \r. Without this test, stripCRLF had no coverage
+// at all, and that edit would have landed green.
+func TestStripCRLFLeavesALoneCarriageReturn(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"crlf becomes lf", "#!/bin/bash\r\necho ok\r\n", "#!/bin/bash\necho ok\n"},
+		{"already lf is untouched", "#!/bin/bash\necho ok\n", "#!/bin/bash\necho ok\n"},
+		{"lone cr is untouched", "a\rb", "a\rb"},
+		// The plan this test was written from ("cluster1-plan.md" section 7)
+		// says this input becomes "a\rb". That is wrong: bytes.ReplaceAll
+		// scans left to right for non-overlapping "\r\n", so the first \r
+		// (followed by another \r, not \n) is untouched and only the second
+		// \r, the one actually followed by \n, is collapsed. The correct,
+		// and actual, result keeps that untouched \r and adds the \n back:
+		// "a\r\nb". Verified independently against bytes.ReplaceAll's
+		// documented left-to-right, non-overlapping semantics.
+		{"a cr immediately before a crlf pair strips only the pair", "a\r\r\nb", "a\r\nb"},
+		{"empty", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := string(stripCRLF([]byte(tc.in)))
+			if got != tc.want {
+				t.Errorf("stripCRLF(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestMaterializedFilesCarryModeAndOwner pins criterion 2's mode and owner
 // handling, including the defaults.
 func TestMaterializedFilesCarryModeAndOwner(t *testing.T) {

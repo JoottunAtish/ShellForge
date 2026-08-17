@@ -81,7 +81,7 @@ setup:                         # R
   root: /home/learner/quest    # R  everything lives here; reset = rm -rf this
   files:                       # O
     - path: logs/app-1.log     # relative to root
-      source: assets/app-1.log # from pack; \r stripped on materialize
+      source: assets/app-1.log # from pack; \r\n normalised on materialize
       mode: "0644"             # O  default 0644
       owner: "learner:learner" # O  default learner:learner; see "declaring root-owned state" below
     - path: notes.txt
