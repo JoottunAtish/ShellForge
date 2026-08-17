@@ -624,9 +624,16 @@ func (r *Runner) buildFileEntry(spec content.FileSpec, root string) (runtime.Fil
 // 0x0a. Neither this nor Session.PushFiles's own strip is safe for a binary
 // asset containing the exact bytes 0d 0a; v0.1 has no binary asset concept.
 //
+// The replacement is a single non-overlapping pass, so an input whose line
+// ending is \r\r\n leaves a \r\n behind rather than being fully normalized:
+// bytes.ReplaceAll matches "\r\n" once starting at the second \r and does
+// not revisit the \r it left in place. A file shaped that way still fails
+// with "bad interpreter: /bin/bash^M" inside the sandbox.
+//
 // TODO(v0.2): a binary flag on FileSpec so a fixture that is not text is
 // pushed byte-for-byte. Fixing PushFiles itself is not this package's
-// business.
+// business. TODO(v0.2): decide whether the strip should instead loop until
+// no \r\n pair remains, which would close the \r\r\n gap above.
 func stripCRLF(b []byte) []byte {
 	return bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n"))
 }

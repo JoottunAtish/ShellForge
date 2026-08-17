@@ -298,7 +298,18 @@ func TestStripCRLFLeavesALoneCarriageReturn(t *testing.T) {
 		// and actual, result keeps that untouched \r and adds the \n back:
 		// "a\r\nb". Verified independently against bytes.ReplaceAll's
 		// documented left-to-right, non-overlapping semantics.
-		{"a cr immediately before a crlf pair strips only the pair", "a\r\r\nb", "a\r\nb"},
+		// This case name used to read as reassurance ("strips only the
+		// pair"), as if leaving one \r\n behind were the safe, intended
+		// outcome. It is not: "a\r\nb" is byte-for-byte indistinguishable
+		// from an unstripped CRLF pair, which is exactly the shape
+		// non-negotiable 7 exists to forbid. Renamed to say so plainly.
+		{"a cr immediately before a crlf pair leaves one crlf pair behind, unstripped: known gap, not a guarantee", "a\r\r\nb", "a\r\nb"},
+		// A shebang line is the case that matters in practice: this is
+		// exactly the shape that still produces "bad interpreter:
+		// /bin/bash^M" after the strip runs. Asserting the actual output
+		// locks in the known gap so silence is never mistaken for a promise
+		// that this input is handled.
+		{"a shebang with a doubled carriage return still fails after stripping: known gap, not a guarantee", "#!/bin/bash\r\r\necho ok\r\n", "#!/bin/bash\r\necho ok\n"},
 		{"empty", "", ""},
 	}
 	for _, tc := range cases {
