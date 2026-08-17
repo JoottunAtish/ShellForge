@@ -233,8 +233,11 @@ func isUxFail(fun ast.Expr) bool {
 //
 // Without this the helpers would be a blind spot of precisely the kind this
 // file exists to close: converting a call site from ux.Fail to a forwarder
-// would silently remove it from the gate. Adding a forwarder without adding
-// it here is caught by TestAnchorForwardersAreAllRegistered below.
+// would silently remove it from the gate. An unregistered forwarder is still
+// caught: its own internal ux.Fail call passes docAnchor as a parameter,
+// which stringValue cannot resolve, so the call lands in `unverifiable` and
+// TestEveryDocAnchorInThisPackageHasAHeading fails with a message pointing
+// back here.
 var anchorForwarders = map[string]bool{
 	"failUnlessAlreadyUserFacing": true,
 }
