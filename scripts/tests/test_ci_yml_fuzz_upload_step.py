@@ -69,14 +69,23 @@ def test_fuzz_upload_step_exists_and_is_scoped() -> None:
 
 
 def test_upload_artifact_uses_is_pinned_sha_with_version_comment() -> None:
+    # Two `uses:` lines name this action as of issue #67, the fuzz-crasher
+    # upload here and the rootfs artifact upload covered by
+    # test_ci_yml_rootfs_artifact.py, which was written to reuse the same
+    # pin rather than add a second one. So this asserts every reference is
+    # pinned correctly and that they all agree with each other, not that
+    # there is exactly one.
     text = CI_YML.read_text(encoding="utf-8")
     tuples = gates.parse_uses_lines(text)
 
     matches = [t for t in tuples if t[1].startswith("actions/upload-artifact@")]
-    assert len(matches) == 1, matches
-    _, ref, comment = matches[0]
+    assert matches, "no actions/upload-artifact reference found in ci.yml"
 
-    assert gates.check_uses_ref(ref, comment) is None
+    refs = set()
+    for _, ref, comment in matches:
+        assert gates.check_uses_ref(ref, comment) is None
+        refs.add(ref)
+        _, sha = ref.split("@", 1)
+        assert re.fullmatch(r"[0-9a-f]{40}", sha), sha
 
-    _, sha = ref.split("@", 1)
-    assert re.fullmatch(r"[0-9a-f]{40}", sha), sha
+    assert len(refs) == 1, f"actions/upload-artifact is pinned to more than one ref: {refs}"

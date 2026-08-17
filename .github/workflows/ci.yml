@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -365,6 +366,8 @@ jobs:
   image:
     name: Sandbox image
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -422,14 +425,73 @@ jobs:
           docker tag shellforge-sandbox:ci shellforge-authortest:latest
           go test -run '^TestEveryLevelGoldenPath$|^TestPipe05RejectsNearMisses$' -timeout 30m -v ./cmd/shellforge/...
 
-      - name: The rootfs tarball exports cleanly
+      - name: The rootfs tarball exports cleanly and has what WSL import needs
+        # The WSL runtime verifies a sha256 before `wsl --import` and refuses on
+        # mismatch, and that verification means nothing if a tarball missing
+        # /etc/wsl.conf ships anyway: interop and automount would default ON,
+        # which is a silent breach of the safety promise, not a build failure.
+        # So this asserts tarball content, not just that gzip exited 0.
+        #
+        # rootfs.tar.gz and rootfs.tar.gz.sha256 are the fixed filenames every
+        # producer agrees on: this job, `make rootfs`, and `.\make.ps1 rootfs`.
+        # The sidecar is sha256sum's own format so `sha256sum -c` works
+        # unchanged and a Go implementation has one shape to parse.
+        #
+        # -n on gzip: without it, gzip stores a timestamp in the header and the
+        # digest changes on every run of the exact same image, which defeats
+        # the point of publishing a checksum at all.
         run: |
           set -euo pipefail
           docker create --name sf-export shellforge-sandbox:ci /bin/true
-          docker export sf-export | gzip -9 > rootfs.tar.gz
+          docker export sf-export | gzip -9 -n > rootfs.tar.gz
           docker rm -f sf-export
           ls -lh rootfs.tar.gz
-          sha256sum rootfs.tar.gz
+          sha256sum rootfs.tar.gz > rootfs.tar.gz.sha256
+          cat rootfs.tar.gz.sha256
+
+          # Captured once, not piped straight into grep -q: grep -q stops
+          # reading the moment it has a match, tar gets SIGPIPE writing the
+          # rest of the listing, and under pipefail that turns into "tar:
+          # stdout: write error" and a nonzero pipeline status regardless of
+          # whether grep actually matched. Command substitution drains tar to
+          # completion first, so there is no early reader to break the pipe.
+          tar_listing=$(tar -tzf rootfs.tar.gz)
+
+          missing=0
+          for path in etc/wsl.conf home/learner opt/shellforge/bin/check \
+                      opt/shellforge/.sandbox-id usr/share/man/man1/ls.1.gz; do
+            if ! grep -qE "^\.?/?${path//./\\.}/?$" <<< "$tar_listing"; then
+              echo "MISSING from rootfs.tar.gz: $path"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "FAIL: the exported tarball is missing content wsl --import needs"
+            exit 1
+          fi
+          echo "OK: rootfs.tar.gz has every required path"
+
+      - name: Upload rootfs artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rootfs
+          path: |
+            rootfs.tar.gz
+            rootfs.tar.gz.sha256
+
+      - name: Attach rootfs artifacts to the release
+        # Tag pushes only. `gh` is preinstalled on GitHub-hosted runners, so
+        # this needs no new third party Action pinned into the supply chain.
+        # Upload first, because a release may already exist (created by hand
+        # from the GitHub UI); fall back to creating one only when the upload
+        # finds nothing to attach to.
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "$GITHUB_REF_NAME" rootfs.tar.gz rootfs.tar.gz.sha256 --clobber \
+            || gh release create "$GITHUB_REF_NAME" rootfs.tar.gz rootfs.tar.gz.sha256 --generate-notes
 
   # -------------------------------------------------------------------------
   # The merge gate.
