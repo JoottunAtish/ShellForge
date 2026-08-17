@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/JoottunAtish/ShellForge/internal/platform"
 )
 
 // ProblemLevel separates a problem that must be fixed from one an author
@@ -402,34 +404,24 @@ func (v *validator) validateSetup(lvl *Level) {
 // validateSetupRoot refuses any level root that is not strictly inside the
 // sandbox learner's home directory.
 //
-// The rules are ordered so that the check cannot be defeated by cleaning: a
-// .. segment is refused before path.Clean runs, because cleaning is precisely
-// what would hide it. The case that matters most, and the one most likely to
-// be missed, is /home/learner exactly: it satisfies a naive "starts with
-// /home/learner" test and it is the learner's entire home directory.
+// The lexical rule itself lives in platform.UnsafeLevelRoot, shared with the
+// runner in internal/content/setup and internal/sandbox: reset and teardown
+// are rm -rf on this path, so all three callers must agree on what it can
+// never point at. This wrapper keeps the validator's own voice: an author
+// reads this message, not a runtime refusal, so it is phrased as what a
+// level.yaml field must satisfy rather than as a runtime "refusing to".
 func validateSetupRoot(root string) error {
-	if strings.TrimSpace(root) == "" {
-		return fmt.Errorf("must not be empty: it is the path reset and teardown delete")
-	}
-	for _, segment := range strings.Split(root, "/") {
-		if segment == ".." {
-			return fmt.Errorf("%q must not contain a .. segment", root)
-		}
-	}
-	clean := path.Clean(root)
-	if !path.IsAbs(clean) {
-		return fmt.Errorf("%q must be an absolute path", root)
-	}
-	if !strings.HasPrefix(clean, learnerHomePrefix) {
-		return fmt.Errorf("%q must be a directory strictly inside %s, so that reset and teardown can never reach past it", root, learnerHomePrefix)
+	if reason := platform.UnsafeLevelRoot(root); reason != nil {
+		return fmt.Errorf("%q cannot be a level root: %v. reset and teardown are rm -rf on this path, so it must be a directory strictly inside %s", root, reason, learnerHomePrefix)
 	}
 	return nil
 }
 
 // learnerHomePrefix is the only place a level's world may live. The trailing
 // slash is what makes /home/learner itself fail the prefix test rather than
-// pass it.
-const learnerHomePrefix = "/home/learner/"
+// pass it. It is platform.LearnerHomePrefix by another name, kept as its own
+// name because this file's messages already read naturally with it.
+const learnerHomePrefix = platform.LearnerHomePrefix
 
 // validateAssetSource checks that a source: names a real file inside the
 // pack, and only inside the pack.

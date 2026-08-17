@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/JoottunAtish/ShellForge/internal/platform"
 	"github.com/JoottunAtish/ShellForge/internal/runtime"
 )
 
@@ -32,8 +33,10 @@ const (
 	// levelRootPrefix is the only prefix a level root may live under. It
 	// matches FileEntry.Path's contract and the docker backend's own
 	// sandboxRoot, and it is the load-bearing half of every refusal in
-	// validateLevelRoot.
-	levelRootPrefix = "/home/learner/"
+	// validateLevelRoot. It is platform.LearnerHomePrefix by another name,
+	// kept as its own constant because this file's own tests already spell
+	// it this way.
+	levelRootPrefix = platform.LearnerHomePrefix
 
 	// demoRoot is the demo level's world. It is a compile-time constant in
 	// this ticket, which removes most of the risk from the teardown path,
@@ -285,41 +288,21 @@ func demoLogContent(f demoLogFile, seed int64) []byte {
 // to hand to a recursive delete inside the sandbox.
 //
 // This is the guard the destructive-safety skill requires, and it runs before
-// any path reaches a destructive argv. It refuses in this order:
-//
-//   - an empty path, or one that cleans to "." or "/"
-//   - a path containing a ".." segment, checked BEFORE cleaning, because
-//     cleaning is exactly what would hide it
-//   - a path that is not absolute after cleaning
-//   - a path that is not strictly under /home/learner/
-//   - /home/learner itself, which is the learner's whole home directory and
-//     never a level root
+// any path reaches a destructive argv. The lexical rule itself moved to
+// platform.UnsafeLevelRoot in #93, shared with internal/content/setup and
+// internal/content's validator: it still refuses in the same order (empty,
+// then a ".." segment before cleaning, then not absolute, then "/" or ".",
+// then anything outside /home/learner/), it is just no longer this file's own
+// copy. This wrapper survives because this file, and its tests, are doomed by
+// #96 but not gone yet.
 //
 // It is lexical only. A symlink escaping the root is a filesystem property
 // that no host-side string check can see, so Setup and Teardown resolve the
 // path inside the sandbox as well and re-check the result. See
 // resolveLevelRoot.
 func validateLevelRoot(root string) error {
-	if strings.TrimSpace(root) == "" {
-		return fmt.Errorf("refusing to use %q as a level root: it is empty", root)
-	}
-	// Before cleaning, not after. path.Clean("/home/learner/../etc")
-	// returns "/home/etc", which passes a naive prefix check while pointing
-	// somewhere it must never point.
-	for _, segment := range strings.Split(root, "/") {
-		if segment == ".." {
-			return fmt.Errorf("refusing to use %q as a level root: it contains a .. segment", root)
-		}
-	}
-	clean := path.Clean(root)
-	if !path.IsAbs(clean) {
-		return fmt.Errorf("refusing to use %q as a level root: it is not absolute", root)
-	}
-	if clean == "/" || clean == "." {
-		return fmt.Errorf("refusing to use %q as a level root: it resolves to %q", root, clean)
-	}
-	if !strings.HasPrefix(clean, levelRootPrefix) {
-		return fmt.Errorf("refusing to use %q as a level root: level roots must live under %s", root, levelRootPrefix)
+	if reason := platform.UnsafeLevelRoot(root); reason != nil {
+		return fmt.Errorf("refusing to use %q as a level root: %v", root, reason)
 	}
 	return nil
 }

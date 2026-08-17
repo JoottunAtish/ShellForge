@@ -29,8 +29,10 @@ const (
 	DefaultStateDir = "/home/learner/.shellforge"
 
 	// LevelRootPrefix is the only prefix a level root, or the state
-	// directory, may live under.
-	LevelRootPrefix = "/home/learner/"
+	// directory, may live under. It is platform.LearnerHomePrefix by another
+	// name, kept as its own constant because this package's own tests and
+	// doc comments already spell it this way.
+	LevelRootPrefix = platform.LearnerHomePrefix
 
 	// DefaultTimeout bounds setup.script and teardown.script when the level
 	// does not set its own timeout_seconds.
@@ -140,30 +142,14 @@ func (r *Runner) StateDir() string {
 }
 
 // validateLevelRoot refuses, rather than adjusts, any path that is not safe
-// to hand to a recursive delete inside the sandbox. It mirrors
-// internal/sandbox/demo_level.go's validateLevelRoot exactly, which is the
-// already-reviewed prior art for this exact containment problem: empty,
-// then a .. segment (checked BEFORE cleaning, because cleaning is what
-// would hide it), then not absolute after cleaning, then "/" or ".", then
-// the strict /home/learner/ prefix.
+// to hand to a recursive delete inside the sandbox. The lexical rule itself
+// lives in platform.UnsafeLevelRoot, shared with internal/sandbox and
+// internal/content's validator; this wrapper keeps this package's own
+// sentinel error and message shape, both of which resolveLevelRoot's callers
+// and this package's tests depend on.
 func validateLevelRoot(root string) error {
-	if strings.TrimSpace(root) == "" {
-		return fmt.Errorf("refusing to use %q as a level root: it is empty: %w", root, ErrUnsafeLevelRoot)
-	}
-	for _, segment := range strings.Split(root, "/") {
-		if segment == ".." {
-			return fmt.Errorf("refusing to use %q as a level root: it contains a .. segment: %w", root, ErrUnsafeLevelRoot)
-		}
-	}
-	clean := path.Clean(root)
-	if !path.IsAbs(clean) {
-		return fmt.Errorf("refusing to use %q as a level root: it is not absolute: %w", root, ErrUnsafeLevelRoot)
-	}
-	if clean == "/" || clean == "." {
-		return fmt.Errorf("refusing to use %q as a level root: it resolves to %q: %w", root, clean, ErrUnsafeLevelRoot)
-	}
-	if !strings.HasPrefix(clean, LevelRootPrefix) {
-		return fmt.Errorf("refusing to use %q as a level root: level roots must live under %s: %w", root, LevelRootPrefix, ErrUnsafeLevelRoot)
+	if reason := platform.UnsafeLevelRoot(root); reason != nil {
+		return fmt.Errorf("refusing to use %q as a level root: %v: %w", root, reason, ErrUnsafeLevelRoot)
 	}
 	return nil
 }
