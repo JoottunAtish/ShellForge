@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"errors"
 	"fmt"
 	"path"
 	"strings"
@@ -43,16 +44,16 @@ const LearnerHomePrefix = "/home/learner/"
 // target.
 func UnsafeLevelRoot(root string) error {
 	if strings.TrimSpace(root) == "" {
-		return fmt.Errorf("it is empty")
+		return errors.New("it is empty")
 	}
 	for _, segment := range strings.Split(root, "/") {
 		if segment == ".." {
-			return fmt.Errorf("it contains a .. segment")
+			return errors.New("it contains a .. segment")
 		}
 	}
 	clean := path.Clean(root)
 	if !path.IsAbs(clean) {
-		return fmt.Errorf("it is not absolute")
+		return errors.New("it is not absolute")
 	}
 	if clean == "/" || clean == "." {
 		return fmt.Errorf("it resolves to %q", clean)

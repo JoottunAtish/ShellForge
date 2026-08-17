@@ -166,13 +166,19 @@ chown, and a declared owner survives to when your script runs.
 
 **Declaring root-owned state.** A level that needs a file owned by someone
 other than the learner, such as `root`, declares `owner:` on that
-`setup.files` entry rather than trying to chown it from a script: `PushFiles`
-extracts through the daemon, which is outside the container's own capability
-set, so this is the only place in a level that can create root-owned state.
-Only a **file** can carry a declared owner. A directory always belongs to the
-learner, no matter what its contents declare, so that teardown's `rm -rf` as
-the learner can always remove it. `setup.script` cannot create root-owned
-state either way: it runs as the learner.
+`setup.files` entry rather than trying to chown it from a script. The
+ownership `PushFiles` applies through the daemon does not survive on its
+own: the runner's blanket `chown -R learner:learner` immediately after
+`PushFiles` reverts it. What actually creates the root-owned state is the
+runner re-applying every declared `owner:` afterward, in the sandbox, as
+root holding `CAP_CHOWN`. Only a **file** can carry a declared owner. A
+directory always belongs to the learner, no matter what its contents
+declare, because the runner refuses to load a level whose `setup.files`
+entries name the same path twice or make one an ancestor of another, which
+is the only shape that could otherwise leave a directory owned by anyone but
+the learner. That is what lets teardown's `rm -rf` as the learner always
+remove it. `setup.script` cannot create root-owned state either way: it
+runs as the learner.
 
 This bit real levels. `files-03` and `files-04` both shipped with a
 `mkdir -p` in their setup script and both were silently missing that directory,

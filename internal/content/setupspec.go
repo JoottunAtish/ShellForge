@@ -18,7 +18,7 @@ type Setup struct {
 	// Files are materialized into the sandbox relative to Root.
 	Files []FileSpec `yaml:"files"`
 
-	// Script runs as root, inside the sandbox, after Files, with the
+	// Script runs as the learner, inside the sandbox, after Files, with the
 	// working directory set to the resolved Root. It is passed as a single
 	// argv element to bash -c, never concatenated into a host command
 	// line, and never has set -e injected: docs/LEVEL-FORMAT.md's own

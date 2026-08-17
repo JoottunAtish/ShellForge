@@ -101,6 +101,20 @@ const (
 // vector as a positional operand.
 var ownerPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*(:[a-zA-Z0-9][a-zA-Z0-9_-]*)?$`)
 
+// normalizeOwner expands a bare user into user:user, the same expansion
+// chown itself applies to a single name. Without this, a declared owner of
+// "learner", which ownerPattern permits, compares unequal to DefaultOwner's
+// "learner:learner" and is treated as an exception: the restore step would
+// emit a redundant chown learner -- <path> for a file that already has its
+// default owner. An empty owner is left alone; it means "not declared" and
+// is handled by the caller.
+func normalizeOwner(owner string) string {
+	if owner == "" || strings.Contains(owner, ":") {
+		return owner
+	}
+	return owner + ":" + owner
+}
+
 // Runner materializes a level's world into a sandbox session and tears it
 // down again.
 //
@@ -391,10 +405,11 @@ func (r *Runner) Setup(ctx context.Context, lvl *content.Level) error {
 	// it so a future widening of the mode cap does not walk into it.
 	byOwner := map[string][]string{}
 	for _, spec := range lvl.Setup.Files {
-		if spec.Owner == "" || spec.Owner == DefaultOwner {
+		owner := normalizeOwner(spec.Owner)
+		if owner == "" || owner == DefaultOwner {
 			continue
 		}
-		byOwner[spec.Owner] = append(byOwner[spec.Owner], fileAbsPath(root, spec.Path))
+		byOwner[owner] = append(byOwner[owner], fileAbsPath(root, spec.Path))
 	}
 	owners := make([]string, 0, len(byOwner))
 	for owner := range byOwner {

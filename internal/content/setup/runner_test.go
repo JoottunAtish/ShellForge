@@ -499,6 +499,35 @@ func TestSetupGroupsRestoreChownsByOwner(t *testing.T) {
 	}
 }
 
+// TestSetupSkipsRestoreForABareLearnerOwner pins the normalizeOwner fix: a
+// declared owner of "learner", which ownerPattern permits as a bare user,
+// means the same thing as DefaultOwner's "learner:learner" and must not be
+// treated as an exception. Without normalizing before comparing, this file
+// would get a redundant chown learner -- <path> after the blanket chown had
+// already made it learner:learner.
+func TestSetupSkipsRestoreForABareLearnerOwner(t *testing.T) {
+	const root = "/home/learner/quest"
+	f := &fakeSession{}
+	r := NewRunner(f, nil)
+	lvl := &content.Level{ID: "nav-01", Setup: content.Setup{Root: root, Files: []content.FileSpec{
+		{Path: "a.txt", ContentSet: true, Content: "x", Owner: "learner"},
+	}}}
+
+	if err := r.Setup(context.Background(), lvl); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+
+	var restores int
+	for _, c := range chownCalls(f) {
+		if !equalArgv(c.argv, []string{"chown", "-R", DefaultOwner, "--", root}) {
+			restores++
+		}
+	}
+	if restores != 0 {
+		t.Errorf("recorded %d restore chown call(s) for a bare \"learner\" owner, want 0", restores)
+	}
+}
+
 // TestTeardownChownsBackBeforeTheRecursiveDelete pins the ordering that
 // makes it safe to leave a root-owned file behind: Teardown's best-effort
 // chown -R learner:learner must run, as root, strictly before rm -rf, as the
