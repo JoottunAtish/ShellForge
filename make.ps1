@@ -67,6 +67,22 @@ function Get-ContainerEngine {
     return 'docker'
 }
 
+function Get-GzipCommand {
+    # Reuse the exact same gzip that CI and `make rootfs` shell out to, not a
+    # different compressor: a .NET-native implementation is not guaranteed to
+    # produce byte-identical output to GNU gzip even at the same level, which
+    # would defeat the point of this target. Git for Windows ships gzip.exe
+    # under its own usr\bin, which is not always on PATH, so look there too.
+    $direct = Get-Command gzip -ErrorAction SilentlyContinue
+    if ($direct) { return $direct.Source }
+    $git = Get-Command git -ErrorAction SilentlyContinue
+    if ($git) {
+        $candidate = Join-Path (Split-Path (Split-Path $git.Source)) 'usr\bin\gzip.exe'
+        if (Test-Path $candidate) { return $candidate }
+    }
+    return $null
+}
+
 function Invoke-Bash([string]$ScriptPath) {
     # Git for Windows ships bash. Prefer it over WSL so the check does not depend
     # on a provisioned distro.
@@ -174,15 +190,31 @@ switch ($Target.ToLowerInvariant()) {
 
     'rootfs' {
         $engine = Get-ContainerEngine
+        $gzip = Get-GzipCommand
+        if (-not $gzip) {
+            Write-Host 'FAIL: gzip not found. Install Git for Windows, which ships gzip.exe.' -ForegroundColor Red
+            exit 1
+        }
         New-Item -ItemType Directory -Force -Path 'images/out' | Out-Null
         Invoke-Step "image ($engine)" { & $engine build -f images/Containerfile -t "${Image}:${Tag}" images/ }
         & $engine rm -f "$Image-export" 2>$null | Out-Null
         Invoke-Step 'create' { & $engine create --name "$Image-export" "${Image}:${Tag}" /bin/true }
-        Invoke-Step 'export' { & $engine export "$Image-export" -o 'images/out/rootfs.tar' }
+        $tarPath = 'images/out/rootfs.tar'
+        $gzPath = 'images/out/rootfs.tar.gz'
+        # Export straight to a file with docker's own -o flag, not through the
+        # PowerShell pipeline: piping binary data between native commands can
+        # be mangled by pipeline string conversion, particularly under
+        # Windows PowerShell 5.1.
+        Invoke-Step 'export' { & $engine export "$Image-export" -o $tarPath }
         & $engine rm -f "$Image-export" | Out-Null
-        $hash = (Get-FileHash -Algorithm SHA256 'images/out/rootfs.tar').Hash.ToLowerInvariant()
-        "$hash  rootfs.tar" | Out-File -FilePath 'images/out/rootfs.tar.sha256' -Encoding ascii
-        Write-Host "exported images/out/rootfs.tar" -ForegroundColor Green
+        # The same gzip binary and the same -n flag as the Makefile and CI, so
+        # the compressed bytes are a deterministic function of the tar bytes
+        # rather than also depending on when this ran or which compressor
+        # implementation produced them.
+        Invoke-Step 'gzip -9 -n' { & $gzip '-9' '-n' '-f' $tarPath }
+        $hash = (Get-FileHash -Algorithm SHA256 $gzPath).Hash.ToLowerInvariant()
+        "$hash  rootfs.tar.gz" | Out-File -FilePath 'images/out/rootfs.tar.gz.sha256' -Encoding ascii
+        Write-Host "exported images/out/rootfs.tar.gz" -ForegroundColor Green
         Write-Host "sha256 $hash"
     }
 

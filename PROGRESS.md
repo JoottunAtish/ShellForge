@@ -45,6 +45,7 @@ formally cut.
 | Issue templates | Four forms, including a self-contained implementation ticket |
 | MCP servers | `.mcp.json` auto-connects jCodemunch and jDocmunch |
 | `internal/platform` (paths) | Tested. Every function in `paths.go` has at least one test. `DataDir` rejects a relative `XDG_DATA_HOME` instead of silently returning a relative path. The Windows `CacheDir`/`DataDir` collision (#40) is fixed: `CacheDir` nests a `cache` element below `DataDir`, so a cache clear cannot delete progress or the WSL disk image. |
+| Rootfs release artifact | CI, `make rootfs`, and `.\make.ps1 rootfs` now all produce `rootfs.tar.gz` plus a `sha256sum`-format sidecar with reproducible `gzip -9 -n`, CI uploads both as a build artifact on every run and attaches them to the GitHub release on a tag push, and CI asserts the tarball contains `/etc/wsl.conf`, `/home/learner`, `/opt/shellforge/bin/check`, `/opt/shellforge/.sandbox-id`, and a man page. Not verified here: this environment has no Docker daemon, so the whole `image` job and the two scripts' actual output rest on CI, and the cross-platform digest match between a Linux runner's gzip and Git for Windows' gzip is expected but unproven pending a manual check on both platforms. |
 
 **There is no release and nothing to install.**
 
@@ -2893,6 +2894,83 @@ from source now needs Go 1.25.
 Still not run from a developer machine: every Docker-gated test, govulncheck,
 gosec and pytest. The difference from yesterday is that CI has now run the first
 two, and both found real things.
+
+### Day 3, 2026-08-17: the rootfs tarball, made to agree with itself
+
+Issue #67, Day 3 ticket A. CI, no Go layer. Fixes the three-different-tarballs
+problem the issue named, and bakes in the marker file the WSL destroy path
+(issue #69) needs before it can refuse to unregister the wrong distribution.
+
+- **Three producers, one contract now.** `rootfs.tar.gz` is `gzip -9` of
+  `docker export` of the sandbox image, and `rootfs.tar.gz.sha256` is one
+  `sha256sum`-format line. CI's `image` job, `make rootfs`, and
+  `.\make.ps1 rootfs` all write exactly those two files now. Before this,
+  CI built a tarball and discarded it at the end of the job, the Makefile
+  already had the right filename and sidecar shape, and `make.ps1` wrote
+  `rootfs.tar` uncompressed with a `Get-FileHash`-shaped sidecar: wrong
+  filename, wrong bytes, wrong sidecar.
+- **`gzip -9 -n` everywhere, not `gzip -9`.** GNU gzip stores a timestamp in
+  its header by default, so the exact same input compresses to a different
+  file, and therefore a different sha256, on every run. `-n` (`--no-name`)
+  suppresses that, and without it the "digest recorded by the two scripts is
+  identical" acceptance criterion cannot hold even on one machine, let alone
+  two. Added to the CI step, the Makefile, and `make.ps1`.
+- **`make.ps1` shells out to a real `gzip.exe`, not `System.IO.Compression.GZipStream`.**
+  The .NET deflate implementation is not guaranteed to produce byte-identical
+  output to GNU gzip at the same nominal level, which would defeat the point
+  of a shared checksum. `Get-GzipCommand` looks for `gzip` on `PATH` first,
+  then for `gzip.exe` under Git for Windows' own `usr\bin` next to `git.exe`,
+  and the `rootfs` target now fails loudly with a one-line remediation if
+  neither is found, rather than falling back to a different compressor
+  silently. The export still goes to a file via docker's own `-o` flag first,
+  then gzip runs on that file in place: piping `docker export`'s stdout
+  through the PowerShell pipeline risks mangling binary data, particularly
+  under Windows PowerShell 5.1.
+- **CI now publishes what it builds instead of throwing it away.** The
+  rootfs step gained content assertions (the exported tarball must contain
+  `/etc/wsl.conf`, `/home/learner`, `/opt/shellforge/bin/check`,
+  `/opt/shellforge/.sandbox-id`, and a man page, or the job fails) so a
+  passing build actually proves the tarball is importable, not just that
+  gzip exited zero. A missing `/etc/wsl.conf` would mean interop and
+  automount default ON in a real `wsl --import`, which is a safety
+  regression, not a build nicety. Both files then go up via
+  `actions/upload-artifact`, reusing the exact SHA-pinned reference already
+  in this file for the fuzz-crasher upload, as a build artifact on every
+  run. On a tag push (`refs/tags/v*`, added to the workflow's own triggers),
+  a new step in the same job attaches both files to the GitHub release using
+  `gh release upload ... --clobber`, falling back to `gh release create` if
+  no release exists yet for that tag. `gh` is already on GitHub-hosted
+  runners, so no new third party Action entered the supply chain for this.
+  The `image` job gained `permissions: contents: write` for this, scoped to
+  that one job; the workflow level stays `contents: read`.
+- **`/opt/shellforge/.sandbox-id` now exists in the image**: a fixed string,
+  owned root, mode 0444, written before the directory's own `chown -R` so it
+  is not a separate ownership pass. Root owns it and mode 0444 means even
+  the learner cannot rewrite or delete it, which is what makes it usable as
+  a refusal precondition rather than a convention: the WSL destroy path
+  (issue #69, which depends on this one) can check for its presence before
+  `wsl --unregister` and refuse when it is absent, rather than trusting that
+  whatever it is about to unregister is really one of ours.
+- `scripts/tests/test_ci_yml_rootfs_artifact.py` is new, modeled on
+  `test_ci_yml_fuzz_upload_step.py`: it asserts the tag trigger, the job's
+  `contents: write` permission, the upload step's name and both file paths
+  and its pin (via `check-ci-gates.py`'s own `parse_uses_lines` and
+  `check_uses_ref`), and the release-attach step's position, condition, and
+  command. `python3 -m pytest scripts/tests -q` is green, including every
+  pre-existing test in that directory.
+- `.gitignore` already covered `images/out/`, `*.tar`, and `*.tar.gz` before
+  this ticket. Verified, not changed: no tarball can land in the repository.
+- **What is honestly not verified here.** This environment has no Docker
+  daemon at all, so nothing that needs one, the image build, the export, the
+  content assertions, either script's actual byte output, could be run from
+  a developer machine this time either. CI's `image` job is the only witness
+  for all of that, same as every prior Docker-gated claim on this page. The
+  cross-platform digest comparison the issue's own test plan calls for, a
+  Linux runner's `gzip -9 -n` against Git for Windows' `gzip -9 -n` on the
+  same image, needs one machine of each kind and was not run: it is a
+  reasonably founded expectation (both are the same GNU gzip implementation)
+  rather than a proven one, and stays that way until someone with both
+  platforms records the two digests by hand, per the issue's own test plan.
 
 ## Day 6: hardening, CI, packaging
 

@@ -125,7 +125,7 @@ image:
 rootfs: image
 	@mkdir -p images/out
 	$(CONTAINER_ENGINE) create --name $(IMAGE_NAME)-export $(IMAGE_NAME):$(IMAGE_TAG) /bin/true
-	$(CONTAINER_ENGINE) export $(IMAGE_NAME)-export | gzip -9 > images/out/rootfs.tar.gz
+	$(CONTAINER_ENGINE) export $(IMAGE_NAME)-export | gzip -9 -n > images/out/rootfs.tar.gz
 	$(CONTAINER_ENGINE) rm -f $(IMAGE_NAME)-export
 	@cd images/out && sha256sum rootfs.tar.gz > rootfs.tar.gz.sha256
 	@echo "exported images/out/rootfs.tar.gz"
