@@ -40,8 +40,15 @@ type CheckSpec struct {
 	// block passing.
 	Severity string
 
-	// Optional marks a bonus check. It never blocks passing.
-	Optional bool
+	// optionalDeclared records whether this check's own mapping wrote an
+	// optional key, regardless of what value it held. optional is not a
+	// field of a check: issue #97 gave it a single home on Objective, so a
+	// check that declares it is refused when the level loads (see
+	// validateCheckTree). This is unexported so that internal/game, which
+	// sits above this package, cannot read a check's own opinion of the
+	// field by accident: the objective is the only authority once the level
+	// has passed validation.
+	optionalDeclared bool
 
 	// TimeoutSeconds bounds this check. Zero means the engine default.
 	TimeoutSeconds int
@@ -142,7 +149,14 @@ func (c *CheckSpec) decodeField(key string, value ast.Node, params map[string]an
 	case "severity":
 		err = decodeNode(value, key, &c.Severity)
 	case "optional":
-		err = decodeNode(value, key, &c.Optional)
+		// The value is deliberately not decoded into anything: optional is
+		// not a field a check may hold (see the CheckSpec.optionalDeclared
+		// comment), so there is no destination for its value to go. Only
+		// presence is recorded, which is what lets the validator report
+		// "belongs on the objective" instead of either silently accepting a
+		// value or reporting a bare type complaint for something like
+		// optional: "yes".
+		c.optionalDeclared = true
 	case "timeout_seconds":
 		err = decodeNode(value, key, &c.TimeoutSeconds)
 	case "any_of":
@@ -164,8 +178,8 @@ func (c *CheckSpec) decodeField(key string, value ast.Node, params map[string]an
 }
 
 // decodeNode decodes one value node into dst, naming the field in any error
-// so a wrong type reads as "check field \"optional\": ..." rather than as a
-// bare reflection complaint.
+// so a wrong type reads as "check field \"timeout_seconds\": ..." rather than
+// as a bare reflection complaint.
 func decodeNode(value ast.Node, key string, dst any) error {
 	if err := yaml.NodeToValue(value, dst); err != nil {
 		return fmt.Errorf("check field %q: %w", key, err)

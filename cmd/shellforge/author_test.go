@@ -166,7 +166,7 @@ func TestValidateFailureModes(t *testing.T) {
 					"    type: file_exists\n    path: /home/learner/quest/answer.txt\n",
 					"    type: command_matched\n    pattern: 'pwd'\n")
 			},
-			expect: "optional: true or severity: warn",
+			expect: "optional: true on this check's objective",
 		},
 	}
 

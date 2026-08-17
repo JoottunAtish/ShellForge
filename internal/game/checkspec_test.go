@@ -19,14 +19,16 @@ import (
 // field added to both structs and forgotten here is the failure mode: the check
 // would silently lose it, and the level would verify something other than what
 // its author wrote, which is the quietest possible way for a level to start
-// accepting wrong answers.
+// accepting wrong answers. Optional is the one deliberate exception: verifySpec
+// must leave it false, since it is joined in from the objectives list afterward
+// by verifySpecs, not read off the check.
+// TestOptionalOnTheObjectiveIsTheOnlyAuthority covers that join.
 func TestVerifySpecCarriesEveryFieldAcross(t *testing.T) {
 	in := content.CheckSpec{
 		ID:             "obj1",
 		Type:           "file_content",
 		OnFail:         "the authored on_fail",
 		Severity:       content.SeverityWarn,
-		Optional:       true,
 		TimeoutSeconds: 7,
 		Params:         map[string]any{"path": "/home/learner/quest/report.txt", "match": "trimmed_equals"},
 		Line:           42,
@@ -49,8 +51,8 @@ func TestVerifySpecCarriesEveryFieldAcross(t *testing.T) {
 	if got.Severity != in.Severity {
 		t.Errorf("Severity = %q, want %q", got.Severity, in.Severity)
 	}
-	if !got.Optional {
-		t.Error("Optional was not carried across")
+	if got.Optional {
+		t.Error("verifySpec must not set Optional: it is joined from the objectives list by verifySpecs, like Text")
 	}
 	if got.TimeoutSeconds != in.TimeoutSeconds {
 		t.Errorf("TimeoutSeconds = %d, want %d", got.TimeoutSeconds, in.TimeoutSeconds)
@@ -67,14 +69,19 @@ func TestVerifySpecCarriesEveryFieldAcross(t *testing.T) {
 // decide whether the converter should carry it. It is a deliberate maintenance
 // burden: the alternative is a silently incomplete conversion.
 //
-// The two counts are equal today, which is a coincidence rather than a rule:
-// content.CheckSpec carries Line, a position in a file the engine has no use
-// for, and verify.Spec carries Text, which is joined from the objectives list
-// rather than read off the check. Nine fields are common to both. The numbers
-// are spelled out so that a change has to be acknowledged rather than absorbed.
+// The two counts are equal today, which is a coincidence rather than a rule.
+// Optional is no longer one of the mirrored fields: issue #97 removed it from
+// content.CheckSpec, so content.CheckSpec now carries two fields the engine has
+// no use for, Line and the unexported optionalDeclared, and verify.Spec carries
+// two the check does not supply, Text and Optional, both joined from the
+// objectives list by verifySpecs rather than read off the check. Before this
+// ticket, the two structs shared ten field names, Optional included; now they
+// share nine, since optionalDeclared and Optional are different fields with
+// different jobs, not two spellings of the same one. The numbers are spelled
+// out so that a change has to be acknowledged rather than absorbed.
 func TestVerifySpecFieldCountsMatch(t *testing.T) {
 	const (
-		// ID Type OnFail Severity Optional TimeoutSeconds AnyOf AllOf Not Params Line
+		// ID Type OnFail Severity optionalDeclared (unexported) TimeoutSeconds AnyOf AllOf Not Params Line
 		wantContentFields = 11
 		// ID Text Type OnFail Severity Optional TimeoutSeconds Params AnyOf AllOf Not
 		wantVerifyFields = 11
@@ -146,14 +153,18 @@ func TestVerifySpecRecursesThroughEveryCompositionKind(t *testing.T) {
 }
 
 // TestVerifySpecDoesNotPushMetadataOntoBranches pins the authoring invariant
-// that id, optional and severity describe a whole objective and never a branch.
+// that id and severity describe a whole objective and never a branch.
 //
 // A converter that helpfully copied them down would make a branch look
 // independently reportable, and the engine would then have two sources of truth
-// about whether an objective is a bonus.
+// about whether an objective is a bonus. Optional's own version of this pin now
+// lives in TestVerifySpecsDoesNotPushTheObjectiveFlagOntoBranches, one layer up:
+// verifySpec no longer reads Optional off the check at all, so there is nothing
+// here for it to push onto a branch. Only verifySpecs can get this wrong, since
+// it is the one that joins the flag in, after recursion has already finished.
 func TestVerifySpecDoesNotPushMetadataOntoBranches(t *testing.T) {
 	in := content.CheckSpec{
-		ID: "obj1", OnFail: "OUTER", Optional: true, Severity: content.SeverityWarn,
+		ID: "obj1", OnFail: "OUTER", Severity: content.SeverityWarn,
 		AllOf: []content.CheckSpec{
 			{Type: "file_exists", OnFail: "LEAF", Params: map[string]any{"path": "/a"}},
 		},
@@ -168,11 +179,46 @@ func TestVerifySpecDoesNotPushMetadataOntoBranches(t *testing.T) {
 	if branch.ID != "" {
 		t.Errorf("branch inherited the objective's id %q", branch.ID)
 	}
-	if branch.Optional {
-		t.Error("branch inherited Optional from the objective")
-	}
 	if branch.Severity != "" {
 		t.Errorf("branch inherited Severity %q from the objective", branch.Severity)
+	}
+}
+
+// TestVerifySpecsDoesNotPushTheObjectiveFlagOntoBranches guards the natural bug
+// in "assign Optional from the map": recursing into the branches and setting it
+// there too. verifySpecs must set Optional only on the spec whose ID it looked
+// up, the root of the tree, never on a branch underneath it.
+//
+// This is a pin, not a red-first driver: it would have passed before issue #97
+// as well, since the old code only ever promoted Optional onto the spec
+// returned by the top-level call to verifySpec, and branches were never given
+// the check's own copy of the flag either. It stays because the natural way to
+// write "assign from the map" is to do it recursively, and this is what would
+// catch that if someone did.
+func TestVerifySpecsDoesNotPushTheObjectiveFlagOntoBranches(t *testing.T) {
+	checks := []content.CheckSpec{
+		{
+			ID:     "obj1",
+			OnFail: "OUTER",
+			AllOf: []content.CheckSpec{
+				{Type: "file_exists", OnFail: "LEAF", Params: map[string]any{"path": "/a"}},
+			},
+		},
+	}
+	objectives := []content.Objective{
+		{ID: "obj1", Text: "t", Optional: true},
+	}
+
+	specs, err := verifySpecs(checks, objectives)
+	if err != nil {
+		t.Fatalf("verifySpecs: %v", err)
+	}
+
+	if !specs[0].Optional {
+		t.Error("specs[0].Optional = false, want true: its objective is optional: true")
+	}
+	if specs[0].AllOf[0].Optional {
+		t.Error("the branch inherited Optional from the objective; verifySpecs must set it only on the root spec")
 	}
 }
 
@@ -201,31 +247,36 @@ func TestVerifySpecsJoinsObjectiveText(t *testing.T) {
 	}
 }
 
-// TestOptionalOnEitherObjectiveOrCheckMakesABonus resolves the schema's
-// two-sources-of-truth problem in the safe direction.
-//
-// optional lives on both content.Objective and content.CheckSpec and the two can
-// disagree. Treating a disagreement as "required" would let a level fail a
-// learner on something its own checklist showed as a bonus, which is worse than
-// the reverse, so either saying optional wins.
-func TestOptionalOnEitherObjectiveOrCheckMakesABonus(t *testing.T) {
+// TestOptionalOnTheObjectiveIsTheOnlyAuthority replaces
+// TestOptionalOnEitherObjectiveOrCheckMakesABonus. That test covered a
+// schema with two sources of truth for optional, content.Objective and
+// content.CheckSpec, which could disagree; either saying optional won, the
+// safe direction. Issue #97 removed content.CheckSpec's copy of the flag, so
+// there is no longer a disagreement to resolve: the two cases that used to
+// cover "only the check" and "both" now belong to internal/content's
+// TestValidateOptionalOnACheckNamesTheObjective, which refuses a check that
+// declares optional when the level loads, long before this converter ever
+// sees one. What is left here is the join itself, plus the structural pin
+// that stops the field from quietly coming back.
+func TestOptionalOnTheObjectiveIsTheOnlyAuthority(t *testing.T) {
+	if _, ok := reflect.TypeOf(content.CheckSpec{}).FieldByName("Optional"); ok {
+		t.Error("content.CheckSpec has regained an Optional field. Issue #97 removed it so the schema cannot express a disagreement with the objective; optional is declared on the objective")
+	}
+
 	tests := []struct {
 		name         string
-		checkOpt     bool
 		objectiveOpt bool
 		want         bool
 	}{
-		{name: "neither", checkOpt: false, objectiveOpt: false, want: false},
-		{name: "only the check", checkOpt: true, objectiveOpt: false, want: true},
-		{name: "only the objective", checkOpt: false, objectiveOpt: true, want: true},
-		{name: "both", checkOpt: true, objectiveOpt: true, want: true},
+		{name: "the objective is not optional", objectiveOpt: false, want: false},
+		{name: "the objective is optional", objectiveOpt: true, want: true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			specs, err := verifySpecs(
 				[]content.CheckSpec{{ID: "obj1", Type: "file_exists", OnFail: "a",
-					Optional: tt.checkOpt, Params: map[string]any{"path": "/a"}}},
+					Params: map[string]any{"path": "/a"}}},
 				[]content.Objective{{ID: "obj1", Text: "t", Optional: tt.objectiveOpt}},
 			)
 			if err != nil {
@@ -240,7 +291,8 @@ func TestOptionalOnEitherObjectiveOrCheckMakesABonus(t *testing.T) {
 
 // TestVerifySpecsToleratesACheckWithNoObjective keeps a severity: warn check
 // working. The authoring invariants say a warn check needs no objective, so
-// joining must not fail when it finds none.
+// joining must not fail when it finds none, and both Text and Optional must
+// default to their zero values rather than panicking on the missing key.
 func TestVerifySpecsToleratesACheckWithNoObjective(t *testing.T) {
 	specs, err := verifySpecs(
 		[]content.CheckSpec{
@@ -254,6 +306,54 @@ func TestVerifySpecsToleratesACheckWithNoObjective(t *testing.T) {
 	}
 	if specs[0].Text != "" {
 		t.Errorf("Text = %q, want empty for a check with no objective", specs[0].Text)
+	}
+	if specs[0].Optional {
+		t.Errorf("Optional = true, want false for a check with no objective: an unmatched id must default to non-optional, the same safe default the pack validator's gating uses")
+	}
+}
+
+// TestDuplicateObjectiveIDReducesTheSameWayAsTheValidator pins that verifySpecs
+// reduces a duplicated objective id with OR, matching validateChecks in
+// internal/content.
+//
+// The two must agree. A duplicate objective id is a validation error, but
+// nothing calls content.Validate on the path a learner runs, so if this
+// reduction disagreed with the validator's then the validator could report a
+// journal check as a legal bonus while the engine gated on it, and a journal
+// signal is one the learner can forge from inside the sandbox. Last-wins here
+// against OR there is exactly that divergence, which is why the order of the
+// two declarations is the axis of this table.
+//
+// TestDuplicateObjectiveIDReducesTheSameWayAsVerifySpecs is the other half of
+// this pair, in internal/content.
+func TestDuplicateObjectiveIDReducesTheSameWayAsTheValidator(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		firstOpt  bool
+		secondOpt bool
+	}{
+		{name: "the optional copy is declared first", firstOpt: true, secondOpt: false},
+		{name: "the required copy is declared first", firstOpt: false, secondOpt: true},
+		{name: "both copies agree they are optional", firstOpt: true, secondOpt: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			specs, err := verifySpecs(
+				[]content.CheckSpec{
+					{ID: "obj1", Type: "file_exists", OnFail: "a message",
+						Params: map[string]any{"path": "/a"}},
+				},
+				[]content.Objective{
+					{ID: "obj1", Text: "the first copy", Optional: tt.firstOpt},
+					{ID: "obj1", Text: "the second copy", Optional: tt.secondOpt},
+				},
+			)
+			if err != nil {
+				t.Fatalf("verifySpecs: %v", err)
+			}
+			if !specs[0].Optional {
+				t.Error("Optional = false, want true: either declaration saying optional must make the objective a bonus, whichever order the two appear in, because internal/content's validateChecks reduces the same list with OR and the two must not disagree")
+			}
+		})
 	}
 }
 
