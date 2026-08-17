@@ -25,6 +25,7 @@ const (
 	anchorTooNew          = "progress-db-too-new"
 	anchorMigrationFailed = "progress-db-migration-failed"
 	anchorInUse           = "progress-db-in-use"
+	anchorForeignDatabase = "progress-db-not-ours"
 )
 
 // Pragmas are literal constant strings, never built with fmt.Sprintf: a
@@ -117,9 +118,27 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		}
 	}
 
+	s := &Store{db: db, path: path}
+	if err := s.Migrate(ctx); err != nil {
+		_ = db.Close() // best effort: the migration error is what the caller needs to see
+		return nil, err
+	}
+
 	// Defence in depth on top of the 0700 directory. This only ever
 	// restricts, on a path this package derived itself, and it never
 	// deletes, truncates, or renames anything.
+	//
+	// Runs after Migrate rather than right after the pragma loop that
+	// creates the file, so that a database Migrate refuses, such as the
+	// one ErrForeignDatabase reports, has had nothing at all done to it:
+	// moving the chmod here, rather than making it conditional on the
+	// outcome, avoids a second sqlite_master read to decide whether to run
+	// it and avoids a signature change to Migrate. The cost is that a
+	// fresh database now sits at the process umask default for the
+	// duration of the migrations rather than for the duration of one
+	// pragma; it is inside the 0700 directory EnsureDir created
+	// throughout that window, and 001_init.sql creates only empty tables,
+	// so no learner data exists in the file while it is briefly widened.
 	//
 	// TODO(v0.2): progress.db-wal and progress.db-shm are created later by
 	// SQLite with the umask default, not mode 0600 directly, and are
@@ -127,12 +146,6 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	if err := os.Chmod(path, 0o600); err != nil {
 		_ = db.Close() // best effort: the chmod failure is what the caller needs to see
 		return nil, classifyOpenError(path, fmt.Errorf("restrict permissions on %q: %w", path, err))
-	}
-
-	s := &Store{db: db, path: path}
-	if err := s.Migrate(ctx); err != nil {
-		_ = db.Close() // best effort: the migration error is what the caller needs to see
-		return nil, err
 	}
 
 	return s, nil
@@ -215,7 +228,11 @@ func isBusyOrLocked(err error) bool {
 //
 // Otherwise this opens path itself with os.O_RDWR and no os.O_CREATE, so
 // the classification attempt itself creates or modifies nothing, and tells
-// an unwritable path apart from a genuinely corrupt file.
+// an unwritable path apart from a genuinely corrupt file. A probe failure
+// matching fs.ErrNotExist is classified the same as fs.ErrPermission: a path
+// that does not exist yet, or whose parent directory does not exist yet, is
+// not corrupt, and the fix is the same one already given for a permission
+// problem.
 //
 // The probe closes its handle immediately, and that close is load bearing
 // rather than tidiness. Discarding the *os.File leaked a descriptor on every
@@ -247,7 +264,7 @@ func classifyOpenError(path string, cause error) *ux.Error {
 	if err == nil {
 		_ = probe.Close() // nothing was read from it; the errno was the answer
 	}
-	if err != nil && errors.Is(err, fs.ErrPermission) {
+	if err != nil && (errors.Is(err, fs.ErrPermission) || errors.Is(err, fs.ErrNotExist)) {
 		return ux.Fail(
 			"open the file where Shellforge records your progress",
 			cause,

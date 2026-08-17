@@ -22,6 +22,10 @@ var schemaFS embed.FS
 // Nothing is written or deleted when this happens: see Migrate.
 var ErrSchemaTooNew = errors.New("progress database schema is newer than this build")
 
+// ErrForeignDatabase reports that path holds a SQLite database that
+// Shellforge did not create, so Open refused to migrate it.
+var ErrForeignDatabase = errors.New("store: not a Shellforge progress database")
+
 // migration is one embedded schema/NNN_name.sql file.
 type migration struct {
 	version int
@@ -142,6 +146,65 @@ func schemaVersion(ctx context.Context, db *sql.DB) (int, error) {
 	return version, nil
 }
 
+// userTableCount returns the number of tables in db that SQLite does not own
+// itself, that is every table whose name does not begin with the reserved
+// sqlite_ prefix.
+//
+// Called only from refuseIfForeign, and only when the database records no
+// schema version. A count above zero in that state means the file is a valid
+// SQLite database that something other than Shellforge created: 001_init.sql
+// writes schema_version's row in the same transaction as it creates events,
+// so a database this package created can never hold user tables while
+// recording no version.
+//
+// sqlite_% excludes SQLite's own bookkeeping, sqlite_sequence and
+// sqlite_stat1 among them, which is not evidence of another application:
+// events declares INTEGER PRIMARY KEY AUTOINCREMENT, so sqlite_sequence
+// appears in this package's own databases too. In SQL LIKE, _ is a single
+// character wildcard, so this also excludes a table named sqlitezzz. That
+// over-exclusion is deliberate: sqlite_ is reserved by SQLite's own rules so
+// no real application uses it, and detecting a database whose tables were
+// named to look like SQLite internals is not in this project's threat model.
+func userTableCount(ctx context.Context, db *sql.DB) (int, error) {
+	var count int
+	if err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+	).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count tables in sqlite_master: %w", err)
+	}
+	return count, nil
+}
+
+// refuseIfForeign returns the refusal for a database that records no schema
+// version and already holds tables Shellforge did not create, and nil when
+// the database is ours to migrate.
+//
+// It fails closed. A sqlite_master read that did not complete is not
+// evidence that the file is ours, so an error from the count is refused with
+// the same anchor as a confirmed foreign database rather than allowed
+// through. The remediation is safe under either reading: it never tells the
+// learner to delete, rename, move, or overwrite anything, which is the whole
+// point when the file may belong to another program.
+func (s *Store) refuseIfForeign(ctx context.Context) error {
+	foreignFail := func(cause error) error {
+		return ux.Fail(
+			"open the file where Shellforge records your progress",
+			cause,
+			fmt.Sprintf("Shellforge did not create %s, so it has left that file alone. Point Shellforge at a different location for your progress file, then run: shellforge doctor", s.path),
+			anchorForeignDatabase,
+		)
+	}
+
+	count, err := userTableCount(ctx, s.db)
+	if err != nil {
+		return foreignFail(fmt.Errorf("%w: could not read the table list of %q to confirm it is ours: %w", ErrForeignDatabase, s.path, err))
+	}
+	if count > 0 {
+		return foreignFail(fmt.Errorf("%w: %q already holds %d table(s) Shellforge did not create and records no schema version", ErrForeignDatabase, s.path, count))
+	}
+	return nil
+}
+
 // Migrate applies every embedded migration with a version greater than the
 // database's current schema version, in ascending order, each inside its
 // own transaction. Calling it again once the database is current is a
@@ -183,6 +246,12 @@ func (s *Store) Migrate(ctx context.Context) error {
 			fmt.Sprintf("This copy of Shellforge is older than your progress file. Update Shellforge and start it again. To go back to an older version on purpose, rename %s first and a new progress file will be created.", s.path),
 			anchorTooNew,
 		)
+	}
+
+	if current == 0 {
+		if err := s.refuseIfForeign(ctx); err != nil {
+			return err
+		}
 	}
 
 	for _, m := range all {

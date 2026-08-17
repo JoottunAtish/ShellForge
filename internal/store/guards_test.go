@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -180,13 +182,77 @@ func TestStorePackageCallsNoFilesystemRemoval(t *testing.T) {
 	}
 }
 
+// declaredDocAnchors walks every production .go file in this package (via
+// storeProductionFiles, so a test file's own fixture constants can never
+// contribute one) and returns the string value of every constant whose name
+// has the "anchor" prefix. It is the AST-derived source of truth
+// TestDocAnchorsHaveTroubleshootingHeadings checks against, so that a
+// seventh anchor added later is checked automatically instead of depending
+// on someone remembering to extend a hardcoded list. See the floor inside
+// TestDocAnchorsHaveTroubleshootingHeadings itself for what happens if this
+// walk ever goes blind.
+func declaredDocAnchors(t *testing.T) []string {
+	t.Helper()
+	fset := token.NewFileSet()
+	var declared []string
+	for _, name := range storeProductionFiles(t) {
+		f, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		for _, decl := range f.Decls {
+			gen, ok := decl.(*ast.GenDecl)
+			if !ok || gen.Tok != token.CONST {
+				continue
+			}
+			for _, spec := range gen.Specs {
+				vs, ok := spec.(*ast.ValueSpec)
+				if !ok || len(vs.Values) != len(vs.Names) {
+					continue
+				}
+				for i, ident := range vs.Names {
+					if !strings.HasPrefix(ident.Name, "anchor") {
+						continue
+					}
+					lit, ok := vs.Values[i].(*ast.BasicLit)
+					if !ok || lit.Kind != token.STRING {
+						continue
+					}
+					value, err := strconv.Unquote(lit.Value)
+					if err != nil {
+						t.Fatalf("unquote %s in %s: %v", ident.Name, name, err)
+					}
+					declared = append(declared, value)
+				}
+			}
+		}
+	}
+	return declared
+}
+
 // TestDocAnchorsHaveTroubleshootingHeadings asserts that every DocAnchor
 // constant this package declares has a matching heading in
 // docs/05-troubleshooting.md. ux.Fail passes the anchor as a positional
 // argument here, which the CI Docs job's `DocAnchor: "..."` grep cannot see,
-// so this is the honest local guard for this package's five anchors.
+// so this is the honest local guard for this package's anchors.
+//
+// The anchor list itself comes from declaredDocAnchors's AST walk rather
+// than a hardcoded slice, because the global gate cannot see this package's
+// positional ux.Fail calls (open issue #86; PR #107 owns that fix, not this
+// one), which makes this local test the only witness for every anchor this
+// package declares. A hardcoded list inside the only witness is a witness
+// that silently shrinks the next time someone adds an anchor and forgets to
+// extend it. The six named constants below are kept anyway, as an explicit
+// floor: a walk that finds nothing still needs to fail loudly rather than
+// pass vacuously over zero anchors, which is exactly the failure mode a
+// gate that scans nothing can have (see the testing skill).
 func TestDocAnchorsHaveTroubleshootingHeadings(t *testing.T) {
-	anchors := []string{anchorUnwritable, anchorCorrupt, anchorTooNew, anchorMigrationFailed, anchorInUse}
+	declared := declaredDocAnchors(t)
+	for _, want := range []string{anchorUnwritable, anchorCorrupt, anchorTooNew, anchorMigrationFailed, anchorInUse, anchorForeignDatabase} {
+		if !slices.Contains(declared, want) {
+			t.Errorf("declaredDocAnchors did not find %q in this package's own source: the walk has gone blind", want)
+		}
+	}
 
 	root := storeModuleRoot(t)
 	content, err := os.ReadFile(filepath.Join(root, "docs", "05-troubleshooting.md"))
@@ -195,7 +261,7 @@ func TestDocAnchorsHaveTroubleshootingHeadings(t *testing.T) {
 	}
 	lines := strings.Split(string(content), "\n")
 
-	for _, anchor := range anchors {
+	for _, anchor := range declared {
 		pattern := regexp.MustCompile(`^#{1,4}\s+.*` + regexp.QuoteMeta(anchor))
 		found := false
 		for _, line := range lines {

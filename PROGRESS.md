@@ -33,7 +33,7 @@ formally cut.
 | Runtimes | `Runtime` and `Session` interfaces plus their value types and sentinel errors are defined in `internal/runtime`, the reusable contract suite is in `internal/runtime/runtimetest`, and `internal/runtime/docker` implements both by shelling out to the `docker` CLI. The contract suite is green against it on Windows with Docker Desktop's Linux engine, except one subtest documented below. `WslRuntime` is not started. |
 | PTY multiplexer and OSC parser | Both done. Parser: streaming OSC 133 and OSC 7 state machine, fuzzed, with a recorded vim session passing through byte-identical. Multiplexer (`internal/pty/mux.go`): host stdin forwarded to the sandbox verbatim including Ctrl-C, host terminal raw mode restored across every exit path including a panic, initial resize plus SIGWINCH on unix, and CommandEvent assembly from the marker stream. `CommandEvent.Raw` is always empty pending #51. Windows resize watching is a Day 3 stub. |
 | Verification engine | Done in `internal/verify` (issue #52). `Engine`, `NewEngine`, `WithCheckTimeout`, `WithLevelTimeout`, `Build` and `Run`, the `any_of`/`all_of`/`not` composition nodes, and `LevelResult` matching `docs/LEVEL-FORMAT.md` section 5 field for field. Checks are built once at level load and run on every `check`. 262 tests and subtests. The hermetic half of the purity guarantee is `internal/verify/purity_test.go`, which asserts every check type runs only read-only commands; the filesystem-hash half is in the golden harness and needs Docker. |
-| Progress database | `internal/store` (schema, migrations) and `internal/journal` (the command journal) are both built and unit tested, per #51. Nothing calls `store.Open` outside their own tests: not wired into `cmd/shellforge`, `internal/game`, or `internal/pty`. `CommandEvent.Raw` on the host-side event stream is still always empty. |
+| Progress database | `internal/store` (schema, migrations) and `internal/journal` (the command journal) are both built and unit tested, per #51. Nothing calls `store.Open` outside their own tests: not wired into `cmd/shellforge`, `internal/game`, or `internal/pty`. `CommandEvent.Raw` on the host-side event stream is still always empty. Issues #92 and #90 closed two `Open` classification bugs: a missing progress database file, or one whose parent directory does not exist yet, no longer reads as corrupt, and a SQLite database Shellforge did not create is refused rather than silently adopted. See the Day 3 follow-up entry below for the byte-identity measurement this forced and the fixture change it required. |
 | Documentation | Design record complete. User docs are outlines. |
 | Engineering rules | `CLAUDE.md` index plus 13 on-demand skills under `.claude/skills/` |
 | Link checker | Done, and verified to catch a broken relative link |
@@ -3152,6 +3152,136 @@ Updated to the same new wording as `TestValidateJournalChecksCannotGatePassing`,
 since it exercises the identical validator message through a different
 caller rather than a different rule, and the wording change was already this
 ticket's own decision to make.
+
+### Day 3 follow-up, 2026-08-17: the progress database refuses a file it did not create, and a missing one stops reading as corrupt
+
+Issues #92 and #90, folded into one branch because the two decision paths
+through `Open` turned out to be disjoint: a foreign database never reaches
+`classifyOpenError` at all, so widening its arm for #92 cannot swallow #90's
+case, and a non-SQLite file cannot reach the foreign check either, since it
+fails its very first pragma before `Migrate` is ever called. All of
+`internal/store`, test files only apart from `store.go` and `migrate.go`.
+
+- **#92, one line plus a doc comment sentence.** `classifyOpenError`'s
+  permission probe matched only `fs.ErrPermission`, so a progress database
+  path that does not exist yet, or whose parent directory does not exist
+  yet, fell through to the corrupt anchor: its remediation told the learner
+  to rename a file that was never written and warned them their finished
+  levels would be forgotten. The arm now also matches `fs.ErrNotExist`.
+  Covered by `TestClassifyOpenErrorOnAMissingFileIsUnwritableNotCorrupt`
+  (both cases run and fail correctly on this Windows host) and
+  `TestOpenOnAnExistingUnwritableParentReportsUnwritable`, the real bug
+  reproduction, which needs POSIX mode bits and **skips on Windows**; CI's
+  Linux job is its only witness.
+- **#90: `ErrForeignDatabase`, `userTableCount`, `refuseIfForeign`.** `Open`
+  now refuses, rather than silently migrating, a SQLite database that
+  records no `schema_version` and already holds a table Shellforge did not
+  create. The identity check is one query, verbatim from the ticket:
+  `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE
+  'sqlite_%'`, run only when `current == 0` inside `Migrate`, after the
+  `current > latest` refusal and before the apply loop. It fails closed: a
+  query that cannot complete is refused with the same anchor as a confirmed
+  foreign database, never treated as evidence the file is ours. New anchor
+  `progress-db-not-ours`, this package's sixth, with its heading in
+  `docs/05-troubleshooting.md` naming `DataDir`'s per-OS path rather than
+  staying abstract. The remediation never suggests deleting, renaming,
+  overwriting, or moving anything, which is the point when the file may
+  belong to another program.
+- **The chmod moved from before `Migrate` to after it, not made
+  conditional.** A file `Migrate` is about to refuse now has nothing at all
+  done to it. A conditional chmod would need either a second
+  `sqlite_master` read in `Open` to decide, which duplicates the identity
+  logic and can disagree with the first read, or a value returned from
+  `Migrate` saying "this one was ours," which is a signature change the
+  ticket rules out. The cost, stated plainly: a fresh database now sits at
+  the process umask default for the duration of the migrations rather than
+  one pragma, inside the 0700 directory `EnsureDir` created throughout, and
+  `001_init.sql` creates only empty tables, so no learner data exists in the
+  file during the widened window.
+- **The byte-identity criterion is not literally satisfiable, and the test
+  says so precisely instead of claiming otherwise.** Measured directly,
+  using this package's own already-shipped `execPragmaWithRetry` against a
+  one-table delete-mode fixture, before any #90 code existed: length
+  identical at 8192 bytes before and after; the only differing bytes at
+  offsets 18, 19, 27, and 95; nothing at or above offset 100 differed. That
+  matches SQLite's own 100 byte file header ending exactly at offset 100:
+  `PRAGMA journal_mode=WAL` runs in `Open` before `Migrate` ever looks at
+  the file, and converting a delete-mode database to WAL rewrites the
+  file-format version bytes (18-19), the change counter (24-27), and the
+  version-valid-for number (92-95). `TestOpenLeavesAForeignDatabaseUntouched`
+  asserts exactly that: length unchanged, everything from offset 100 onward
+  byte-identical (hashed with sha256 for a readable failure), and the
+  foreign table's own schema text and rows unchanged. Making the header
+  identical too would need the WAL pragma to run after the identity gate,
+  which changes the lock contention `execPragmaWithRetry` is built around;
+  filed as a follow-up rather than done here (see below).
+- **One existing fixture changed, forced by the new contract, no assertion
+  did.** `TestOpenOnAContendedConversionReportsInUseAndRetries` built its
+  blocking-transaction fixture with `CREATE TABLE t (x INTEGER)` on a plain
+  `sql.Open`, which is exactly a database #90 now refuses: the test's own
+  second half asserted a second `Open` succeeds once the blocking
+  transaction releases. The fixture is now a genuine current-version
+  Shellforge database, built by looping `applyMigration` over `migrations()`
+  directly (this package's own `Open` would convert it to WAL immediately,
+  before the test ever gets to hold its blocking transaction against a
+  delete-mode file), and the blocking write is an `INSERT INTO events`
+  inside the same uncommitted transaction. Both original assertions,
+  `anchorInUse` first and a successful `Open` after release, are unchanged.
+- **The anchor guard is now AST-derived, with a floor, as a logically
+  separate change within the same branch.** `TestDocAnchorsHaveTroubleshootingHeadings`
+  used to check a hardcoded slice of five anchor constants against
+  `docs/05-troubleshooting.md`; adding a sixth by hand risked the exact
+  failure this package already avoids elsewhere: a witness that silently
+  shrinks. `declaredDocAnchors` now walks this package's own production
+  `.go` files for every `const` identifier prefixed `anchor`, unquotes its
+  string value, and the test checks the doc heading against that list. The
+  six named constants stay as an explicit floor, checked with
+  `slices.Contains`, so a walk that finds nothing still fails loudly instead
+  of passing over zero anchors. Verified by mutation: renaming `anchorInUse`
+  to `docAnchorInUse` everywhere it is used made the floor fire with
+  "the walk has gone blind," then reverted. `strconv` and `slices` added to
+  `guards_test.go`, both standard library.
+- **Mutation battery, two findings beyond confirming the rest load bearing.**
+  `count > 0 -> count > 1` breaks not only `one_unrelated_table` as
+  predicted but also `a_table_and_an_index`: an index never counts under
+  `type = 'table'`, so that fixture has exactly one real table too, the
+  same shape as the single-table case, for the same reason. Hoisting the
+  `current == 0` guard so the foreign check runs on every `Migrate` breaks
+  `TestOpenOnAShellforgeDatabaseAtARecordedVersionStillOpens`,
+  `TestMigrateTwiceIsANoOp`, and `TestOpenOnACurrentDatabaseIsANoOp` as
+  predicted, plus two more it did not name
+  (`TestConcurrentStoresOnOneFileDoNotDeadlock`,
+  `TestOpenOnAContendedConversionReportsInUseAndRetries`), because both
+  reopen an already-migrated database and the hoisted check would wrongly
+  refuse it; `TestSchemaVersionOnAnEmptySchemaVersionTableIsAnError` was
+  predicted to break here too but does not, because its fixture makes
+  `schemaVersion` itself return an error, which `Migrate` returns on
+  unconditionally before either the gated or the hoisted foreign check ever
+  runs, so that test is not actually a witness for this scoping.
+- **Skips on this Windows host, CI's Linux job the only witness**:
+  `TestOpenOnAnExistingUnwritableParentReportsUnwritable` and
+  `TestOpenLeavesAForeignDatabaseModeUnchanged`, both needing POSIX mode
+  bits, alongside the pre-existing `TestOpenCreatesMissingParentDirectories`,
+  `TestOpenRejectsAnUnwritableParent`, `TestOpenClassifiesAnUnreadableFileAsUnwritable`,
+  and `TestOpenOnACorruptFileLeaksNoDescriptor` (Linux `/proc/self/fd` only).
+  Mutation M7 (chmod back above `Migrate`) is consequently local-inert here:
+  its only witness is the mode test above, and nothing else broke either.
+- **Follow-up filed, not done here**: run the WAL pragma after the identity
+  gate rather than before it, so a refused foreign database is byte-identical
+  including its header, not merely unchanged from offset 100 onward. Needs
+  its own look at the lock contention `execPragmaWithRetry` and
+  `TestOpenOnAContendedConversionReportsInUseAndRetries` are built around,
+  and at whether the `-wal`/`-shm` siblings this fix currently tolerates as
+  a side effect can be avoided for a database being refused.
+- Gates run locally, all green: `gofmt -s -w .`, `go vet ./...`,
+  `go build ./...`, `go test ./...`, `go test -race ./...` (both the
+  package pair and the full module), `go test ./internal/archtest/...`,
+  `bash scripts/check-punctuation.sh`, `bash scripts/check-links.sh`,
+  `bash scripts/check-cli-package.sh`, and `gosec -exclude-dir=docs ./...`
+  (70 files, 0 issues). Not run locally: `govulncheck ./...`, `python3
+  scripts/check-ci-gates.py`, and `python3 -m pytest scripts/tests -q`
+  (none installed in this environment, no dependency or workflow change on
+  this branch regardless). CI is authoritative for those three.
 
 ## Day 6: hardening, CI, packaging
 

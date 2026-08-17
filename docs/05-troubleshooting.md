@@ -468,6 +468,39 @@ forgotten.
 
 ---
 
+## progress-db-not-ours
+
+**You'll see:** an error while Shellforge tries to open the file where it
+records your progress, saying that Shellforge did not create that file.
+
+**What it means:** Shellforge keeps this file, `progress.db`, in its own data
+directory (on Linux and macOS, `$XDG_DATA_HOME/shellforge` or
+`~/.local/share/shellforge`; on Windows, `%LocalAppData%\shellforge`).
+Something else already put a real database at that exact path before
+Shellforge got there. Shellforge will not add its own tables to a file it did
+not create, and it will not change that file's permissions, so it stops
+rather than share the file. Nothing in it has been changed, and nothing has
+been renamed or deleted.
+
+**Fix:**
+
+Leave that file where it is. To see the exact path Shellforge wants, run:
+
+```
+shellforge doctor
+```
+
+Then work out what else writes there. Another tool that picked the same
+folder name is the usual cause, and Shellforge needs a path of its own before
+it can start.
+
+**Still stuck?** This should be rare, so it is worth telling us about. Run
+`shellforge bug-report` and say which program you think wrote the file. Do
+not attach the file itself: it is not Shellforge's, and it may hold your own
+data.
+
+---
+
 ## unsafe-level-root
 
 **You'll see:** "refusing to use ... as a level root", when starting or resetting
