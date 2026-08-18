@@ -24,9 +24,10 @@ played by its author from a cold start.
 
 ## Safety: setup and teardown scripts are the content attack surface
 
-`setup.script` and `teardown.script` run **as root**. `script` checks run as
-`learner` by default and may request `root`. These are the only places where
-content executes code, so they carry the rules.
+`setup.script` and `teardown.script` run **as the learner**, not root: #99
+changed this. `script` checks run as `learner` by default and may request
+`root`. These are the only places where content executes code, so they
+carry the rules.
 
 - **They run inside the sandbox, never on the host.** A level string reaching a
   host shell is a security bug, not a content bug.
@@ -158,7 +159,7 @@ Enforced by `shellforge author validate`, so know them before you write:
 | `setup.root` under `/home/learner/` | Reset safety |
 | No `source:` pointing outside the pack | Reproducibility |
 | DAG acyclic, all `prerequisites` resolve | Unlock logic |
-| At least one non-optional check | A level you cannot fail is not a level |
+| At least one check whose objective is not optional and whose severity is not warn | A level you cannot fail is not a level |
 
 ## When the golden test fails
 

@@ -50,8 +50,8 @@ type Session interface {
 	Attach(ctx context.Context, opts AttachOpts) (PTY, error)
 
 	// PushFiles materializes every entry in m inside the sandbox, creating
-	// parent directories as needed. An implementation strips carriage
-	// returns from the content, because a CRLF in a .sh file produces a
+	// parent directories as needed. An implementation strips the \r of a
+	// \r\n pair from the content, because a CRLF in a .sh file produces a
 	// bad interpreter error that no beginner can diagnose.
 	PushFiles(ctx context.Context, m FileManifest) error
 
@@ -186,8 +186,8 @@ type FileEntry struct {
 	// refused, never adjusted or truncated into place.
 	Path string
 
-	// Content is the file body. An implementation strips carriage returns
-	// before writing it.
+	// Content is the file body. An implementation strips the \r of a \r\n
+	// pair before writing it, leaving a lone \r untouched.
 	Content []byte
 
 	// Mode is the permission bits to set on the file.

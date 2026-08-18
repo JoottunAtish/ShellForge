@@ -271,6 +271,57 @@ func TestMaterializedFilesHaveNoCarriageReturns(t *testing.T) {
 	}
 }
 
+// TestStripCRLFLeavesALoneCarriageReturn locks in #84's narrowed rule:
+// stripCRLF rewrites only the \r of a \r\n pair, never a lone \r. Mirrors
+// internal/runtime/docker's TestStripCR, which pins the same rule for
+// PushFiles' own copy.
+//
+// This is the one mutation this test defends against: a later reader who
+// finds CLAUDE.md's old, unqualified "strip \r" wording and "fixes"
+// stripCRLF to bytes.ReplaceAll(b, []byte("\r"), nil) would corrupt a binary
+// asset containing a lone \r. Without this test, stripCRLF had no coverage
+// at all, and that edit would have landed green.
+func TestStripCRLFLeavesALoneCarriageReturn(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"crlf becomes lf", "#!/bin/bash\r\necho ok\r\n", "#!/bin/bash\necho ok\n"},
+		{"already lf is untouched", "#!/bin/bash\necho ok\n", "#!/bin/bash\necho ok\n"},
+		{"lone cr is untouched", "a\rb", "a\rb"},
+		// The plan this test was written from ("cluster1-plan.md" section 7)
+		// says this input becomes "a\rb". That is wrong: bytes.ReplaceAll
+		// scans left to right for non-overlapping "\r\n", so the first \r
+		// (followed by another \r, not \n) is untouched and only the second
+		// \r, the one actually followed by \n, is collapsed. The correct,
+		// and actual, result keeps that untouched \r and adds the \n back:
+		// "a\r\nb". Verified independently against bytes.ReplaceAll's
+		// documented left-to-right, non-overlapping semantics.
+		// This case name used to read as reassurance ("strips only the
+		// pair"), as if leaving one \r\n behind were the safe, intended
+		// outcome. It is not: "a\r\nb" is byte-for-byte indistinguishable
+		// from an unstripped CRLF pair, which is exactly the shape
+		// non-negotiable 7 exists to forbid. Renamed to say so plainly.
+		{"a cr immediately before a crlf pair leaves one crlf pair behind, unstripped: known gap, not a guarantee", "a\r\r\nb", "a\r\nb"},
+		// A shebang line is the case that matters in practice: this is
+		// exactly the shape that still produces "bad interpreter:
+		// /bin/bash^M" after the strip runs. Asserting the actual output
+		// locks in the known gap so silence is never mistaken for a promise
+		// that this input is handled.
+		{"a shebang with a doubled carriage return still fails after stripping: known gap, not a guarantee", "#!/bin/bash\r\r\necho ok\r\n", "#!/bin/bash\r\necho ok\n"},
+		{"empty", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := string(stripCRLF([]byte(tc.in)))
+			if got != tc.want {
+				t.Errorf("stripCRLF(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestMaterializedFilesCarryModeAndOwner pins criterion 2's mode and owner
 // handling, including the defaults.
 func TestMaterializedFilesCarryModeAndOwner(t *testing.T) {
@@ -307,6 +358,208 @@ func TestMaterializedFilesCarryModeAndOwner(t *testing.T) {
 // internal/sandbox/demo_golden_test.go's requireLinuxDocker.
 func TestCRLFScriptRunsInsideTheSandbox(t *testing.T) {
 	t.Skip("needs a live Linux Docker daemon; see internal/sandbox/demo_golden_test.go for the same shape once a runtime.Session fixture is wired here")
+}
+
+// chownCalls returns every recorded chown Exec call, in order.
+func chownCalls(f *fakeSession) []execCall {
+	var out []execCall
+	for _, c := range f.execCalls {
+		if len(c.argv) > 0 && c.argv[0] == "chown" {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// TestSetupRestoresADeclaredOwnerAfterTheBlanketChown pins the #100 fix: the
+// blanket chown -R learner:learner that follows PushFiles reverts any
+// owner: a setup.files entry declared, because PushFiles applies it and the
+// blanket chown runs immediately afterward. The runner must re-apply the
+// declared owner, and only for the file that declared one.
+func TestSetupRestoresADeclaredOwnerAfterTheBlanketChown(t *testing.T) {
+	const root = "/home/learner/quest"
+	f := &fakeSession{}
+	r := NewRunner(f, nil)
+	lvl := &content.Level{ID: "nav-01", Setup: content.Setup{Root: root, Files: []content.FileSpec{
+		{Path: "secret.txt", ContentSet: true, Content: "x", Owner: "root:root"},
+		{Path: "normal.txt", ContentSet: true, Content: "y"},
+	}}}
+
+	if err := r.Setup(context.Background(), lvl); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+
+	blanket := []string{"chown", "-R", DefaultOwner, "--", root}
+	blanketIdx := -1
+	for i, c := range f.execCalls {
+		if equalArgv(c.argv, blanket) {
+			blanketIdx = i
+			break
+		}
+	}
+	if blanketIdx == -1 {
+		t.Fatalf("no blanket chown %v recorded among %v", blanket, f.execCalls)
+	}
+
+	secretAbs := root + "/secret.txt"
+	normalAbs := root + "/normal.txt"
+
+	var restoreIdx = -1
+	for i, c := range f.execCalls {
+		if len(c.argv) >= 2 && c.argv[0] == "chown" && c.argv[1] == "root:root" {
+			restoreIdx = i
+			if c.argv[len(c.argv)-1] != secretAbs {
+				t.Errorf("restore chown %v does not name %q", c.argv, secretAbs)
+			}
+			for _, a := range c.argv {
+				if a == normalAbs {
+					t.Errorf("restore chown %v names %q, which declared no owner", c.argv, normalAbs)
+				}
+			}
+		}
+	}
+	if restoreIdx == -1 {
+		t.Fatalf("no restore chown for root:root recorded among %v", f.execCalls)
+	}
+	if restoreIdx < blanketIdx {
+		t.Errorf("restore chown at index %d ran before the blanket chown at index %d, want it after", restoreIdx, blanketIdx)
+	}
+}
+
+// TestSetupNeverChownsADirectoryAwayFromTheLearner is the safety half of the
+// #100 fix. Every restore chown must target exactly a declared file's own
+// absolute path: never -R, never the level root, never an ancestor
+// directory. A root-owned directory cannot be emptied by the learner, so
+// teardown's rm -rf as the learner would fail on a world it cannot clean.
+func TestSetupNeverChownsADirectoryAwayFromTheLearner(t *testing.T) {
+	const root = "/home/learner/quest"
+	f := &fakeSession{}
+	r := NewRunner(f, nil)
+	lvl := &content.Level{ID: "nav-01", Setup: content.Setup{Root: root, Files: []content.FileSpec{
+		{Path: "warehouse/secret.txt", ContentSet: true, Content: "x", Owner: "root:root"},
+	}}}
+
+	if err := r.Setup(context.Background(), lvl); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+
+	declared := root + "/warehouse/secret.txt"
+	var restores int
+	for _, c := range chownCalls(f) {
+		if equalArgv(c.argv, []string{"chown", "-R", DefaultOwner, "--", root}) {
+			continue // the blanket chown, not a restore
+		}
+		restores++
+		for _, a := range c.argv {
+			if a == "-R" {
+				t.Errorf("restore chown %v carries -R, which could reach a directory", c.argv)
+			}
+			if a == root {
+				t.Errorf("restore chown %v names the level root itself", c.argv)
+			}
+			if a == root+"/warehouse" {
+				t.Errorf("restore chown %v names an ancestor directory of a declared file", c.argv)
+			}
+		}
+		last := c.argv[len(c.argv)-1]
+		if last != declared {
+			t.Errorf("restore chown %v targets %q, want exactly the declared file %q", c.argv, last, declared)
+		}
+	}
+	if restores == 0 {
+		t.Fatal("no restore chown was recorded at all: this test's per-call assertions never ran, so it proves nothing about the safety invariant it names")
+	}
+}
+
+// TestSetupGroupsRestoreChownsByOwner pins the batching: files sharing an
+// owner cost one Exec, not one per file, which is a per-file sandbox round
+// trip for no reason.
+func TestSetupGroupsRestoreChownsByOwner(t *testing.T) {
+	const root = "/home/learner/quest"
+	f := &fakeSession{}
+	r := NewRunner(f, nil)
+	lvl := &content.Level{ID: "nav-01", Setup: content.Setup{Root: root, Files: []content.FileSpec{
+		{Path: "a.txt", ContentSet: true, Content: "x", Owner: "root:root"},
+		{Path: "b.txt", ContentSet: true, Content: "y", Owner: "root:root"},
+		{Path: "c.txt", ContentSet: true, Content: "z", Owner: "daemon:daemon"},
+	}}}
+
+	if err := r.Setup(context.Background(), lvl); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+
+	var restores int
+	for _, c := range chownCalls(f) {
+		if !equalArgv(c.argv, []string{"chown", "-R", DefaultOwner, "--", root}) {
+			restores++
+		}
+	}
+	if restores != 2 {
+		t.Errorf("recorded %d restore chown call(s), want exactly 2 (one per distinct declared owner)", restores)
+	}
+}
+
+// TestSetupSkipsRestoreForABareLearnerOwner pins the normalizeOwner fix: a
+// declared owner of "learner", which ownerPattern permits as a bare user,
+// means the same thing as DefaultOwner's "learner:learner" and must not be
+// treated as an exception. Without normalizing before comparing, this file
+// would get a redundant chown learner -- <path> after the blanket chown had
+// already made it learner:learner.
+func TestSetupSkipsRestoreForABareLearnerOwner(t *testing.T) {
+	const root = "/home/learner/quest"
+	f := &fakeSession{}
+	r := NewRunner(f, nil)
+	lvl := &content.Level{ID: "nav-01", Setup: content.Setup{Root: root, Files: []content.FileSpec{
+		{Path: "a.txt", ContentSet: true, Content: "x", Owner: "learner"},
+	}}}
+
+	if err := r.Setup(context.Background(), lvl); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+
+	var restores int
+	for _, c := range chownCalls(f) {
+		if !equalArgv(c.argv, []string{"chown", "-R", DefaultOwner, "--", root}) {
+			restores++
+		}
+	}
+	if restores != 0 {
+		t.Errorf("recorded %d restore chown call(s) for a bare \"learner\" owner, want 0", restores)
+	}
+}
+
+// TestTeardownChownsBackBeforeTheRecursiveDelete pins the ordering that
+// makes it safe to leave a root-owned file behind: Teardown's best-effort
+// chown -R learner:learner must run, as root, strictly before rm -rf, as the
+// learner. If that ordering were ever lost, a level that used a declared
+// owner would leave a file rm -rf as the learner cannot delete.
+func TestTeardownChownsBackBeforeTheRecursiveDelete(t *testing.T) {
+	const root = "/home/learner/quest"
+	f := &fakeSession{}
+	r := NewRunner(f, nil)
+
+	if err := r.Teardown(context.Background(), rootLevel(root)); err != nil {
+		t.Fatalf("Teardown: %v", err)
+	}
+
+	chownIdx, rmIdx := -1, -1
+	for i, c := range f.execCalls {
+		if chownIdx == -1 && equalArgv(c.argv, []string{"chown", "-R", DefaultOwner, "--", root}) {
+			chownIdx = i
+		}
+		if rmIdx == -1 && len(c.argv) >= 2 && c.argv[0] == "rm" && c.argv[1] == "-rf" {
+			rmIdx = i
+		}
+	}
+	if chownIdx == -1 {
+		t.Fatal("no chown -R learner:learner recorded")
+	}
+	if rmIdx == -1 {
+		t.Fatal("no rm -rf recorded")
+	}
+	if chownIdx >= rmIdx {
+		t.Errorf("chown at index %d did not run before rm -rf at index %d", chownIdx, rmIdx)
+	}
 }
 
 // TestBuildFileEntryRefusesInvalidSpecs pins blocking finding 2 from the #83
@@ -438,6 +691,99 @@ func TestBuildManifestRefusesAnOversizedManifest(t *testing.T) {
 	}
 	if entries != nil {
 		t.Errorf("buildManifest: entries = %+v, want nil on refusal", entries)
+	}
+}
+
+// TestBuildManifestRefusesAnAncestorPair pins the #93 fix: a level declaring
+// both a directory-shaped path and a path underneath it must be refused
+// outright, rather than left to whatever the runtime's own untar conflict
+// resolution decides. Without this, "sub" could land as either a file or a
+// directory depending on Docker behaviour this package never controls, which
+// is exactly what would make docs/LEVEL-FORMAT.md's "a directory always
+// belongs to the learner" claim false.
+func TestBuildManifestRefusesAnAncestorPair(t *testing.T) {
+	lvl := &content.Level{ID: "nav-01", Setup: content.Setup{Root: "/home/learner/quest", Files: []content.FileSpec{
+		{Path: "sub", ContentSet: true, Content: "x", Owner: "root:root"},
+		{Path: "sub/deep.txt", ContentSet: true, Content: "y"},
+	}}}
+	r := NewRunner(&fakeSession{}, nil)
+
+	entries, err := r.buildManifest(lvl, lvl.Setup.Root)
+	if err == nil {
+		t.Fatalf("buildManifest: want a refusal for an ancestor pair, got %d entries", len(entries))
+	}
+	if !errors.Is(err, ErrInvalidLevelPack) {
+		t.Errorf("buildManifest: err = %v, want it to wrap ErrInvalidLevelPack", err)
+	}
+	if entries != nil {
+		t.Errorf("buildManifest: entries = %+v, want nil on refusal", entries)
+	}
+}
+
+// TestBuildManifestRefusesAnExactDuplicatePair covers the other half of the
+// same rule: two entries resolving to the identical absolute path, including
+// the "x" versus "./x" spelling, which both clean to the same path.
+func TestBuildManifestRefusesAnExactDuplicatePair(t *testing.T) {
+	tests := []struct {
+		name  string
+		paths [2]string
+	}{
+		{name: "identical spelling", paths: [2]string{"x.txt", "x.txt"}},
+		{name: "same path spelled with a leading ./", paths: [2]string{"x.txt", "./x.txt"}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			lvl := &content.Level{ID: "nav-01", Setup: content.Setup{Root: "/home/learner/quest", Files: []content.FileSpec{
+				{Path: tc.paths[0], ContentSet: true, Content: "x", Owner: "root:root"},
+				{Path: tc.paths[1], ContentSet: true, Content: "y"},
+			}}}
+			r := NewRunner(&fakeSession{}, nil)
+
+			entries, err := r.buildManifest(lvl, lvl.Setup.Root)
+			if err == nil {
+				t.Fatalf("buildManifest(%v): want a refusal for a duplicate pair, got %d entries", tc.paths, len(entries))
+			}
+			if !errors.Is(err, ErrInvalidLevelPack) {
+				t.Errorf("buildManifest(%v): err = %v, want it to wrap ErrInvalidLevelPack", tc.paths, err)
+			}
+			if entries != nil {
+				t.Errorf("buildManifest(%v): entries = %+v, want nil on refusal", tc.paths, entries)
+			}
+		})
+	}
+}
+
+// TestBuildManifestAcceptsSiblingPaths is the acceptance half: two paths
+// under the same directory, neither an ancestor of the other, must still
+// build a manifest. /a/bc and /a/b pin the segment comparison specifically:
+// a naive string prefix test would wrongly treat "/a/bc" as a descendant of
+// "/a/b", refusing a level that never declared an ancestor pair at all.
+func TestBuildManifestAcceptsSiblingPaths(t *testing.T) {
+	tests := []struct {
+		name  string
+		paths [2]string
+	}{
+		{name: "two files under the same subdirectory", paths: [2]string{"sub/a.txt", "sub/b.txt"}},
+		{name: "a segment prefix lookalike is not an ancestor", paths: [2]string{"a/bc", "a/b"}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			lvl := &content.Level{ID: "nav-01", Setup: content.Setup{Root: "/home/learner/quest", Files: []content.FileSpec{
+				{Path: tc.paths[0], ContentSet: true, Content: "x"},
+				{Path: tc.paths[1], ContentSet: true, Content: "y"},
+			}}}
+			r := NewRunner(&fakeSession{}, nil)
+
+			entries, err := r.buildManifest(lvl, lvl.Setup.Root)
+			if err != nil {
+				t.Fatalf("buildManifest(%v): unexpected refusal: %v", tc.paths, err)
+			}
+			if len(entries) != 2 {
+				t.Errorf("buildManifest(%v): got %d entries, want 2", tc.paths, len(entries))
+			}
+		})
 	}
 }
 

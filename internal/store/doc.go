@@ -40,7 +40,10 @@
 // and immediately rewrites with a single row. Every user-facing failure's
 // remediation tells the learner to rename their progress file, never to
 // delete it, except progress-db-in-use: the file is not wrong in that case,
-// so its remediation says to close the other process instead. See the five
-// doc anchors this package declares and their headings in
-// docs/05-troubleshooting.md.
+// so its remediation says to close the other process instead. It also
+// never writes into a database it did not create: Migrate refuses, through
+// ErrForeignDatabase, any file that records no schema version and already
+// holds a table this package did not put there, before applying a single
+// statement to it. See the six doc anchors this package declares and their
+// headings in docs/05-troubleshooting.md.
 package store

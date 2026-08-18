@@ -125,8 +125,11 @@ func TestWorkedExampleRoundTrips(t *testing.T) {
 		t.Errorf("checks[1].Params[\"value\"] = %q, want the three codes separated by real newlines", got)
 	}
 
-	if !lvl.Checks[2].Optional || lvl.Checks[2].Params["scope"] != "level" {
+	if lvl.Checks[2].Params["scope"] != "level" {
 		t.Errorf("checks[2] = %+v", lvl.Checks[2])
+	}
+	if lvl.Checks[2].optionalDeclared {
+		t.Error("the worked example declares optional on a check again: it belongs on the objective, which line 98 above already pins")
 	}
 	if lvl.Checks[3].ID != "nocheat" || lvl.Checks[3].Severity != SeverityWarn {
 		t.Errorf("checks[3] = %+v", lvl.Checks[3])

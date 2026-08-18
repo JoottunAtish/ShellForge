@@ -137,6 +137,98 @@ func TestOpenRejectsAnUnwritableParent(t *testing.T) {
 	}
 }
 
+// TestClassifyOpenErrorOnAMissingFileIsUnwritableNotCorrupt covers #92:
+// before this fix, classifyOpenError's permission probe only matched
+// fs.ErrPermission, so a path that does not exist yet, or whose parent
+// directory does not exist yet, fell all the way through to the corrupt
+// anchor, whose remediation tells the learner to rename a file that was
+// never written and warns them their finished levels will be forgotten.
+// Neither case is corruption: nothing exists to be corrupt.
+func TestClassifyOpenErrorOnAMissingFileIsUnwritableNotCorrupt(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+	}{
+		{
+			name: "the file does not exist",
+			path: filepath.Join(t.TempDir(), "progress.db"),
+		},
+		{
+			name: "the parent directory does not exist",
+			path: filepath.Join(t.TempDir(), "missing", "progress.db"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			uerr := classifyOpenError(tt.path, errors.New("synthetic driver failure"))
+			if uerr.DocAnchor != anchorUnwritable {
+				t.Errorf("DocAnchor = %q, want %q", uerr.DocAnchor, anchorUnwritable)
+			}
+			if uerr.Remediation == "" {
+				t.Fatal("Remediation is empty")
+			}
+
+			// Strip the path out first: t.TempDir embeds this test's own
+			// name in the path, and "forgotten" or "delete" could in
+			// principle appear inside a future test name by accident.
+			withoutPath := strings.ReplaceAll(uerr.Remediation, tt.path, "")
+			lower := strings.ToLower(withoutPath)
+			for _, bad := range []string{"rename", "forgotten", "delete"} {
+				if strings.Contains(lower, bad) {
+					t.Errorf("Remediation says %q, which is wrong for a file that does not exist yet: %q", bad, uerr.Remediation)
+				}
+			}
+		})
+	}
+}
+
+// TestOpenOnAnExistingUnwritableParentReportsUnwritable covers #92's actual
+// bug, not just the classifyOpenError unit above: dbPath sits directly in
+// parent, which already exists, so platform.EnsureDir's MkdirAll is a no-op
+// and Open proceeds into the pragma loop. The first pragma then fails
+// SQLITE_CANTOPEN because the driver cannot create the file, and the probe
+// this package runs to classify that failure finds nothing there either, so
+// it must return ENOENT rather than a permission error. Before this fix that
+// landed on the corrupt anchor; see TestOpenRejectsAnUnwritableParent for the
+// sibling case where EnsureDir itself fails on a missing subdirectory.
+func TestOpenOnAnExistingUnwritableParentReportsUnwritable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not enforce POSIX mode bits the same way")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory mode bits")
+	}
+
+	parent := t.TempDir()
+	dbPath := filepath.Join(parent, "progress.db")
+
+	if err := os.Chmod(parent, 0o500); err != nil {
+		t.Fatalf("chmod parent: %v", err)
+	}
+	t.Cleanup(func() { os.Chmod(parent, 0o700) })
+
+	_, err := Open(context.Background(), dbPath)
+	if err == nil {
+		t.Fatal("Open succeeded against an existing but unwritable parent directory")
+	}
+
+	var uerr *ux.Error
+	if !errors.As(err, &uerr) {
+		t.Fatalf("error is not a *ux.Error: %v", err)
+	}
+	if uerr.DocAnchor != anchorUnwritable {
+		t.Errorf("DocAnchor = %q, want %q", uerr.DocAnchor, anchorUnwritable)
+	}
+	if uerr.Remediation == "" {
+		t.Error("Remediation is empty")
+	}
+	withoutPath := strings.ReplaceAll(uerr.Remediation, dbPath, "")
+	if strings.Contains(strings.ToLower(withoutPath), "rename") {
+		t.Errorf("Remediation tells the learner to rename a file that was never created: %q", uerr.Remediation)
+	}
+}
+
 func TestOpenSetsWALAndBusyTimeoutAndSynchronous(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "progress.db")
 	s, err := Open(context.Background(), dbPath)
@@ -445,6 +537,17 @@ func TestConcurrentStoresOnOneFileDoNotDeadlock(t *testing.T) {
 // must never mention renaming or deleting anything, and then, once the
 // blocking transaction is released, a second Open must succeed because
 // execPragmaWithRetry retries rather than failing once and giving up.
+//
+// The fixture is a genuine current-version Shellforge database, not an
+// arbitrary unrelated table: #90 refuses a database that records no schema
+// version and already holds a table Shellforge did not create, and a plain
+// CREATE TABLE t here would be exactly that once the blocking transaction
+// releases and the test's own second Open call expects to succeed. Built
+// with applyMigration directly rather than this package's own Open, because
+// Open would convert the file to WAL immediately, before this test ever
+// gets to hold its blocking transaction against a delete-mode file. See
+// contract decision 8 in the #90/#92 PR body: the fixture changed for this
+// reason, but neither assertion below did.
 func TestOpenOnAContendedConversionReportsInUseAndRetries(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "progress.db")
 
@@ -455,15 +558,25 @@ func TestOpenOnAContendedConversionReportsInUseAndRetries(t *testing.T) {
 	t.Cleanup(func() { blocker.Close() })
 	blocker.SetMaxOpenConns(1)
 
-	if _, err := blocker.ExecContext(context.Background(), "CREATE TABLE t (x INTEGER)"); err != nil {
-		t.Fatalf("create table: %v", err)
+	all, err := migrations()
+	if err != nil {
+		t.Fatalf("migrations: %v", err)
+	}
+	for _, m := range all {
+		if err := applyMigration(context.Background(), blocker, m); err != nil {
+			t.Fatalf("apply migration %s: %v", m.name, err)
+		}
 	}
 
 	tx, err := blocker.BeginTx(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("begin blocking transaction: %v", err)
 	}
-	if _, err := tx.ExecContext(context.Background(), "INSERT INTO t (x) VALUES (1)"); err != nil {
+	if _, err := tx.ExecContext(context.Background(),
+		`INSERT INTO events (seq, ts, level_id, cwd, raw, exit_code, duration_ms, used_tab, used_history)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		1, 1700000000.0, "contended-conversion", "/home/learner", "echo hi", 0, 10, false, false,
+	); err != nil {
 		t.Fatalf("insert inside blocking transaction: %v", err)
 	}
 	// tx is left open and uncommitted on purpose: this is what holds the

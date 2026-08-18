@@ -89,7 +89,6 @@ checks:
       sort order. Both are single letters, and `man ls` documents each of them.
 
   - id: read-the-manual
-    optional: true
     type: command_matched
     pattern: '^\s*man\s+ls\b|^\s*ls\s+--help\b'
     scope: level
@@ -99,7 +98,6 @@ checks:
       version. Everything after this level assumes you can read one.
 
   - id: searched-by-keyword
-    optional: true
     type: command_matched
     pattern: '^\s*apropos\s+\S|^\s*man\s+-k\s+\S'
     scope: level

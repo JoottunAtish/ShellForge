@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/JoottunAtish/ShellForge/internal/platform"
 )
 
 // ProblemLevel separates a problem that must be fixed from one an author
@@ -402,34 +404,24 @@ func (v *validator) validateSetup(lvl *Level) {
 // validateSetupRoot refuses any level root that is not strictly inside the
 // sandbox learner's home directory.
 //
-// The rules are ordered so that the check cannot be defeated by cleaning: a
-// .. segment is refused before path.Clean runs, because cleaning is precisely
-// what would hide it. The case that matters most, and the one most likely to
-// be missed, is /home/learner exactly: it satisfies a naive "starts with
-// /home/learner" test and it is the learner's entire home directory.
+// The lexical rule itself lives in platform.UnsafeLevelRoot, shared with the
+// runner in internal/content/setup and internal/sandbox: reset and teardown
+// are rm -rf on this path, so all three callers must agree on what it can
+// never point at. This wrapper keeps the validator's own voice: an author
+// reads this message, not a runtime refusal, so it is phrased as what a
+// level.yaml field must satisfy rather than as a runtime "refusing to".
 func validateSetupRoot(root string) error {
-	if strings.TrimSpace(root) == "" {
-		return fmt.Errorf("must not be empty: it is the path reset and teardown delete")
-	}
-	for _, segment := range strings.Split(root, "/") {
-		if segment == ".." {
-			return fmt.Errorf("%q must not contain a .. segment", root)
-		}
-	}
-	clean := path.Clean(root)
-	if !path.IsAbs(clean) {
-		return fmt.Errorf("%q must be an absolute path", root)
-	}
-	if !strings.HasPrefix(clean, learnerHomePrefix) {
-		return fmt.Errorf("%q must be a directory strictly inside %s, so that reset and teardown can never reach past it", root, learnerHomePrefix)
+	if reason := platform.UnsafeLevelRoot(root); reason != nil {
+		return fmt.Errorf("%q cannot be a level root: %v. reset and teardown are rm -rf on this path, so it must be a directory strictly inside %s", root, reason, learnerHomePrefix)
 	}
 	return nil
 }
 
 // learnerHomePrefix is the only place a level's world may live. The trailing
 // slash is what makes /home/learner itself fail the prefix test rather than
-// pass it.
-const learnerHomePrefix = "/home/learner/"
+// pass it. It is platform.LearnerHomePrefix by another name, kept as its own
+// name because this file's messages already read naturally with it.
+const learnerHomePrefix = platform.LearnerHomePrefix
 
 // validateAssetSource checks that a source: names a real file inside the
 // pack, and only inside the pack.
@@ -498,6 +490,34 @@ func (v *validator) validateChecks(lvl *Level) {
 		v.errorf(file, id, "objectives", 0, "a level must declare at least one objective")
 	}
 
+	// bonus is keyed by objective id and is the sole answer to "is this
+	// objective optional": issue #97 gave optional a single home on
+	// Objective, so this is the only place gating may read the flag from. A
+	// check id with no entry reads as false, which is the safe default: an
+	// orphan check (one whose id matches no objective) still gates, and the
+	// missing correspondence is reported on its own by
+	// validateObjectiveCorrespondence below. An objective with no id is
+	// skipped rather than folded into an entry for "", so that an unnamed
+	// optional objective can never make an unnamed check look non-gating.
+	//
+	// A duplicate objective id is reduced with OR. That is not the stricter
+	// direction for every rule that reads this map, and it is worth being
+	// honest about which way it cuts: OR means more objectives read as a
+	// bonus, so the journal rule below refuses fewer checks, while the
+	// "level you cannot fail" count refuses more. The reason to pick OR is
+	// not strictness, it is agreement: verifySpecs in internal/game reduces
+	// the same list the same way, and nothing calls Validate on the path a
+	// learner runs, so a disagreement here would let the validator see a
+	// bonus objective while the engine gated on it. The duplicate itself is
+	// separately an error from validateObjectiveCorrespondence.
+	bonus := make(map[string]bool, len(lvl.Objectives))
+	for _, o := range lvl.Objectives {
+		if o.ID == "" {
+			continue
+		}
+		bonus[o.ID] = bonus[o.ID] || o.Optional
+	}
+
 	required := 0
 	checkIDs := map[string]bool{}
 	for i := range lvl.Checks {
@@ -512,10 +532,11 @@ func (v *validator) validateChecks(lvl *Level) {
 		checkIDs[c.ID] = true
 
 		// Whether this check tree decides pass or fail. Only the outermost
-		// node carries that: optional and severity have no defined meaning
-		// on a composition branch, since the engine evaluates a composite
-		// structurally.
-		gating := !c.Optional && c.Severity != SeverityWarn
+		// node carries that, and it is read from this check's own
+		// objective, never from the check itself: severity has no defined
+		// meaning on a composition branch either, since the engine
+		// evaluates a composite structurally.
+		gating := !bonus[c.ID] && c.Severity != SeverityWarn
 
 		// A tree that asserts nothing about sandbox state never counts
 		// toward the required total, even when it is written as required.
@@ -532,7 +553,7 @@ func (v *validator) validateChecks(lvl *Level) {
 
 	if required == 0 && len(lvl.Checks) > 0 {
 		v.errorf(file, id, "checks", 0,
-			"a level needs at least one check that is neither optional nor severity: warn: a level you cannot fail is not a level")
+			"a level needs at least one check that neither sits on an optional objective nor sets severity: warn: a level you cannot fail is not a level")
 	}
 
 	v.validateObjectiveCorrespondence(lvl, checkIDs)
@@ -563,16 +584,33 @@ func (v *validator) validateCheckTree(lvl *Level, field string, c *CheckSpec, ga
 		v.errorf(file, id, field+".timeout_seconds", c.Line, "must not be negative")
 	}
 
+	// optional is never a field a check may declare, at any composition
+	// depth: issue #97 gave it a single home on the objective, so a check
+	// cannot become a bonus, or stop being one, by writing the word itself.
+	// Refusing it here, rather than silently ignoring it, is what stops an
+	// author from believing a check they marked optional is exempt from
+	// gating when its objective still says otherwise, and it is what stops
+	// the shape pipe-05's old obj3 shipped with, optional declared on both
+	// the objective and the check, from ever shipping again.
+	//
+	// The message names deletion first and the objective second, because
+	// only the presence of the key is recorded and never its value, so
+	// optional: false lands here too. An author who wrote optional: false
+	// asked for the default, and telling them to set optional: true on the
+	// objective would talk them into turning a required objective into a
+	// bonus, changing what the level gates on. Deleting the line is the
+	// right next action for both values.
+	if c.optionalDeclared {
+		v.errorf(file, id, field+".optional", c.Line,
+			"belongs on the objective, not on the check: delete it here, and set optional: true on the objective with the same id if this objective is meant to be a bonus")
+	}
+
 	// Refusing these on a branch is the other half of the gating fix. An
-	// author who writes optional: true on a branch believes they have made
+	// author who writes severity: warn on a branch believes they have made
 	// that branch not count, and they have not: the enclosing objective
 	// still passes or fails as a whole. Silently ignoring the field is how
-	// a level ends up gating on something its author thought was a bonus.
+	// a level ends up gating on something its author thought was exempt.
 	if branch {
-		if c.Optional {
-			v.errorf(file, id, field+".optional", c.Line,
-				"means nothing on a composition branch: it describes a whole objective, and only the outermost check of an objective may declare it")
-		}
 		if c.Severity != "" {
 			v.errorf(file, id, field+".severity", c.Line,
 				"means nothing on a composition branch: it describes a whole objective, and only the outermost check of an objective may declare it")
@@ -662,14 +700,15 @@ func (v *validator) validateCheckType(lvl *Level, field string, c *CheckSpec, ga
 		}
 	}
 
-	// gating, not this node's own optional and severity. Nesting a journal
-	// check inside a required composite would otherwise satisfy the rule
-	// node by node while the objective as a whole still turned on a signal
-	// the learner can forge.
+	// gating, resolved by the caller from this check's own objective, not
+	// from anything the node declares about itself. Nesting a journal check
+	// inside a required composite would otherwise satisfy the rule node by
+	// node while the objective as a whole still turned on a signal the
+	// learner can forge.
 	switch {
 	case journalCheckTypes[c.Type] && gating:
 		v.errorf(file, id, field, c.Line,
-			"a %s check must not decide whether a level is passed. The journal records what the learner typed, and the learner can forge it from inside the sandbox. Set optional: true or severity: warn on the outermost check of this objective, or move this check into an objective of its own.",
+			"a %s check must not decide whether a level is passed. The journal records what the learner typed, and the learner can forge it from inside the sandbox. Set optional: true on this check's objective, or severity: warn on the check itself, or move this check into an objective of its own.",
 			c.Type)
 	case journalCheckTypes[c.Type]:
 		// A legitimately optional or severity: warn journal check is exactly
