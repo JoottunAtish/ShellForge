@@ -3417,24 +3417,35 @@ mode handling the doctor ticket and the CLI ticket both consume next.
   (build 26200) when this branch was rebased onto main for merge: all three
   `startResizeWatcher` tests and both Windows console tests pass there under
   `-race`, alongside `go test -race ./...` for the whole module.
-- **The real console branch was exercised by hand, and the exact modes
-  recorded.** `TestEnableVirtualTerminal_Windows`'s console-attached branch
-  cannot run under `go test` anywhere, on CI or on a developer machine,
-  because the test binary's stdout is always a pipe, so that branch takes
-  the no-console fallback every time and the round trip it means to prove
-  goes unproven. It was therefore forced once by hand, with a throwaway test
-  that called `AllocConsole` and pointed `os.Stdout` and `os.Stdin` at
-  `CONOUT$` and `CONIN$` before calling `EnableVirtualTerminal`. Stdin's mode
-  went from `0x1f7` to `0x3f7`, exactly the `ENABLE_VIRTUAL_TERMINAL_INPUT`
-  bit and nothing else, and restore returned it to `0x1f7` exactly; two
-  further restore calls left it there, confirming the `sync.Once`. Stdout
-  read `0x7` throughout, which already includes
-  `ENABLE_VIRTUAL_TERMINAL_PROCESSING`: a current Windows 11 console enables
-  it by default, so the set is a no-op there rather than a missing one, and
-  the assertion that the bit is present after the call held. The throwaway
-  was not kept: `AllocConsole` needs a preceding `FreeConsole`, which
-  detaches the console from the whole test process, and that is too invasive
-  to leave in a suite CI runs.
+- **The real console round trip now has a test that actually reaches it.**
+  `TestEnableVirtualTerminal_Windows`'s console-attached branch cannot run
+  under `go test` anywhere, on CI or on a developer machine, because the test
+  binary's stdout is always a pipe. GetConsoleMode on it therefore always
+  fails, that test always takes its no-console fallback, and the round trip
+  it documents had never executed. `console_realconsole_windows_test.go` is
+  new and closes that hole: it opens the console's own `CONOUT$` and `CONIN$`
+  devices, which exist regardless of where stdout is redirected, points
+  `os.Stdout` and `os.Stdin` at them, and asserts the modes exactly. Not
+  merely that the two virtual terminal bits are set, but that the resulting
+  modes equal the prior modes *unioned with exactly those bits* and nothing
+  else, that restore returns both to the precise values read beforehand, and
+  that three restore calls leave them there rather than writing something
+  different the second time.
+- **That test never calls `AllocConsole`, deliberately.** Manufacturing a
+  console requires `FreeConsole` first, which detaches the console from the
+  whole test process rather than from one test, and a suite CI runs must not
+  do that. So the test skips when no console is attached, which is every CI
+  runner, and the assertion is only ever made on a developer's Windows
+  machine. It is not theoretical there: it ran and passed on the Windows 11
+  host this branch was prepared on, where `CONOUT$` opened with no
+  `AllocConsole` needed at all. The modes observed were stdin `0x1f7` to
+  `0x3f7`, exactly the `ENABLE_VIRTUAL_TERMINAL_INPUT` bit, and back to
+  `0x1f7`; stdout read `0x7` throughout, which already includes
+  `ENABLE_VIRTUAL_TERMINAL_PROCESSING`, because a current Windows 11 console
+  enables it by default and setting it there is a no-op rather than a
+  missing change. A `defer` restores both modes even if an assertion fails
+  partway through, so a broken restore under test cannot leave the
+  developer's own arrow keys emitting escape sequences.
 - **What is honestly not verified here.** The one remaining manual
   acceptance criterion, resizing the host terminal during a full screen
   program inside the sandbox and confirming the host terminal's arrow keys
