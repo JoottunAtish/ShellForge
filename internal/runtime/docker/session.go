@@ -302,6 +302,15 @@ func (s *dockerSession) Attach(ctx context.Context, opts runtime.AttachOpts) (ru
 // CR (no matching LF) untouched. See runtimetest's TODO(v0.2) on lone CR and
 // binary content: freezing that rule to pass a test would risk silently
 // corrupting a binary level asset, so it is deliberately left alone here.
+//
+// The replacement is a single non-overlapping pass, so an input whose line
+// ending is \r\r\n leaves a \r\n behind rather than being fully normalized:
+// bytes.ReplaceAll matches "\r\n" once starting at the second \r and does
+// not revisit the \r it left in place. A file shaped that way still fails
+// with "bad interpreter: /bin/bash^M" inside the sandbox.
+//
+// TODO(v0.2): decide whether the strip should instead loop until no \r\n
+// pair remains, which would close the \r\r\n gap above.
 func stripCR(content []byte) []byte {
 	return bytes.ReplaceAll(content, []byte("\r\n"), []byte("\n"))
 }

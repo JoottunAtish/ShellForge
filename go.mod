@@ -46,6 +46,12 @@ go 1.25.0
 // list. (This comment previously pointed at a "Go: style and formatting"
 // heading in CLAUDE.md that does not exist; CLAUDE.md only indexes the
 // skills now, it does not carry the table itself.)
+//
+// golang.org/x/sys lands here directly as of #68: internal/platform's
+// Windows console mode handling imports golang.org/x/sys/windows for
+// GetConsoleMode and SetConsoleMode. It was already present and pinned at
+// v0.34.0 for the reason above; this only moves it out of the indirect
+// block, the version does not change.
 
 // charmbracelet/glamour stays at v0.10.0, but the reason has changed and the
 // pin is no longer load bearing. It was pinned here because v1.0.0 declares
@@ -78,6 +84,7 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/goccy/go-yaml v1.19.2
 	github.com/spf13/cobra v1.10.2
+	golang.org/x/sys v0.34.0
 	golang.org/x/term v0.33.0
 	modernc.org/sqlite v1.38.0
 )
@@ -112,7 +119,6 @@ require (
 	github.com/yuin/goldmark-emoji v1.0.5 // indirect
 	golang.org/x/exp v0.0.0-20250408133849-7e4ce0ab07d0 // indirect
 	golang.org/x/net v0.38.0 // indirect
-	golang.org/x/sys v0.34.0 // indirect
 	golang.org/x/text v0.39.0 // indirect
 	modernc.org/libc v1.65.10 // indirect
 	modernc.org/mathutil v1.7.1 // indirect

@@ -71,7 +71,7 @@ objectives:                    # R  ≥1; ids must match check ids
     text: "report.txt contains the error count"
   - id: obj2
     text: "Solved in one pipeline"
-    optional: true             # optional = bonus XP, never blocks passing
+    optional: true             # O  bonus XP, never blocks passing; declared here and nowhere else
   - id: obj3
     text: "important/ is untouched"
     preserves: true            # already true at setup; earned by not breaking it
@@ -81,9 +81,9 @@ setup:                         # R
   root: /home/learner/quest    # R  everything lives here; reset = rm -rf this
   files:                       # O
     - path: logs/app-1.log     # relative to root
-      source: assets/app-1.log # from pack; \r stripped on materialize
+      source: assets/app-1.log # from pack; \r\n normalised on materialize
       mode: "0644"             # O  default 0644
-      owner: "learner:learner" # O  default learner:learner
+      owner: "learner:learner" # O  default learner:learner; see "declaring root-owned state" below
     - path: notes.txt
       content: |               # O  inline alternative to `source`
         Kofi was here.
@@ -118,6 +118,24 @@ teardown:                      # O  default: rm -rf setup.root
 tags: [text-processing, must-know]   # O
 ```
 
+A `setup.files` entry sets exactly one of `source`, `content`, and `generate`; the
+runner refuses an entry that sets none or more than one. An explicit `content:` key
+counts as choosing content even when the value is empty, which is not the same
+question as whether the key was present at all: `files-01`'s `.gitkeep` is authored as
+`content: ""` for exactly this reason, to materialize a real, empty file. An absent
+`content:` key is not the same as an empty one.
+
+`mode` is a quoted string such as `"0644"`, not a bare `0644`. An unquoted `0644` is
+YAML 1.1 octal, which most YAML parsers, including this one, read as the number 420
+rather than the permission bits an author meant. The runner parses the string with
+`strconv.ParseUint(s, 8, 32)` and refuses anything above `0o777`, so a malformed value
+is a load error naming the file, not a silently wrong permission bit.
+
+`teardown:` may carry a `script:`, as shown above, or may be `{}`, as shown in
+section 6's worked example, when a level needs no teardown step beyond the default
+`rm -rf setup.root`; `script:` on both `setup` and `teardown` accepts the block
+scalar form shown above and the plain scalar form (`script: "true"`) alike.
+
 ### Setup and teardown execution
 
 `setup.script` runs as **`learner`**, inside the sandbox, after every file in
@@ -142,8 +160,25 @@ bypass ordinary permission checks. The level root has already been chowned to
 the learner by the time a script runs, mode 0755, which makes root *other* on
 it: a script doing `mkdir -p reports` as root fails with `EACCES`. The learner
 owns the tree, so the learner is the identity that can work in it. The runner
-chowns everything `setup.files` materialized before your script starts, so
-there is nothing left for a script to chown.
+chowns the level root and everything under it to the learner, then re-applies
+any `owner:` a `setup.files` entry declared, so a script still has nothing to
+chown, and a declared owner survives to when your script runs.
+
+**Declaring root-owned state.** A level that needs a file owned by someone
+other than the learner, such as `root`, declares `owner:` on that
+`setup.files` entry rather than trying to chown it from a script. The
+ownership `PushFiles` applies through the daemon does not survive on its
+own: the runner's blanket `chown -R learner:learner` immediately after
+`PushFiles` reverts it. What actually creates the root-owned state is the
+runner re-applying every declared `owner:` afterward, in the sandbox, as
+root holding `CAP_CHOWN`. Only a **file** can carry a declared owner. A
+directory always belongs to the learner, no matter what its contents
+declare, because the runner refuses to load a level whose `setup.files`
+entries name the same path twice or make one an ancestor of another, which
+is the only shape that could otherwise leave a directory owned by anyone but
+the learner. That is what lets teardown's `rm -rf` as the learner always
+remove it. `setup.script` cannot create root-owned state either way: it
+runs as the learner.
 
 This bit real levels. `files-03` and `files-04` both shipped with a
 `mkdir -p` in their setup script and both were silently missing that directory,
@@ -190,22 +225,23 @@ whether a level's world is already in place.
 | `id` matches `[a-z0-9][a-z0-9-]*`, first character alphanumeric | A leading hyphen makes the id flag-shaped; see the security skill |
 | Every check has a non-empty `on_fail` | Generic failure messages are the #1 quality killer |
 | Every `objectives[].id` has a matching check `id` and vice versa | Keeps the HUD checklist honest |
-| A `severity: warn` check needs no objective | It produces a note (§5), never a checklist line, so there is nothing to correspond to. An `optional: true` bonus check is still shown to the learner and still needs one. |
-| `optional`, `severity` and `id` appear only on the outermost check of an objective, never on a composition branch | They describe a whole objective; the engine evaluates a composite structurally, so on a branch they would be silently ignored |
+| A `severity: warn` check needs no objective | It produces a note (§5), never a checklist line, so there is nothing to correspond to. A bonus objective is shown to the learner, so the check behind an `optional: true` objective still needs its objective; only a warn note is exempt. |
+| `severity` and `id` appear only on the outermost check of an objective, never on a composition branch | They describe a whole objective; the engine evaluates a composite structurally, so on a branch they would be silently ignored |
+| `optional` appears on the objective, never on a check or a composition branch | It describes the checklist line the learner reads. One home means a level cannot present a bonus and gate on it at the same time |
 | `solution` present and non-empty | Golden tests need it |
 | ≥2 hints | One hint is a cliff |
 | `setup.root` under `/home/learner/` | Reset safety |
 | No `source:` pointing outside the pack | Reproducibility |
 | DAG acyclic, all `prerequisites` resolve | Unlock logic |
-| Non-optional checks ≥1 | A level you can't fail isn't a level |
-| `command_matched` and `command_not_matched` must set `optional: true` or `severity: warn` | The journal is learner-influenced and may never decide pass or fail |
+| Checks whose objective is not `optional` ≥1 | A level you can't fail isn't a level |
+| `command_matched` and `command_not_matched` must sit on an `optional: true` objective, or set `severity: warn` on the check | The journal is learner-influenced and may never decide pass or fail |
 | A check declares no parameter outside the set its type accepts | A mistyped `sha526` or `compare-to` used to be dropped in silence, leaving a check that asserted something other than what the author wrote. The error names the bad key and lists what the type takes. |
 
 ---
 
 ## 3. Check catalogue (v0.1, 14 types)
 
-Common fields on every check: `id` (R), `on_fail` (R), `optional` (O, default false), `severity` (O: `fail`|`warn`), `timeout_seconds` (O).
+Common fields on every check: `id` (R), `on_fail` (R), `severity` (O: `fail`|`warn`), `timeout_seconds` (O). `optional` is not a check field: it is declared on the objective (section 2), and a check that sets it is refused when the level loads.
 
 Checks are **read-only**. A check that mutates state is a bug and CI catches it (§ purity test).
 
@@ -313,19 +349,19 @@ a composition node.
 
 ### Journal / behavioural
 
-**A journal check may never gate passing.** It must set `optional: true` or
-`severity: warn`, and `shellforge author validate` rejects a level where one
-does neither. The journal records what the learner typed, and the shell
-instrumentation writes it from inside the sandbox, where a learner can forge an
-entry with a `printf` of the right escape sequence. A level that stakes passing
-on that signal can be beaten without solving it, and, worse, can fail a learner
-who solved it a way the pattern did not anticipate. Use these for bonus
-objectives, for the handful of levels where the syntax genuinely is the lesson,
-and for anti-pattern warnings.
+**A journal check may never gate passing.** Its objective must be `optional:
+true`, or the check must set `severity: warn`, and `shellforge author validate`
+rejects a level where neither is true. The journal records what the learner
+typed, and the shell instrumentation writes it from inside the sandbox, where a
+learner can forge an entry with a `printf` of the right escape sequence. A
+level that stakes passing on that signal can be beaten without solving it,
+and, worse, can fail a learner who solved it a way the pattern did not
+anticipate. Use these for bonus objectives, for the handful of levels where
+the syntax genuinely is the lesson, and for anti-pattern warnings.
 
 ```yaml
-- type: command_matched
-  optional: true             # R  optional: true or severity: warn
+- id: obj3
+  type: command_matched        # R  its objective must be optional: true (see section 2)
   pattern: 'grep.*\|\s*wc\s+-l'
   scope: level               # level | last_n:5 | last
 ```
@@ -357,7 +393,7 @@ and for anti-pattern warnings.
     - { type: file_content, path: /tmp/out, match: regex, value: '^seventeen$' }
   on_fail: "The count doesn't look right."
 ```
-`all_of` and `not` follow the same shape. Top-level `checks` is an implicit `all_of` over non-optional entries.
+`all_of` and `not` follow the same shape. Top-level `checks` is an implicit `all_of` over the entries that gate passing, that is, those whose objective is not `optional` and whose `severity` is not `warn`.
 
 ### Deferred to v0.2 (do not implement this week)
 `port_listening`, `service_active`, `cron_entry_exists`, `user_exists`, `group_membership`, `package_installed`, `disk_usage_under`, `alias_defined`, `function_defined`, `shopt_set`, `mtime_within`, `hardlink_count`, `output_contains`, `command_count_under`, `solved_within_seconds`.
@@ -374,6 +410,19 @@ and for anti-pattern warnings.
 4. Checks execute in declaration order. Evaluation does **not** short-circuit - all run, so the objective checklist is fully populated.
 5. **Only the first failing required check's `on_fail` is displayed.** Optional/warn results are shown as notes below.
 6. Default timeout 10 s per check, 60 s per level. Timeout = fail with a distinct message.
+
+`any_of`, `all_of`, and `not` are structural, not registered check types: the catalogue
+in section 3 stays at fourteen, and there is no `type: any_of`. A composition node's
+branches have no `id`, never appear in `objectives`, and rule 4's "no short-circuit"
+applies to objectives, not to a composite's internal branches: once a composite's own
+answer is decided, evaluating its remaining branches would cost sandbox round trips and
+tell the learner nothing, so it stops. The checklist stays complete either way, because
+the composite itself is the objective and is always reported.
+
+When the 60 second level budget is exhausted, the checks that have not yet run are
+**marked** as not evaluated rather than silently dropped, for the same reason rule 4
+exists: a learner reading the result sees a complete checklist, one that says "we ran
+out of time on this one" rather than one with entries missing.
 
 ---
 
@@ -406,8 +455,8 @@ and for anti-pattern warnings.
 are deliberately distinct from `fail`, because "you have not solved it" and "we could not
 tell" need different words in front of a beginner.
 
-`primary_failure` is the first failing check that is **neither `optional` nor
-`severity: warn`**, per §4.5, and it repeats that objective rather than referring to it by
+`primary_failure` is the first failing check that is **neither a bonus objective
+nor `severity: warn`**, per §4.5, and it repeats that objective rather than referring to it by
 id. A bonus objective is never the primary failure: presenting one as the headline reason
 a level failed teaches the learner that a bonus was mandatory. It is absent, not null, when
 nothing blocking failed.
@@ -424,6 +473,13 @@ without a special case.
 ledger and the command count, which live with the learner's progress rather than with the
 sandbox. The engine's own result type omits the field entirely and the game layer adds it,
 so a caller reading this document sees one shape either way.
+
+The engine's `Run` returns this result and never an error. A cancelled run still
+produces a complete checklist rather than a bare failure: every check that did not get
+to run is marked the way the level budget's timeout is (§4), not omitted. A caller that
+needs to know whether the learner interrupted the run rather than the level genuinely
+failing inspects `ctx.Err()` itself, rather than being handed a second, competing signal
+to reconcile against this result.
 
 ---
 
@@ -481,7 +537,6 @@ checks:
     on_fail: "codes.txt should hold the distinct codes, one per line, sorted. `sort` and `uniq` are friends."
 
   - id: obj3
-    optional: true
     type: command_matched
     pattern: 'grep[^|]*\|\s*wc\s+-l'
     scope: level
@@ -546,3 +601,12 @@ protect something its own setup never created. It is **not** the same as
 `optional`: a learner who deletes `important/` still fails the level. And it cannot
 be used to quiet the gate, because step 2 also requires that at least one required
 non-preserving objective failed.
+
+`author test` **refuses** when it cannot reach a Linux Docker daemon, rather than
+skipping. A `make golden` that reports success having tested nothing is worse than one
+that reports it could not run: the whole point of the golden contract is that every
+level's checks and solution were actually exercised against the sandbox, not merely
+that the command exited zero. The Go golden test carrying the same six steps is gated
+on the `SHELLFORGE_GOLDEN=1` environment variable as well as a Linux daemon, so
+`go test ./...` in the fast CI job never builds the Containerfile or spins up a
+container; only the job that sets that variable does.

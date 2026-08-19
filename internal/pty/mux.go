@@ -90,6 +90,13 @@ type Mux struct {
 	restore func(fd int, state *term.State) error
 	getSize func(fd int) (cols, rows int, err error)
 
+	// resizePollInterval overrides how often the Windows resize watcher in
+	// raw_windows.go polls getSize. Zero, its production value, means "use
+	// that file's own default"; a test sets this to shrink the interval
+	// rather than waiting on the real one. Unix's SIGWINCH-driven watcher in
+	// raw_unix.go never reads it.
+	resizePollInterval time.Duration
+
 	// signalled carries a caught external terminating signal from the
 	// watcher goroutine to Run's own select, so Run unwinds through its
 	// ordinary exit path rather than the process dying underneath it. See

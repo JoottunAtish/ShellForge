@@ -70,8 +70,9 @@ type Level struct {
 	Setup Setup `yaml:"setup"`
 
 	// Checks are the assertions about sandbox state that decide whether the
-	// level is solved. The top level is an implicit all_of over the
-	// non-optional entries.
+	// level is solved. The top level is an implicit all_of over the entries
+	// that gate passing, that is, those whose objective is not optional and
+	// whose severity is not warn.
 	Checks []CheckSpec `yaml:"checks"`
 
 	// Hints escalate from a nudge to a reveal. At least two are required,

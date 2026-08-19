@@ -91,11 +91,14 @@ still requires at least one required non-preserving objective to fail.
   survives the level and leaks into the next one.
 - **`setup.script` runs as the learner, and must not chown.** The sandbox
   withholds `CAP_DAC_OVERRIDE` from root, so a script running as root cannot even
-  write into the learner-owned level root. The runner chowns everything
-  `setup.files` materialized before your script starts, so there is nothing left
-  to chown. If your script has more than one command, put `set -e` at the top:
-  none is injected, so otherwise only the last command's exit status counts and
-  an earlier failure ships silently.
+  write into the learner-owned level root. The runner chowns the level root and
+  everything under it to the learner, then re-applies any `owner:` a
+  `setup.files` entry declared, so there is nothing left for the script to
+  chown. Need a file owned by someone other than the learner? Declare
+  `owner:` on that `setup.files` entry; see `docs/LEVEL-FORMAT.md`'s
+  "Declaring root-owned state". If your script has more than one command, put
+  `set -e` at the top: none is injected, so otherwise only the last command's
+  exit status counts and an earlier failure ships silently.
 - **A journal check never gates passing.** `command_matched` and
   `command_not_matched` are bonus objectives or `severity: warn` notes. The
   validator rejects a level where one is neither.

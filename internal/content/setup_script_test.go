@@ -33,8 +33,9 @@ import (
 // script tries to chown.
 //
 // A chown in a level script is always one of two things, and neither should
-// ship. It is either redundant, because the runner chowns everything
-// setup.files materialized before the script starts, or it is the trailing
+// ship. It is either redundant, because the runner already chowns the level
+// root and everything under it, then re-applies any owner: setup.files
+// declared, before the script starts, or it is the trailing
 // command that masks an earlier failure, which is exactly how files-03 and
 // files-04 hid. The learner also cannot chown to another user at all, so a
 // script that means it will fail.

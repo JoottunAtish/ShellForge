@@ -31,9 +31,9 @@ formally cut.
 | Pack loading and validation | Done in `internal/content` (issue #53). `LoadPack`, `Embedded`, `Pack.Level`, `Pack.Order`, and `Validate` with a `TypeChecker` the caller supplies, so `internal/content` and `internal/verify` stay peers rather than one importing the other. `shellforge author validate <pack>` reports every problem one per line and supports `--json`. A legal `command_matched` or `command_not_matched` check now gets a warning naming issue #88: no runtime session wires a real journal yet, so the check verifies nothing until then, and the validator says so rather than staying quiet. |
 | Level setup and teardown runner | Done in `internal/content/setup` (issue #50). `Runner.Setup`, `Teardown`, and `IsSetUp` materialize and remove a level's world inside the sandbox: teardown-first idempotency, a `loglines` content generator behind a registered kind, CRLF stripping on the host side before a `runtime.FileEntry` is built, rollback on any failure via `context.WithoutCancel`, and a `SETUP_OK` sentinel written under the state directory rather than the level root. Not wired into the game orchestrator or the CLI: no caller constructs a `Runner` yet outside its own tests. That wiring, plus the pack loader and validator that produce a real `content.Level`, is #52, #53, and #54. |
 | Runtimes | `Runtime` and `Session` interfaces plus their value types and sentinel errors are defined in `internal/runtime`, the reusable contract suite is in `internal/runtime/runtimetest`, and `internal/runtime/docker` implements both by shelling out to the `docker` CLI. The contract suite is green against it on Windows with Docker Desktop's Linux engine, except one subtest documented below. `WslRuntime` is not started. |
-| PTY multiplexer and OSC parser | Both done. Parser: streaming OSC 133 and OSC 7 state machine, fuzzed, with a recorded vim session passing through byte-identical. Multiplexer (`internal/pty/mux.go`): host stdin forwarded to the sandbox verbatim including Ctrl-C, host terminal raw mode restored across every exit path including a panic, initial resize plus SIGWINCH on unix, and CommandEvent assembly from the marker stream. `CommandEvent.Raw` is always empty pending #51. Windows resize watching is a Day 3 stub. |
+| PTY multiplexer and OSC parser | Both done. Parser: streaming OSC 133 and OSC 7 state machine, fuzzed, with a recorded vim session passing through byte-identical. Multiplexer (`internal/pty/mux.go`): host stdin forwarded to the sandbox verbatim including Ctrl-C, host terminal raw mode restored across every exit path including a panic, initial resize plus SIGWINCH on unix, and CommandEvent assembly from the marker stream. `CommandEvent.Raw` is always empty pending #51. Windows resize watching (issue #68) polls `GetConsoleScreenBufferInfo` through the same injectable `getSize`/`resize` fields the unix watcher uses, every 250ms by default, and forwards a change the same way SIGWINCH does on unix. |
 | Verification engine | Done in `internal/verify` (issue #52). `Engine`, `NewEngine`, `WithCheckTimeout`, `WithLevelTimeout`, `Build` and `Run`, the `any_of`/`all_of`/`not` composition nodes, and `LevelResult` matching `docs/LEVEL-FORMAT.md` section 5 field for field. Checks are built once at level load and run on every `check`. 262 tests and subtests. The hermetic half of the purity guarantee is `internal/verify/purity_test.go`, which asserts every check type runs only read-only commands; the filesystem-hash half is in the golden harness and needs Docker. |
-| Progress database | `internal/store` (schema, migrations) and `internal/journal` (the command journal) are both built and unit tested, per #51. Nothing calls `store.Open` outside their own tests: not wired into `cmd/shellforge`, `internal/game`, or `internal/pty`. `CommandEvent.Raw` on the host-side event stream is still always empty. |
+| Progress database | `internal/store` (schema, migrations) and `internal/journal` (the command journal) are both built and unit tested, per #51. Nothing calls `store.Open` outside their own tests: not wired into `cmd/shellforge`, `internal/game`, or `internal/pty`. `CommandEvent.Raw` on the host-side event stream is still always empty. Issues #92 and #90 closed two `Open` classification bugs: a missing progress database file, or one whose parent directory does not exist yet, no longer reads as corrupt, and a SQLite database Shellforge did not create is refused rather than silently adopted. See the Day 3 follow-up entry below for the byte-identity measurement this forced and the fixture change it required. |
 | Documentation | Design record complete. User docs are outlines. |
 | Engineering rules | `CLAUDE.md` index plus 13 on-demand skills under `.claude/skills/` |
 | Link checker | Done, and verified to catch a broken relative link |
@@ -45,6 +45,7 @@ formally cut.
 | Issue templates | Four forms, including a self-contained implementation ticket |
 | MCP servers | `.mcp.json` auto-connects jCodemunch and jDocmunch |
 | `internal/platform` (paths) | Tested. Every function in `paths.go` has at least one test. `DataDir` rejects a relative `XDG_DATA_HOME` instead of silently returning a relative path. The Windows `CacheDir`/`DataDir` collision (#40) is fixed: `CacheDir` nests a `cache` element below `DataDir`, so a cache clear cannot delete progress or the WSL disk image. |
+| `internal/platform` (console mode, issue #68) | Done. `EnableVirtualTerminal`, `SupportsVirtualTerminal`, and `IsWindowsTerminal` in `console.go`, `console_windows.go` (`golang.org/x/sys/windows`), and `console_other.go`. On Windows, `EnableVirtualTerminal` sets `ENABLE_VIRTUAL_TERMINAL_PROCESSING`/`ENABLE_VIRTUAL_TERMINAL_INPUT` and its restore reverts both modes exactly, idempotently; on every other platform both are no-ops. Not yet wired into `main`: that is the CLI ticket's job, out of scope here. Manual confirmation on real Windows 11 hardware, that resizing mid-`vim` no longer corrupts the display, is still outstanding and belongs in the pull request per the ticket's own acceptance criteria; this environment has no Windows console to verify against, only the Linux and cross-compiled Windows builds and the automated suite. |
 | Rootfs release artifact | CI, `make rootfs`, and `.\make.ps1 rootfs` now all produce `rootfs.tar.gz` plus a `sha256sum`-format sidecar with reproducible `gzip -9 -n`, CI uploads both as a build artifact on every run and attaches them to the GitHub release on a tag push, and CI asserts the tarball contains `/etc/wsl.conf`, `/home/learner`, `/opt/shellforge/bin/check`, `/opt/shellforge/.sandbox-id`, and a man page. Not verified here: this environment has no Docker daemon, so the whole `image` job and the two scripts' actual output rest on CI, and the cross-platform digest match between a Linux runner's gzip and Git for Windows' gzip is expected but unproven pending a manual check on both platforms. |
 
 **There is no release and nothing to install.**
@@ -1726,6 +1727,22 @@ Works:
   the package's own source for `os.Remove`, `os.RemoveAll`, `os.Mkdir`, and
   similar calls, alongside a second parser test banning the whole `net`
   family of imports from this package and from `internal/content`.
+- `FileSpec`'s YAML decoder (`internal/content/setupspec.go`,
+  `FileSpec.UnmarshalYAML`) is hand-rolled for one reason: `ContentSet`.
+  Struct tag decoding cannot tell an absent `content` key from an empty one,
+  and files-01 materializes a `.gitkeep` that exists only to be empty, so
+  that distinction has to be real. Everything else the decoder does is what
+  strict struct decoding would have done anyway, including refusing an
+  unknown key.
+- **Fixed (#100): the blanket `chown -R learner:learner` that follows
+  `PushFiles` was reverting a declared `owner:` on a `setup.files` entry a
+  moment after `PushFiles` applied it, which made it impossible for a level
+  to set up root-owned state at all.** `Runner.Setup` now re-applies every
+  declared owner, grouped into one `chown` per distinct owner, immediately
+  after the blanket chown, and only ever names the declared file's own
+  absolute path, never a directory, so teardown's `rm -rf` as the learner
+  stays safe. Proven by unit test at the runner; perm-02 is the first shipped
+  level that will exercise it end to end.
 - Every user-facing error is a `*ux.Error` from `ux.Fail`, with three new
   doc anchors, `unsafe-level-root`, `level-pack-invalid`, and
   `setup-script-failed`, each with a heading in
@@ -1920,27 +1937,31 @@ Declined:
 
 Answers to the review's two questions:
 
-- **`stripCRLF` versus `CLAUDE.md` non-negotiable 7.** They disagree as
-  written. `stripCRLF` rewrites only the `\r` in a `\r\n` pair; rule 7 says
-  to strip `\r` from every materialized file, unqualified, which would also
-  cover a classic Mac lone-CR line ending. The narrower behavior is the one
-  this session defends: an unconditional strip is not safe for a binary
-  asset that happens to contain a lone `0x0d`, and v0.1 has no binary-asset
-  concept to exempt one (tracked as `// TODO(v0.2)` in `runner.go`). That
-  makes this specification drift, not a bug to silently work around: rule 7
-  as written is broader than what ships, and this session is not editing
-  CLAUDE.md to narrow it. Flagged for the main session to open a drift
-  issue, either narrowing rule 7's wording to the CRLF-pair case or widening
-  the strip once a binary flag exists.
-- **The `content.Level` contract with #53.** The review is right that the
-  contract is fragile: it lives only in a doc comment on
-  `internal/content/setupspec.go` and a PROGRESS.md paragraph, its only
-  enforcement is that a second declaration of `Level` fails to compile, and
-  that failure mode only fires after whoever picks up #53 has already
-  written the competing type. This session cannot open the ratification
-  issue against #53 or link it from the doc comment, since it does not
-  touch GitHub state. Recorded again here, plainly, as a gap the main
-  session should close before #53 starts.
+- **`stripCRLF` versus `CLAUDE.md` non-negotiable 7: resolved by #84.**
+  `stripCRLF` and its docker-side twin `stripCR` both rewrite only the `\r`
+  in a `\r\n` pair, and always did; rule 7 read as an unconditional strip of
+  `\r`, which was the specification drift, not the code. #84 resolved as
+  option 1, narrowing rule 7's wording (and six other copies of the same
+  claim) to match what every implementation already does, rather than
+  option 2, widening every strip and adding a `FileSpec.binary` field no
+  shipped asset needs. The evidence for narrowing: no packed asset is
+  anything but `yaml`, `log`, `md`, or `go`; a lone-CR line ending has not
+  been produced by a mainstream tool since Mac OS 9; and
+  `internal/pty/testdata/vim-session.bin`, already marked binary in
+  `.gitattributes`, proves a byte sequence an unconditional strip would
+  corrupt already exists in this repository.
+  `TestStripCRLFLeavesALoneCarriageReturn` is the test that keeps the
+  narrowed rule enforced, since `internal/content/setup` had no direct
+  `stripCRLF` test before it.
+- **The `content.Level` contract with #53: ratified by #85.** The contract
+  held exactly as this session predicted: `Level` moved to
+  `internal/content/level.go` as #53 was permitted to do, nothing was
+  redeclared, and `SourceFile` carries `yaml:"-"`. `Mode` stayed a string,
+  `Teardown` stayed a one-field struct, and `content: ""` was answered by a
+  third route neither this session nor #85 anticipated: `FileSpec.ContentSet`,
+  set by a hand-rolled `UnmarshalYAML`, distinguishes an absent `content:`
+  key from a present, empty one, which is what lets `files-01`'s `.gitkeep`
+  exist. #85 is closed by the PR that carries this paragraph.
 
 Not touched, reported instead: the review's `ci.yml` doc-anchor gate
 finding is correct (`grep`ing only the struct-literal `DocAnchor: "..."`
@@ -2607,6 +2628,31 @@ A rendering failure is never fatal: the raw markdown is printed between the
 existing rules. Refusing to start a level because a formatting library choked
 would be indefensible when the markdown is readable.
 
+**#93 item 7, `files-04`'s golden test contract, was already closed** by #94
+and #99: `Objective.Preserves`, the `preserves: true` inversion at golden
+step 2, and the guarding tests
+`TestPreservesObjectivesAreNotAlsoOptional` and
+`TestEveryPreservingObjectiveIsADestructiveLevel` all shipped before this
+PR. See `docs/LEVEL-FORMAT.md`'s "Golden test contract" section, the
+paragraphs on `preserves: true`, for the written contract. Nothing to do
+here beyond recording that item 7 needed no further work.
+
+**#98's decisions 11, 12, and 13 are ratified as shipped**, PR
+`chore/issue-93`. 12 is this project-specific glamour style and the
+measurement behind it: the 352 byte briefing becoming 5,698 bytes with 669
+escape sequences under every standard style, and every standard style,
+`ascii` and `notty` included, leaving the `##` heading marker in the output,
+which is the evidence that a hand-rolled renderer stays a live alternative
+worth keeping rather than a detour back to `WithStandardStyle`. 13 is
+already the behavior above: with colour off, nothing is styled, bold
+included, because `TERM=dumb` cannot render attributes and a redirected
+stream is a file where an escape is noise. 11, that `hint` and `reset`
+answer honestly rather than partially, is ratified against the shipped CLI
+dispatcher's current state: both verbs are still stubs that fail through
+`ux.Fail` (see the CLI dispatcher row above), so "answer honestly" today
+means refusing cleanly rather than pretending to work; the decision binds
+whichever session wires either verb to `internal/game`.
+
 **pipe-05 and its three committed assets.** The logs were produced by the
 deterministic generator in `internal/sandbox/demo_level.go`, which already has
 consistency tests including one asserting no noise line matches "error" in any
@@ -3085,6 +3131,395 @@ The `Docs` job now runs `go test ./internal/docanchor/...`, which needed
 runs for free inside `go test ./...` in both `Test` jobs, so a developer
 finds a missing heading locally before pushing, which was the whole appeal of
 option 2 over widening the grep.
+
+### Day 3 follow-up, 2026-08-17: optional has one home, the objective
+
+Issue #97. `internal/content`, `internal/game`, six level files, and the docs
+that describe them. No new Go dependency, no `internal/archtest` edge, and
+`internal/verify` untouched throughout.
+
+- **The decision.** `optional` used to live on both `content.Objective` and
+  `content.CheckSpec`, and the two could disagree; `internal/game.verifySpecs`
+  resolved a disagreement by letting either side's `true` win, marked
+  `TODO(v0.2)` at the time (see the Day 2, 2026-08-14 entry above). This
+  ticket deletes `CheckSpec.Optional` outright rather than picking a winner at
+  runtime: every one of the 15 `optional` hits in the shipped pack resolved to
+  8 objective-side declarations and 7 check-side ones, and every check-side
+  hit already had an identical objective-side twin in place, so the objective
+  was a pure deletion away from being the only declaration anywhere.
+  `optional` is also meaningless without an objective, since it describes a
+  checklist line the learner reads, while `severity` is not: the validator
+  already exempted a `severity: warn` check from needing an objective and
+  refused that same exemption to an `optional` one. One home means the
+  objective's checklist and the engine's pass or fail verdict can no longer
+  disagree about the same check.
+- **`optionalDeclared`, not a decode error.** The YAML key `optional` stays
+  reserved on a check's mapping, so it never falls into `Params` and never
+  reaches the check registry as an unrecognized parameter. `decodeField`
+  records only that the key was present, in an unexported
+  `CheckSpec.optionalDeclared`, and does not decode its value: `optional:
+  "yes"` on a check now gets the validator's "belongs on the objective"
+  message, not a bare type complaint. The validator rejects the key at every
+  composition depth, not only on a branch as the old rule did, because a
+  check can no longer declare it correctly anywhere now that the field exists
+  only on `Objective`.
+- **`gating` recomputed from the check's own objective, and this is a
+  security fix, not a refactor.** The rule that a `command_matched` or
+  `command_not_matched` check may never decide pass or fail depends on
+  knowing whether a check is gating. Before this ticket, `validateChecks`
+  read that off `CheckSpec.Optional`, the field this ticket deletes. After
+  it, `gating` is read from a `map[string]bool` built from `lvl.Objectives`,
+  keyed by objective id: an objective declared `optional: true` makes every
+  check with a matching id non-gating, and a check whose id matches no
+  objective defaults to gating, the safe direction, since the missing
+  correspondence is refused on its own by
+  `validateObjectiveCorrespondence`. An objective with an empty id is
+  skipped when the map is built, so an unnamed optional objective can never
+  make an unnamed check look non-gating by both reading as key `""`.
+  `TestValidateGatingReadsEachObjectivesOwnOptionalFlag` pins the keyed-by-id
+  part specifically: an implementation that collapsed every objective's flag
+  into one shared boolean, or that ORed all of them together, would still
+  pass the simpler tests and fail that one.
+- **The latent defect this fixes.** Before this ticket, the validator's
+  `required` counter for "a level you cannot fail is not a level" also read
+  `CheckSpec.Optional`, while `internal/game.verifySpecs` computed
+  `verify.Spec.Optional` by ORing in the objective's own flag. A level whose
+  only check sat under an objective-only `optional: true`, with the check
+  itself declaring nothing, counted as `required == 1` at validation time
+  while the engine already treated the same check as optional at runtime:
+  the validator certified as failable a level that could not be failed. No
+  shipped level hit this, because every optional objective in the pack was
+  already backed by a journal-type check, which `hasStateLeaf` already
+  excludes from the required count for an unrelated reason.
+  `TestValidateEveryObjectiveOptionalIsALevelYouCannotFail` is red against the
+  pre-ticket code for exactly this reason and is the test that proves the
+  fix.
+- **Level pack.** Seven check-side `optional: true` lines deleted across six
+  files (`01-nav-01.yaml`, `02-nav-02.yaml`, `03-nav-03.yaml`,
+  `04-nav-04.yaml` twice, `05-files-01.yaml`, `14-pipe-05.yaml`); every one
+  had an identical objective-side declaration already in place, so no
+  level's behavior changes. `06-files-02.yaml`'s `no-flooding` check was not
+  touched at all: it already gated through `severity: warn` alone and never
+  carried `optional`. `TestEmbeddedPackValidatesAgainstTheRealRegistry` is
+  the acceptance test for these seven deletions: it goes red the moment the
+  validator rule lands and green only once every one of them is gone.
+- **Docs.** `docs/LEVEL-FORMAT.md` section 2's invariant table, the check
+  catalogue's common-fields line, the journal section's requirement sentence
+  and its `command_matched` example, the composition section's implicit
+  `all_of` description, and the `primary_failure` sentence in section 5 all
+  described the two-homes schema and now describe the one-home version.
+  Section 6's worked example dropped its own check-side `optional: true`,
+  which `TestWorkedExampleValidates` now enforces by going red until it is
+  gone. `docs/CURRICULUM.md`'s journal-check paragraph got the same
+  rewording. `docs/design/ARCHITECTURE.md` was left alone on purpose: it
+  describes intent, and the intent did not change, only which field
+  expresses it.
+- **Mutation check.** Reverting `gating := !bonus[c.ID] && c.Severity !=
+  SeverityWarn` to `!c.optionalDeclared && c.Severity != SeverityWarn`, the
+  old check-side reading, turned `TestValidateJournalChecksCannotGatePassing`
+  (both its `optional is accepted` subtests),
+  `TestValidateGatingReadsEachObjectivesOwnOptionalFlag`, and
+  `TestEmbeddedPackValidatesAgainstTheRealRegistry` (on all seven levels
+  whose check-side line was deleted) red, which is what proves the new tests
+  are load-bearing rather than incidentally passing. Restored immediately
+  after confirming it, and the full suite was green again afterward.
+- **The golden contract ran locally, which is a first for this page.** The
+  docker daemon came up part way through this session, so unlike every
+  recent entry above, the nine shipped levels were played for real against a
+  live Linux container from a developer machine rather than left to CI. Both
+  entry points ran and both passed all nine: the Go test
+  `TestEveryLevelGoldenPath`, and the CLI path `shellforge author test --all`,
+  which also exercises the purity and teardown phases per level. So the claim
+  that no level's behaviour changes with the seven deleted lines gone is
+  proved end to end here, not merely reasoned from the fact that no level's
+  `verify.Spec.Optional` or `gating` value changes.
+- **What genuinely could not run locally.** `govulncheck`, `python3`, and
+  `pytest` are absent from this environment, so `scripts/check-ci-gates.py`,
+  `scripts/tests`, and `govulncheck ./...` stayed CI's to run alone. Nothing
+  else was skipped. `gofmt -s -w .`, `go vet ./...`, `go build ./...`,
+  `go test ./...`, `go test -race ./...`, `go test ./internal/archtest/...`,
+  `bash scripts/check-punctuation.sh`, `bash scripts/check-links.sh`,
+  `bash scripts/check-cli-package.sh`, `bash scripts/check-allowlist-regexp.sh`,
+  and `gosec -quiet -exclude-dir=docs ./...` all ran locally and are green.
+- **A trap for the next person who runs the sandbox tests locally.** A stale
+  `shellforge-controltest` image built before the Containerfile gained its
+  `/home/learner/.shellforge` step makes `TestControlChannelAnswersTheShim`
+  fail with `mkfifo: cannot create fifo ... No such file or directory`, which
+  reads as a code defect in the control channel and is not one. Confirmed
+  identical on `main`, so it is not from this branch. Untagging the stale
+  image and letting the test rebuild it fixes it. CI never sees this because
+  it always builds the image fresh.
+
+One thing found and deliberately not fixed under this same ticket: this
+session found an eighth place carrying the old wording, not counted among
+the fifteen `optional` hits because it names no such key: `cmd/shellforge`'s
+`TestValidateFailureModes`'s `journal check gating a pass` case asserted the
+literal string `optional: true or severity: warn` through the `author
+validate` CLI path, one layer above where the ticket's own plan looked.
+Updated to the same new wording as `TestValidateJournalChecksCannotGatePassing`,
+since it exercises the identical validator message through a different
+caller rather than a different rule, and the wording change was already this
+ticket's own decision to make.
+
+### Day 3 follow-up, 2026-08-17: the progress database refuses a file it did not create, and a missing one stops reading as corrupt
+
+Issues #92 and #90, folded into one branch because the two decision paths
+through `Open` turned out to be disjoint: a foreign database never reaches
+`classifyOpenError` at all, so widening its arm for #92 cannot swallow #90's
+case, and a non-SQLite file cannot reach the foreign check either, since it
+fails its very first pragma before `Migrate` is ever called. All of
+`internal/store`, test files only apart from `store.go` and `migrate.go`.
+
+- **#92, one line plus a doc comment sentence.** `classifyOpenError`'s
+  permission probe matched only `fs.ErrPermission`, so a progress database
+  path that does not exist yet, or whose parent directory does not exist
+  yet, fell through to the corrupt anchor: its remediation told the learner
+  to rename a file that was never written and warned them their finished
+  levels would be forgotten. The arm now also matches `fs.ErrNotExist`.
+  Covered by `TestClassifyOpenErrorOnAMissingFileIsUnwritableNotCorrupt`
+  (both cases run and fail correctly on this Windows host) and
+  `TestOpenOnAnExistingUnwritableParentReportsUnwritable`, the real bug
+  reproduction, which needs POSIX mode bits and **skips on Windows**; CI's
+  Linux job is its only witness.
+- **#90: `ErrForeignDatabase`, `userObjectCount`, `looksLikeOurs`,
+  `refuseIfForeign`.** `Open` now refuses, rather than silently migrating, a
+  SQLite database that is not provably a Shellforge progress file and already
+  holds objects Shellforge did not create. It fails closed: a query that
+  cannot complete is refused with the same anchor as a confirmed foreign
+  database, never treated as evidence the file is ours. New anchor
+  `progress-db-not-ours`, this package's sixth, with its heading in
+  `docs/05-troubleshooting.md` naming `DataDir`'s per-OS path rather than
+  staying abstract. The remediation never suggests deleting, renaming,
+  overwriting, or moving anything, which is the point when the file may
+  belong to another program.
+- **The identity test is provenance first, and it took two rounds to get
+  right.** The first version asked "does this record no version and hold a
+  table?", ran inside `Migrate`'s `current == 0` branch, and filtered
+  `sqlite_master` on `type = 'table'`. The independent review found two ways
+  a foreign file routed around it, both reproduced by measurement rather than
+  argued:
+  - **A foreign database carrying its own `schema_version` table reached the
+    version arithmetic and was told to rename itself.** `schema_version` is a
+    common name, older Flyway and much hand rolled migration code included.
+    Because the gate only ran when the recorded version was zero, a file with
+    someone else's `schema_version` fell through to `anchorMigrationFailed`
+    or `anchorTooNew`, and both of those remediations tell the learner to
+    rename the file. Telling a learner to rename another program's database
+    is the exact outcome this gate exists to make impossible.
+  - **A database whose only objects were views was adopted**, because a view
+    is not a `table`. Shellforge wrote its own tables into it and narrowed
+    its mode, which is both harms #90 names, on a file it did not create.
+    `internal/store/doc.go` and the troubleshooting entry both promise that
+    never happens, so the promise was false rather than merely incomplete.
+
+  Both are fixed by changing what the question is. Provenance is now decided
+  first, before any version arithmetic, by `looksLikeOurs`: a file is ours
+  when `sqlite_master` holds both objects `001_init.sql` creates,
+  `schema_version` and `events`. `events` is the load bearing half, since
+  `schema_version` alone is not evidence of anything. A file that is provably
+  ours is left alone, extra tables the learner added included. A file that is
+  not provably ours is refused if it holds any non-`sqlite_` object at all,
+  views and indexes included, and adopted only when it holds nothing.
+  `TestAFreshlyMigratedDatabaseIsProvablyOurs` is what stops the two named
+  tables going stale: if a later migration renames either, that test fails
+  rather than the gate silently starting to refuse real progress files.
+- **The chmod moved from before `Migrate` to after it, not made
+  conditional.** A file `Migrate` is about to refuse now has nothing at all
+  done to it. A conditional chmod would need either a second
+  `sqlite_master` read in `Open` to decide, which duplicates the identity
+  logic and can disagree with the first read, or a value returned from
+  `Migrate` saying "this one was ours," which is a signature change the
+  ticket rules out. The cost, stated plainly: a fresh database now sits at
+  the process umask default for the duration of the migrations rather than
+  one pragma, inside the 0700 directory `EnsureDir` created throughout, and
+  `001_init.sql` creates only empty tables, so no learner data exists in the
+  file during the widened window. Two secondary effects are improvements: a
+  database refused for `ErrSchemaTooNew`, and one refused through
+  `anchorMigrationFailed`, are no longer chmodded before the refusal either.
+  A third is a small regression and is recorded rather than buried: a fresh
+  database whose migration fails is now left at the umask default
+  permanently, because `Open` returns before reaching the chmod. It sits
+  inside the 0700 directory, a failed migration commits nothing, and the next
+  successful `Open` tightens it, so the exposure is a file with no learner
+  data in a directory only the learner can enter.
+- **The byte-identity criterion is not literally satisfiable, and the test
+  says so precisely instead of claiming otherwise.** Measured directly,
+  using this package's own already-shipped `execPragmaWithRetry` against a
+  one-table delete-mode fixture, before any #90 code existed: length
+  identical at 8192 bytes before and after; the only differing bytes at
+  offsets 18, 19, 27, and 95; nothing at or above offset 100 differed. That
+  matches SQLite's own 100 byte file header ending exactly at offset 100:
+  `PRAGMA journal_mode=WAL` runs in `Open` before `Migrate` ever looks at
+  the file, and converting a delete-mode database to WAL rewrites the
+  file-format version bytes (18-19), the change counter (24-27), and the
+  version-valid-for number (92-95). `TestOpenLeavesAForeignDatabaseUntouched`
+  asserts exactly that: length unchanged, everything from offset 100 onward
+  byte-identical (hashed with sha256 for a readable failure), and the
+  foreign table's own schema text and rows unchanged. Making the header
+  identical too would need the WAL pragma to run after the identity gate,
+  which changes the lock contention `execPragmaWithRetry` is built around;
+  filed as a follow-up rather than done here (see below).
+- **One existing fixture changed, forced by the new contract, no assertion
+  did.** `TestOpenOnAContendedConversionReportsInUseAndRetries` built its
+  blocking-transaction fixture with `CREATE TABLE t (x INTEGER)` on a plain
+  `sql.Open`, which is exactly a database #90 now refuses: the test's own
+  second half asserted a second `Open` succeeds once the blocking
+  transaction releases. The fixture is now a genuine current-version
+  Shellforge database, built by looping `applyMigration` over `migrations()`
+  directly (this package's own `Open` would convert it to WAL immediately,
+  before the test ever gets to hold its blocking transaction against a
+  delete-mode file), and the blocking write is an `INSERT INTO events`
+  inside the same uncommitted transaction. Both original assertions,
+  `anchorInUse` first and a successful `Open` after release, are unchanged.
+- **The anchor guard is now AST-derived, with a floor, as a logically
+  separate change within the same branch.** `TestDocAnchorsHaveTroubleshootingHeadings`
+  used to check a hardcoded slice of five anchor constants against
+  `docs/05-troubleshooting.md`; adding a sixth by hand risked the exact
+  failure this package already avoids elsewhere: a witness that silently
+  shrinks. `declaredDocAnchors` now walks this package's own production
+  `.go` files for every `const` identifier prefixed `anchor`, unquotes its
+  string value, and the test checks the doc heading against that list. The
+  six named constants stay as an explicit floor, checked with
+  `slices.Contains`, so a walk that finds nothing still fails loudly instead
+  of passing over zero anchors. Verified by mutation: renaming `anchorInUse`
+  to `docAnchorInUse` everywhere it is used made the floor fire with
+  "the walk has gone blind," then reverted. `strconv` and `slices` added to
+  `guards_test.go`, both standard library.
+- **Mutation battery, two findings beyond confirming the rest load bearing.**
+  `count > 0 -> count > 1` breaks not only `one_unrelated_table` as
+  predicted but also `a_table_and_an_index`: an index never counts under
+  `type = 'table'`, so that fixture has exactly one real table too, the
+  same shape as the single-table case, for the same reason. Hoisting the
+  `current == 0` guard so the foreign check runs on every `Migrate` breaks
+  `TestOpenOnAShellforgeDatabaseAtARecordedVersionStillOpens`,
+  `TestMigrateTwiceIsANoOp`, and `TestOpenOnACurrentDatabaseIsANoOp` as
+  predicted, plus two more it did not name
+  (`TestConcurrentStoresOnOneFileDoNotDeadlock`,
+  `TestOpenOnAContendedConversionReportsInUseAndRetries`), because both
+  reopen an already-migrated database and the hoisted check would wrongly
+  refuse it; `TestSchemaVersionOnAnEmptySchemaVersionTableIsAnError` was
+  predicted to break here too but does not, because its fixture makes
+  `schemaVersion` itself return an error, which `Migrate` returns on
+  unconditionally before either the gated or the hoisted foreign check ever
+  runs, so that test is not actually a witness for this scoping.
+- **Skips on this Windows host, CI's Linux job the only witness**:
+  `TestOpenOnAnExistingUnwritableParentReportsUnwritable` and
+  `TestOpenLeavesAForeignDatabaseModeUnchanged`, both needing POSIX mode
+  bits, alongside the pre-existing `TestOpenCreatesMissingParentDirectories`,
+  `TestOpenRejectsAnUnwritableParent`, `TestOpenClassifiesAnUnreadableFileAsUnwritable`,
+  and `TestOpenOnACorruptFileLeaksNoDescriptor` (Linux `/proc/self/fd` only).
+  Mutation M7 (chmod back above `Migrate`) is consequently local-inert here:
+  its only witness is the mode test above, and nothing else broke either.
+- **Follow-up filed, not done here**: run the WAL pragma after the identity
+  gate rather than before it, so a refused foreign database is byte-identical
+  including its header, not merely unchanged from offset 100 onward. Needs
+  its own look at the lock contention `execPragmaWithRetry` and
+  `TestOpenOnAContendedConversionReportsInUseAndRetries` are built around,
+  and at whether the `-wal`/`-shm` siblings this fix currently tolerates as
+  a side effect can be avoided for a database being refused.
+- Gates run locally, all green: `gofmt -s -w .`, `go vet ./...`,
+  `go build ./...`, `go test ./...`, `go test -race ./...` (both the
+  package pair and the full module), `go test ./internal/archtest/...`,
+  `bash scripts/check-punctuation.sh`, `bash scripts/check-links.sh`,
+  `bash scripts/check-cli-package.sh`, and `gosec -exclude-dir=docs ./...`
+  (70 files, 0 issues). Not run locally: `govulncheck ./...`, `python3
+  scripts/check-ci-gates.py`, and `python3 -m pytest scripts/tests -q`
+  (none installed in this environment, no dependency or workflow change on
+  this branch regardless). CI is authoritative for those three.
+
+### Day 3, 2026-08-17: Windows console VT mode and the resize watcher
+
+Issue #68, Day 3 ticket D. Replaces the Day 1 no-op stub and adds the console
+mode handling the doctor ticket and the CLI ticket both consume next.
+
+- **`internal/platform`** gained `EnableVirtualTerminal`, `SupportsVirtualTerminal`,
+  and `IsWindowsTerminal`, split across `console.go` (portable, no build tag:
+  `IsWindowsTerminal` is a `WT_SESSION` check plus a `runtime.GOOS` branch,
+  nothing Windows-specific to call), `console_windows.go`
+  (`golang.org/x/sys/windows`'s `GetConsoleMode`/`SetConsoleMode`, real
+  `ENABLE_VIRTUAL_TERMINAL_PROCESSING`/`ENABLE_VIRTUAL_TERMINAL_INPUT` handling),
+  and `console_other.go` (`!windows`, both functions are no-ops that always
+  succeed). `EnableVirtualTerminal`'s restore is idempotent via `sync.Once`,
+  matching the discipline `Mux.restoreOnce` already uses for the host terminal.
+  A failure enabling VT input rolls stdout's mode back before returning, so a
+  caller that gives up after the error is not left with the two handles in
+  different states.
+- **`golang.org/x/sys` moves from indirect to direct** in `go.mod`, same
+  v0.34.0 pin, no version change, and gained a row in the go-style skill's
+  Dependencies table: `TestGoModDirectDependenciesAreApproved` in
+  `internal/archtest` enforces that every direct dependency is listed there,
+  and it was right to fail until the row existed.
+- **`internal/pty/raw_windows.go`** replaces the stub. Windows has no
+  SIGWINCH, so the watcher polls `m.getSize`, the same injectable field
+  `raw_unix.go`'s SIGWINCH handler and `Mux.Run`'s own initial resize both
+  use, every 250ms by default, and calls `m.resize` only when the reported
+  size actually changed. The alternative, reading `WINDOW_BUFFER_SIZE_EVENT`
+  off the console input handle, was rejected for the reason the ticket gave:
+  `Mux.Run` already forwards the host's stdin to the sandbox verbatim, and
+  draining console input events in a second place here would swallow the
+  learner's keystrokes. `Mux` gained one new field, `resizePollInterval`,
+  zero by default (meaning "use `raw_windows.go`'s own 250ms constant"), so
+  a test can shrink it rather than waiting on the real interval; unix's
+  watcher never reads it.
+- **Tests.** `internal/pty/raw_windows_test.go` (`go:build windows`) drives
+  `startResizeWatcher` directly through the injectable `getSize` field and
+  the existing `fakePTY`/`newTestMux` harness from `mux_test.go`: a changed
+  size resizes with the clamped rows-then-cols order, an unchanged size
+  never calls resize, and calling stop provably ends the goroutine rather
+  than merely coinciding with a quiet tick. `internal/platform/console_test.go`
+  runs on every platform, branching on `runtime.GOOS`: the portable
+  `IsWindowsTerminal` answers are pinned on both sides of that branch, the
+  Windows-only tests cover the real `GetConsoleMode`/`SetConsoleMode` round
+  trip when a real console is attached and fall back to asserting a clean
+  error, never a panic, with a nil restore, when it is not, since a CI
+  runner's stdout is not reliably a console either way. A third Windows-only
+  test forces that failure path deterministically by swapping `os.Stdout`
+  for a pipe. `go test -race ./internal/pty/... ./internal/platform/...` is
+  green on Linux, and green again natively on a real Windows 11 Pro host
+  (build 26200) when this branch was rebased onto main for merge: all three
+  `startResizeWatcher` tests and both Windows console tests pass there under
+  `-race`, alongside `go test -race ./...` for the whole module.
+- **The real console round trip now has a test that actually reaches it.**
+  `TestEnableVirtualTerminal_Windows`'s console-attached branch cannot run
+  under `go test` anywhere, on CI or on a developer machine, because the test
+  binary's stdout is always a pipe. GetConsoleMode on it therefore always
+  fails, that test always takes its no-console fallback, and the round trip
+  it documents had never executed. `console_realconsole_windows_test.go` is
+  new and closes that hole: it opens the console's own `CONOUT$` and `CONIN$`
+  devices, which exist regardless of where stdout is redirected, points
+  `os.Stdout` and `os.Stdin` at them, and asserts the modes exactly. Not
+  merely that the two virtual terminal bits are set, but that the resulting
+  modes equal the prior modes *unioned with exactly those bits* and nothing
+  else, that restore returns both to the precise values read beforehand, and
+  that three restore calls leave them there rather than writing something
+  different the second time.
+- **That test never calls `AllocConsole`, deliberately.** Manufacturing a
+  console requires `FreeConsole` first, which detaches the console from the
+  whole test process rather than from one test, and a suite CI runs must not
+  do that. So the test skips when no console is attached, which is every CI
+  runner, and the assertion is only ever made on a developer's Windows
+  machine. It is not theoretical there: it ran and passed on the Windows 11
+  host this branch was prepared on, where `CONOUT$` opened with no
+  `AllocConsole` needed at all. The modes observed were stdin `0x1f7` to
+  `0x3f7`, exactly the `ENABLE_VIRTUAL_TERMINAL_INPUT` bit, and back to
+  `0x1f7`; stdout read `0x7` throughout, which already includes
+  `ENABLE_VIRTUAL_TERMINAL_PROCESSING`, because a current Windows 11 console
+  enables it by default and setting it there is a no-op rather than a
+  missing change. A `defer` restores both modes even if an assertion fails
+  partway through, so a broken restore under test cannot leave the
+  developer's own arrow keys emitting escape sequences.
+- **What is honestly not verified here.** The one remaining manual
+  acceptance criterion, resizing the host terminal during a full screen
+  program inside the sandbox and confirming the host terminal's arrow keys
+  still behave after exit, is still unverified. `cmd_run.go` does already
+  build the multiplexer, so the watcher half of that criterion is reachable
+  today via `shellforge run`; what blocks the check is that it needs a human
+  dragging a real terminal's edge, and the session this was merged from is
+  non-interactive with a piped stdout. The arrow keys half is not reachable
+  at all yet: nothing calls `EnableVirtualTerminal`, which this ticket
+  deliberately leaves to the CLI ticket, so no console mode is being changed
+  for a restore to get wrong. Both stay open for a hand check on an
+  interactive Windows terminal.
 
 ## Day 6: hardening, CI, packaging
 

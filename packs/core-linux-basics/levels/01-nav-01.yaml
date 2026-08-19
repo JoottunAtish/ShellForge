@@ -57,7 +57,6 @@ checks:
       again.
 
   - id: used-pwd
-    optional: true
     type: command_matched
     pattern: '^\s*pwd\b'
     scope: level

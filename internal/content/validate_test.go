@@ -208,6 +208,174 @@ func TestValidateCompositionShape(t *testing.T) {
 	})
 }
 
+// TestValidateOptionalOnACheckNamesTheObjective is the core rule issue #97
+// adds: optional belongs on the objective, and nowhere else. A check that
+// also declares it is refused, whether or not the objective agrees, because
+// the check was never the field's home to begin with.
+func TestValidateOptionalOnACheckNamesTheObjective(t *testing.T) {
+	t.Run("neither", func(t *testing.T) {
+		lvl := defaultLevel()
+		lvl.Objectives += "  - id: obj2\n    text: \"A second thing to check\"\n"
+		lvl.Checks += "  - id: obj2\n    type: file_exists\n    path: /home/learner/quest/bonus.txt\n    on_fail: \"No bonus.txt yet.\"\n"
+
+		report := validateFixture(t, fixturePack("", lvl))
+		requireNoProblem(t, report, "nav-01", "checks[1].optional")
+	})
+
+	t.Run("the objective only", func(t *testing.T) {
+		lvl := defaultLevel()
+		lvl.Objectives += "  - id: obj2\n    text: \"A bonus thing to check\"\n    optional: true\n"
+		lvl.Checks += "  - id: obj2\n    type: file_exists\n    path: /home/learner/quest/bonus.txt\n    on_fail: \"No bonus.txt yet.\"\n"
+
+		report := validateFixture(t, fixturePack("", lvl))
+		requireNoProblem(t, report, "nav-01", "checks[1].optional")
+		if !report.OK() {
+			t.Errorf("optional declared only on the objective should be legal:\n%s", formatReport(report))
+		}
+	})
+
+	t.Run("the check only", func(t *testing.T) {
+		lvl := defaultLevel()
+		lvl.Objectives += "  - id: obj2\n    text: \"A bonus thing to check\"\n"
+		lvl.Checks += "  - id: obj2\n    optional: true\n    type: file_exists\n    path: /home/learner/quest/bonus.txt\n    on_fail: \"No bonus.txt yet.\"\n"
+
+		report := validateFixture(t, fixturePack("", lvl))
+		requireProblem(t, report, "nav-01", "checks[1].optional", ProblemError, "belongs on the objective, not on the check")
+	})
+
+	t.Run("both", func(t *testing.T) {
+		lvl := defaultLevel()
+		lvl.Objectives += "  - id: obj2\n    text: \"A bonus thing to check\"\n    optional: true\n"
+		lvl.Checks += "  - id: obj2\n    optional: true\n    type: file_exists\n    path: /home/learner/quest/bonus.txt\n    on_fail: \"No bonus.txt yet.\"\n"
+
+		report := validateFixture(t, fixturePack("", lvl))
+		requireProblem(t, report, "nav-01", "checks[1].optional", ProblemError, "belongs on the objective, not on the check")
+	})
+
+	// The rule is about the key being present, not about what it says, so
+	// optional: false is refused too. That is the case where the wording of
+	// the message matters most: an author who wrote false asked for the
+	// default, and advice to set optional: true on the objective would talk
+	// them into turning a required objective into a bonus. So this asserts
+	// the message tells them to delete the line.
+	t.Run("the check says false, which is still not its field", func(t *testing.T) {
+		lvl := defaultLevel()
+		lvl.Objectives += "  - id: obj2\n    text: \"A second thing to check\"\n"
+		lvl.Checks += "  - id: obj2\n    optional: false\n    type: file_exists\n    path: /home/learner/quest/bonus.txt\n    on_fail: \"No bonus.txt yet.\"\n"
+
+		report := validateFixture(t, fixturePack("", lvl))
+		requireProblem(t, report, "nav-01", "checks[1].optional", ProblemError, "delete it here")
+	})
+}
+
+// TestDuplicateObjectiveIDReducesTheSameWayAsVerifySpecs pins the OR reduction
+// in validateChecks.
+//
+// It matters because internal/game's verifySpecs builds the same map from the
+// same list, and the two must agree. Nothing calls Validate on the path a
+// learner runs, so if the validator read a duplicated objective id as a bonus
+// while the engine read it as required, the validator would report a legal
+// journal check while the engine gated on a signal the learner can forge.
+// TestDuplicateObjectiveIDReducesTheSameWayAsTheValidator is the other half of
+// this pair, in internal/game.
+//
+// The duplicate id is separately an error. This asserts the reduction anyway,
+// because "it is already refused elsewhere" is exactly the reasoning that
+// leaves a rule unpinned until something else stops refusing it.
+func TestDuplicateObjectiveIDReducesTheSameWayAsVerifySpecs(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		first string
+	}{
+		{name: "the optional copy is declared first", first: "    optional: true\n"},
+		{name: "the required copy is declared first", first: ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			second := "    optional: true\n"
+			if tt.first != "" {
+				second = ""
+			}
+
+			lvl := defaultLevel()
+			lvl.Objectives += "  - id: obj2\n    text: \"A duplicated objective\"\n" + tt.first
+			lvl.Objectives += "  - id: obj2\n    text: \"A duplicated objective\"\n" + second
+			lvl.Checks += "  - id: obj2\n    type: command_matched\n    pattern: '^\\s*pwd\\s*$'\n    on_fail: \"Try pwd.\"\n"
+
+			report := validateFixture(t, fixturePack("", lvl))
+
+			// Either declaration saying optional makes the objective a
+			// bonus, whichever order they appear in, so the journal check
+			// is never refused for gating. Asserted as "no error at this
+			// field" rather than with requireNoProblem, because a legal
+			// journal check still draws the issue #88 warning there.
+			for _, p := range report.Problems {
+				if p.LevelID == "nav-01" && p.Field == "checks[1]" && p.Level == ProblemError {
+					t.Errorf("one copy of obj2 is optional: true, so the journal check must not be refused for gating: %s", p.Message)
+				}
+			}
+		})
+	}
+}
+
+// TestValidateOptionalOnABranchNamesTheObjectiveToo is the depth-independent
+// half of the same rule. A problem is already reported at this field today,
+// but with the old wording that told an author the outermost check may
+// declare optional. That is no longer true: the objective is optional's only
+// home at every depth, so this is a message-content change, not a new field.
+func TestValidateOptionalOnABranchNamesTheObjectiveToo(t *testing.T) {
+	lvl := defaultLevel()
+	lvl.Checks = `checks:
+  - id: obj1
+    on_fail: "Outer composite."
+    all_of:
+      - type: file_exists
+        optional: true
+        path: /home/learner/quest/answer.txt
+        on_fail: "No answer.txt yet."
+`
+	report := validateFixture(t, fixturePack("", lvl))
+
+	requireProblem(t, report, "nav-01", "checks[0].all_of[0].optional", ProblemError, "belongs on the objective, not on the check")
+}
+
+// paramsSeenChecker wraps the fake registry but actually inspects Params,
+// unlike fakeTypeChecker.ValidateParams, which ignores them. It exists only
+// to prove optional never reaches Params: the real registry would reject an
+// unrecognized key, and this is what a content-only test can do without
+// depending on internal/verify.
+type paramsSeenChecker struct{ *fakeTypeChecker }
+
+func (p paramsSeenChecker) ValidateParams(typeName string, params map[string]any) error {
+	if _, leaked := params["optional"]; leaked {
+		return errOptionalLeaked{}
+	}
+	return p.fakeTypeChecker.ValidateParams(typeName, params)
+}
+
+// errOptionalLeaked is what paramsSeenChecker returns if optional ever
+// reaches Params, standing in for the "unknown parameter" message the real
+// registry would produce.
+type errOptionalLeaked struct{}
+
+func (errOptionalLeaked) Error() string { return `unknown parameter "optional"` }
+
+// TestValidateOptionalOnACheckIsNotAnUnknownParameter pins the Params trap:
+// optional stays a reserved key on CheckSpec, so a check that declares it
+// gets the objective-ownership error below, never a registry complaint about
+// an unrecognized parameter. paramsSeenChecker is what proves it, since
+// fakeTypeChecker's own ValidateParams ignores its params argument entirely.
+func TestValidateOptionalOnACheckIsNotAnUnknownParameter(t *testing.T) {
+	lvl := defaultLevel()
+	lvl.Objectives += "  - id: obj2\n    text: \"A bonus thing to check\"\n"
+	lvl.Checks += "  - id: obj2\n    optional: true\n    type: file_exists\n    path: /home/learner/quest/bonus.txt\n    on_fail: \"No bonus.txt yet.\"\n"
+
+	pack := loadFixture(t, fixturePack("", lvl))
+	report := Validate(pack, paramsSeenChecker{newFakeTypeChecker()})
+
+	requireProblem(t, report, "nav-01", "checks[1].optional", ProblemError, "belongs on the objective")
+	requireNoProblem(t, report, "nav-01", "checks[1]")
+}
+
 // TestValidateJournalChecksCannotGatePassing is the rule this ticket adds.
 // The journal records what the learner typed and the learner can forge it
 // from inside the sandbox, so it may never decide whether a level is passed.
@@ -225,7 +393,7 @@ func TestValidateJournalChecksCannotGatePassing(t *testing.T) {
 
 			report := validateFixture(t, fixturePack("", lvl))
 
-			requireProblem(t, report, "nav-01", "checks[0]", ProblemError, "optional: true or severity: warn")
+			requireProblem(t, report, "nav-01", "checks[0]", ProblemError, "optional: true on this check's objective")
 			// It is also the only check, so the level has nothing that can
 			// fail it. Both rules must fire, not one masking the other.
 			requireProblem(t, report, "nav-01", "checks", ProblemError, "a level you cannot fail is not a level")
@@ -234,7 +402,7 @@ func TestValidateJournalChecksCannotGatePassing(t *testing.T) {
 		t.Run(checkType+" optional is accepted", func(t *testing.T) {
 			lvl := defaultLevel()
 			lvl.Objectives += "  - id: bonus\n    text: \"Did it in one command\"\n    optional: true\n"
-			lvl.Checks += "  - id: bonus\n    optional: true\n    type: " + checkType +
+			lvl.Checks += "  - id: bonus\n    type: " + checkType +
 				"\n    pattern: '^\\s*pwd\\s*$'\n    on_fail: \"There is a shorter way.\"\n"
 
 			report := validateFixture(t, fixturePack("", lvl))
@@ -266,6 +434,29 @@ func TestValidateJournalChecksCannotGatePassing(t *testing.T) {
 	}
 }
 
+// TestValidateGatingReadsEachObjectivesOwnOptionalFlag pins that the gating
+// lookup is keyed by check id, not collapsed into one shared flag. bonus's
+// objective is optional: true and syntax's is not, so an implementation that
+// used a single boolean, or ORed every objective's optional together, would
+// wrongly exempt syntax too. It must not.
+func TestValidateGatingReadsEachObjectivesOwnOptionalFlag(t *testing.T) {
+	lvl := defaultLevel()
+	lvl.Objectives += "  - id: bonus\n    text: \"Did it in one command\"\n    optional: true\n"
+	lvl.Objectives += "  - id: syntax\n    text: \"Used the pipeline\"\n"
+	lvl.Checks += "  - id: bonus\n    type: command_matched\n    pattern: '^\\s*pwd\\s*$'\n    on_fail: \"There is a shorter way.\"\n"
+	lvl.Checks += "  - id: syntax\n    type: command_matched\n    pattern: '^\\s*pwd\\s*$'\n    on_fail: \"Use the pipeline.\"\n"
+
+	report := validateFixture(t, fixturePack("", lvl))
+
+	requireProblem(t, report, "nav-01", "checks[1]", ProblemWarning, "reads the command journal")
+	for _, p := range report.Problems {
+		if p.LevelID == "nav-01" && p.Field == "checks[1]" && p.Level == ProblemError {
+			t.Errorf("checks[1]'s objective is optional: true, so it must not also get the gating error: %s", p.Message)
+		}
+	}
+	requireProblem(t, report, "nav-01", "checks[2]", ProblemError, "must not decide whether a level is passed")
+}
+
 // TestValidateJournalChecksWarnTheirEmptyOutcome is the regression test for
 // the wiring gap issue #88 tracks: no runtime session in this build supplies
 // a real verify.JournalReader, so a legal journal check degrades into a wrong
@@ -277,7 +468,7 @@ func TestValidateJournalChecksWarnTheirEmptyOutcome(t *testing.T) {
 	t.Run("command_matched names that it can never pass", func(t *testing.T) {
 		lvl := defaultLevel()
 		lvl.Objectives += "  - id: bonus\n    text: \"Did it in one command\"\n    optional: true\n"
-		lvl.Checks += "  - id: bonus\n    optional: true\n    type: command_matched" +
+		lvl.Checks += "  - id: bonus\n    type: command_matched" +
 			"\n    pattern: '^\\s*pwd\\s*$'\n    on_fail: \"There is a shorter way.\"\n"
 
 		report := validateFixture(t, fixturePack("", lvl))
@@ -356,7 +547,7 @@ func TestValidateJournalChecksCannotHideInsideAComposite(t *testing.T) {
 		report := validateFixture(t, fixturePack("", lvl))
 
 		requireProblem(t, report, "nav-01", "checks[0].all_of[0]", ProblemError, "must not decide whether a level is passed")
-		requireProblem(t, report, "nav-01", "checks[0].all_of[0].optional", ProblemError, "means nothing on a composition branch")
+		requireProblem(t, report, "nav-01", "checks[0].all_of[0].optional", ProblemError, "belongs on the objective, not on the check")
 	})
 
 	t.Run("nested two deep is still caught", func(t *testing.T) {
@@ -379,7 +570,6 @@ func TestValidateJournalChecksCannotHideInsideAComposite(t *testing.T) {
 		lvl := defaultLevel()
 		lvl.Objectives += "  - id: bonus\n    text: \"Did it the short way\"\n    optional: true\n"
 		lvl.Checks += `  - id: bonus
-    optional: true
     on_fail: "There is a shorter way."
     any_of:
       - type: command_matched
@@ -415,6 +605,34 @@ func TestValidateJournalChecksCannotHideInsideAComposite(t *testing.T) {
 		// the "nothing can fail this level" rule must stay quiet. The journal
 		// branch is still refused, because it is inside a gating tree.
 		requireProblem(t, report, "nav-01", "checks[0].all_of[1]", ProblemError, "must not decide whether a level is passed")
+		requireNoProblem(t, report, "nav-01", "checks")
+	})
+}
+
+// TestValidateEveryObjectiveOptionalIsALevelYouCannotFail is the latent
+// defect issue #97 fixes: the required counter used to read the check's own
+// optional flag, so a level whose only check sat under an optional objective
+// counted as required at validation time while the engine already treated it
+// as optional at runtime. The validator certified a level that could not be
+// failed.
+func TestValidateEveryObjectiveOptionalIsALevelYouCannotFail(t *testing.T) {
+	t.Run("the only objective is optional", func(t *testing.T) {
+		lvl := defaultLevel()
+		lvl.Objectives = `objectives:
+  - id: obj1
+    text: "answer.txt holds the path"
+    optional: true
+`
+		report := validateFixture(t, fixturePack("", lvl))
+		requireProblem(t, report, "nav-01", "checks", ProblemError, "a level you cannot fail is not a level")
+	})
+
+	t.Run("one optional beside one required", func(t *testing.T) {
+		lvl := defaultLevel()
+		lvl.Objectives += "  - id: obj2\n    text: \"A bonus thing to check\"\n    optional: true\n"
+		lvl.Checks += "  - id: obj2\n    type: file_exists\n    path: /home/learner/quest/bonus.txt\n    on_fail: \"No bonus.txt yet.\"\n"
+
+		report := validateFixture(t, fixturePack("", lvl))
 		requireNoProblem(t, report, "nav-01", "checks")
 	})
 }
@@ -461,9 +679,11 @@ func TestValidateWarnCheckNeedsNoObjective(t *testing.T) {
 	}
 }
 
-// TestValidateOptionalCheckStillNeedsAnObjective is the other side of that
-// exemption. A bonus objective is shown to the learner, so it still needs its
-// checklist line; only a warn note is exempt.
+// TestValidateOptionalCheckStillNeedsAnObjective is now a doubly invalid
+// shape: the check has no objective of the same id, and it also declares
+// optional itself, which belongs on the objective and nowhere else. Keeping
+// it as one fixture pins that the new rule does not accidentally exempt a
+// check from the older correspondence rule, or the reverse.
 func TestValidateOptionalCheckStillNeedsAnObjective(t *testing.T) {
 	lvl := defaultLevel()
 	lvl.Checks += `  - id: bonus
@@ -474,6 +694,7 @@ func TestValidateOptionalCheckStillNeedsAnObjective(t *testing.T) {
 `
 	report := validateFixture(t, fixturePack("", lvl))
 	requireProblem(t, report, "nav-01", "checks[1].id", ProblemError, "has no objective with the same id")
+	requireProblem(t, report, "nav-01", "checks[1].optional", ProblemError, "belongs on the objective")
 }
 
 // TestValidateObjectiveCorrespondence covers both directions. An objective
@@ -503,6 +724,70 @@ func TestValidateObjectiveCorrespondence(t *testing.T) {
 		report := validateFixture(t, fixturePack("", lvl))
 		requireProblem(t, report, "nav-01", "checks[1].id", ProblemError, "declared twice")
 	})
+}
+
+// TestValidateAnUnmatchedCheckIDDefaultsToGating covers what the bonus lookup
+// does for a check id with no corresponding objective: it must read as
+// gating (the safe default), never panic on the miss, and an unnamed
+// optional objective must not be confused with an unnamed check.
+//
+// Honest about which subtests are load bearing: the first two hold for the
+// pre-issue-97 code as well, since a check-side flag that nobody set also read
+// as gating, so they are pins on the safe default rather than red-first
+// drivers. Only the third fails if the empty-objective-id guard is dropped
+// from the bonus map, which was confirmed by mutation.
+func TestValidateAnUnmatchedCheckIDDefaultsToGating(t *testing.T) {
+	t.Run("a journal check with no objective is still refused", func(t *testing.T) {
+		lvl := defaultLevel()
+		lvl.Checks += "  - id: orphan\n    type: command_matched\n    pattern: '^\\s*pwd\\s*$'\n    on_fail: \"Use pwd.\"\n"
+
+		report := validateFixture(t, fixturePack("", lvl))
+
+		requireProblem(t, report, "nav-01", "checks[1]", ProblemError, "must not decide whether a level is passed")
+		requireProblem(t, report, "nav-01", "checks[1].id", ProblemError, "has no objective with the same id")
+	})
+
+	t.Run("a state check with no objective still gets only the correspondence error", func(t *testing.T) {
+		lvl := defaultLevel()
+		lvl.Checks += "  - id: orphan\n    type: file_exists\n    path: /home/learner/quest/orphan.txt\n    on_fail: \"No orphan.txt yet.\"\n"
+
+		report := validateFixture(t, fixturePack("", lvl))
+
+		requireProblem(t, report, "nav-01", "checks[1].id", ProblemError, "has no objective with the same id")
+		requireNoProblem(t, report, "nav-01", "checks[1]")
+	})
+
+	t.Run("an unnamed optional objective does not make an unnamed check non-gating", func(t *testing.T) {
+		lvl := defaultLevel()
+		lvl.Objectives += "  - id: \"\"\n    text: \"Placeholder\"\n    optional: true\n"
+		lvl.Checks += "  - type: command_matched\n    pattern: '^\\s*pwd\\s*$'\n    on_fail: \"Use pwd.\"\n"
+
+		report := validateFixture(t, fixturePack("", lvl))
+
+		requireProblem(t, report, "nav-01", "checks[1].id", ProblemError, "must have an id")
+		requireProblem(t, report, "nav-01", "checks[1]", ProblemError, "must not decide whether a level is passed")
+	})
+}
+
+// TestValidateDuplicateCheckIDDoesNotConfuseGating pins that a duplicate
+// check id does not let one copy borrow the other's gating verdict by
+// accident of map construction. Both copies of bonus must read the same
+// objective, and neither may gate, alongside the existing duplicate-id
+// error.
+func TestValidateDuplicateCheckIDDoesNotConfuseGating(t *testing.T) {
+	lvl := defaultLevel()
+	lvl.Objectives += "  - id: bonus\n    text: \"Did it in one command\"\n    optional: true\n"
+	lvl.Checks += "  - id: bonus\n    type: command_matched\n    pattern: '^\\s*pwd\\s*$'\n    on_fail: \"There is a shorter way.\"\n"
+	lvl.Checks += "  - id: bonus\n    type: command_matched\n    pattern: '^\\s*pwd\\s*$'\n    on_fail: \"There is a shorter way, still.\"\n"
+
+	report := validateFixture(t, fixturePack("", lvl))
+
+	requireProblem(t, report, "nav-01", "checks[2].id", ProblemError, "declared twice")
+	for _, p := range report.Problems {
+		if p.LevelID == "nav-01" && p.Level == ProblemError && (p.Field == "checks[1]" || p.Field == "checks[2]") {
+			t.Errorf("a duplicate check id must not produce a gating error on either copy: %s", p.Message)
+		}
+	}
 }
 
 // TestValidateHintsAndSolution covers the two-hint minimum and the empty
