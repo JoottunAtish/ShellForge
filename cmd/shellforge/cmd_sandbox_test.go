@@ -30,7 +30,7 @@ func TestSandboxStatusPrintsProvisionedRunningBackendAndDetail(t *testing.T) {
 	fake := &fakeResolver{rt: rt}
 
 	var out bytes.Buffer
-	if err := runSandboxStatus(context.Background(), &out, fake.resolve); err != nil {
+	if err := runSandboxStatus(context.Background(), &out, fake.resolve, "auto"); err != nil {
 		t.Fatalf("runSandboxStatus() error = %v, want nil", err)
 	}
 
@@ -47,7 +47,7 @@ func TestSandboxStatusExitsNonZeroWhenNothingIsProvisioned(t *testing.T) {
 	fake := &fakeResolver{rt: rt}
 
 	var out bytes.Buffer
-	err := runSandboxStatus(context.Background(), &out, fake.resolve)
+	err := runSandboxStatus(context.Background(), &out, fake.resolve, "auto")
 	if err == nil {
 		t.Fatal("runSandboxStatus() error = nil, want a refusal for an unprovisioned sandbox")
 	}
@@ -94,7 +94,7 @@ func TestSandboxDestroyPrintsThePlanIncludingTheAbsoluteDirectoryThenRequiresThe
 
 	var out bytes.Buffer
 	in := strings.NewReader("shellforge-sandbox\n")
-	if err := runSandboxDestroy(context.Background(), in, &out, fake.resolve, false); err != nil {
+	if err := runSandboxDestroy(context.Background(), in, &out, fake.resolve, false, "auto"); err != nil {
 		t.Fatalf("runSandboxDestroy() error = %v, want nil", err)
 	}
 
@@ -120,7 +120,7 @@ func TestSandboxDestroyWithADeclinedConfirmationNeverCallsDestroy(t *testing.T) 
 	rt, fake := newDockerDestroyFixture()
 
 	var out bytes.Buffer
-	err := runSandboxDestroy(context.Background(), strings.NewReader("n\n"), &out, fake.resolve, false)
+	err := runSandboxDestroy(context.Background(), strings.NewReader("n\n"), &out, fake.resolve, false, "auto")
 	if err == nil {
 		t.Fatal("runSandboxDestroy() error = nil, want a refusal")
 	}
@@ -135,7 +135,7 @@ func TestSandboxDestroyWithAMistypedNameNeverCallsDestroy(t *testing.T) {
 		t.Run(in, func(t *testing.T) {
 			rt, fake := newDockerDestroyFixture()
 			var out bytes.Buffer
-			err := runSandboxDestroy(context.Background(), strings.NewReader(in+"\n"), &out, fake.resolve, false)
+			err := runSandboxDestroy(context.Background(), strings.NewReader(in+"\n"), &out, fake.resolve, false, "auto")
 			if err == nil {
 				t.Fatalf("runSandboxDestroy(%q) error = nil, want a refusal", in)
 			}
@@ -152,7 +152,7 @@ func TestSandboxDestroyWithEmptyInputNeverCallsDestroy(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			rt, fake := newDockerDestroyFixture()
 			var out bytes.Buffer
-			err := runSandboxDestroy(context.Background(), strings.NewReader(in), &out, fake.resolve, false)
+			err := runSandboxDestroy(context.Background(), strings.NewReader(in), &out, fake.resolve, false, "auto")
 			if err == nil {
 				t.Fatalf("runSandboxDestroy() with %s: error = nil, want a refusal", name)
 			}
@@ -167,7 +167,7 @@ func TestSandboxDestroyWithYesCallsDestroyExactlyOnce(t *testing.T) {
 	rt, fake := newDockerDestroyFixture()
 
 	var out bytes.Buffer
-	err := runSandboxDestroy(context.Background(), strings.NewReader(""), &out, fake.resolve, true)
+	err := runSandboxDestroy(context.Background(), strings.NewReader(""), &out, fake.resolve, true, "auto")
 	if err != nil {
 		t.Fatalf("runSandboxDestroy() error = %v, want nil", err)
 	}
@@ -197,7 +197,7 @@ func TestSandboxDestroyVerifiesRemovalAndReportsThePathToCheck(t *testing.T) {
 		fake := &fakeResolver{rt: rt, choice: choice}
 
 		var out bytes.Buffer
-		err := runSandboxDestroy(context.Background(), strings.NewReader("shellforge-sandbox\n"), &out, fake.resolve, false)
+		err := runSandboxDestroy(context.Background(), strings.NewReader("shellforge-sandbox\n"), &out, fake.resolve, false, "auto")
 		if err == nil {
 			t.Fatal("runSandboxDestroy() error = nil, want a verification failure")
 		}
@@ -213,13 +213,35 @@ func TestSandboxDestroyVerifiesRemovalAndReportsThePathToCheck(t *testing.T) {
 		}
 	})
 
+	t.Run("Status errors after Destroy, so removal is not confirmed", func(t *testing.T) {
+		rt := &fakeRuntime{statusErr: errors.New("docker daemon unreachable")}
+		choice := sandbox.Choice{Chosen: sandbox.WSL, Reason: "chose the wsl backend"}
+		fake := &fakeResolver{rt: rt, choice: choice}
+
+		var out bytes.Buffer
+		err := runSandboxDestroy(context.Background(), strings.NewReader("shellforge-sandbox\n"), &out, fake.resolve, false, "auto")
+		if err == nil {
+			t.Fatal("runSandboxDestroy() error = nil, want a verification failure when Status itself errors")
+		}
+		var uxErr *ux.Error
+		if !errors.As(err, &uxErr) {
+			t.Fatalf("error = %v (%T), want *ux.Error", err, err)
+		}
+		if uxErr.DocAnchor != anchorSandboxUnhealthy {
+			t.Errorf("DocAnchor = %q, want %q", uxErr.DocAnchor, anchorSandboxUnhealthy)
+		}
+		if strings.Contains(out.String(), "Removed") {
+			t.Errorf("output = %q, must not claim the sandbox was removed when it could not be verified", out.String())
+		}
+	})
+
 	t.Run("really gone after Destroy", func(t *testing.T) {
 		rt := &fakeRuntime{status: runtime.Status{Provisioned: false}}
 		choice := sandbox.Choice{Chosen: sandbox.WSL, Reason: "chose the wsl backend"}
 		fake := &fakeResolver{rt: rt, choice: choice}
 
 		var out bytes.Buffer
-		err := runSandboxDestroy(context.Background(), strings.NewReader("shellforge-sandbox\n"), &out, fake.resolve, false)
+		err := runSandboxDestroy(context.Background(), strings.NewReader("shellforge-sandbox\n"), &out, fake.resolve, false, "auto")
 		if err != nil {
 			t.Fatalf("runSandboxDestroy() error = %v, want nil", err)
 		}
@@ -237,7 +259,7 @@ func TestSandboxRebuildWithADeclinedConfirmationCallsNeitherDestroyNorProvision(
 	rt, fake := newDockerDestroyFixture()
 
 	var out bytes.Buffer
-	err := runSandboxRebuild(context.Background(), strings.NewReader("n\n"), &out, fake.resolve, false)
+	err := runSandboxRebuild(context.Background(), strings.NewReader("n\n"), &out, fake.resolve, false, "auto")
 	if err == nil {
 		t.Fatal("runSandboxRebuild() error = nil, want a refusal")
 	}
@@ -255,7 +277,7 @@ func TestSandboxRebuildSaysWhatItWillDoThenDestroysThenProvisionsInThatOrder(t *
 	choice := sandbox.Choice{Chosen: sandbox.Docker, Reason: "chose the docker backend"}
 	fake := &fakeResolver{rt: rt, choice: choice}
 
-	err := runSandboxRebuild(context.Background(), strings.NewReader(""), &out, fake.resolve, true)
+	err := runSandboxRebuild(context.Background(), strings.NewReader(""), &out, fake.resolve, true, "auto")
 	if err != nil {
 		t.Fatalf("runSandboxRebuild() error = %v, want nil", err)
 	}
@@ -283,10 +305,10 @@ func TestSandboxRebuildRequiresTheSameConfirmationAsDestroy(t *testing.T) {
 	for _, in := range inputs {
 		t.Run(fmt.Sprintf("%q", in), func(t *testing.T) {
 			rtD, fakeD := newDockerDestroyFixture()
-			errD := runSandboxDestroy(context.Background(), strings.NewReader(in), io.Discard, fakeD.resolve, false)
+			errD := runSandboxDestroy(context.Background(), strings.NewReader(in), io.Discard, fakeD.resolve, false, "auto")
 
 			rtR, fakeR := newDockerDestroyFixture()
-			errR := runSandboxRebuild(context.Background(), strings.NewReader(in), io.Discard, fakeR.resolve, false)
+			errR := runSandboxRebuild(context.Background(), strings.NewReader(in), io.Discard, fakeR.resolve, false, "auto")
 
 			acceptedD := errD == nil
 			acceptedR := errR == nil
@@ -313,7 +335,7 @@ func TestSandboxRebuildRequiresTheSameConfirmationAsDestroy(t *testing.T) {
 func TestSandboxShellChecksTheHostBeforeItResolvesOrProvisions(t *testing.T) {
 	fake := &fakeResolver{err: errors.New("no backend available in this fake")}
 
-	err := runSandboxShell(context.Background(), fake.resolve)
+	err := runSandboxShell(context.Background(), fake.resolve, "auto")
 
 	if goruntime.GOOS == "windows" {
 		if err == nil {
@@ -337,5 +359,118 @@ func TestSandboxShellChecksTheHostBeforeItResolvesOrProvisions(t *testing.T) {
 
 	if fake.calls != 1 {
 		t.Errorf("resolve was called %d times, want 1", fake.calls)
+	}
+}
+
+// --------------------------------------------------------------------------
+// --runtime flag threading (BLOCKING 5): all four verbs used to hardcode
+// sandbox.Auto, so `sandbox destroy` after `init --runtime=docker` on a
+// machine where WSL2 is also available resolved WSL, removed nothing, and
+// still reported success. Each verb must now parse its own --runtime flag
+// with sandbox.ParseBackend, exactly as runInit already does, and pass the
+// result to resolve.
+// --------------------------------------------------------------------------
+
+// sandboxVerbCase names one of the four sandbox verb functions, wrapped
+// behind a single signature so one table can drive status, shell, destroy,
+// and rebuild identically. Destroy and rebuild are given an empty stdin
+// deliberately: with fake.err set, resolve fails before either function
+// ever reads from it, so no confirmation prompt is reached.
+type sandboxVerbCase struct {
+	name string
+	run  func(fake *fakeResolver, wantFlag string) error
+}
+
+func sandboxVerbCases() []sandboxVerbCase {
+	return []sandboxVerbCase{
+		{"status", func(fake *fakeResolver, wantFlag string) error {
+			var out bytes.Buffer
+			return runSandboxStatus(context.Background(), &out, fake.resolve, wantFlag)
+		}},
+		{"shell", func(fake *fakeResolver, wantFlag string) error {
+			return runSandboxShell(context.Background(), fake.resolve, wantFlag)
+		}},
+		{"destroy", func(fake *fakeResolver, wantFlag string) error {
+			var out bytes.Buffer
+			return runSandboxDestroy(context.Background(), strings.NewReader(""), &out, fake.resolve, false, wantFlag)
+		}},
+		{"rebuild", func(fake *fakeResolver, wantFlag string) error {
+			var out bytes.Buffer
+			return runSandboxRebuild(context.Background(), strings.NewReader(""), &out, fake.resolve, false, wantFlag)
+		}},
+	}
+}
+
+// TestSandboxVerbsThreadRuntimeDockerThroughToResolve drives each verb with
+// --runtime=docker and checks, through the recording fakeResolver, that
+// Docker is what actually reached resolve. Before the fix this failed for
+// every verb: each one passed sandbox.Auto regardless of what its own flag
+// said, because there was no flag at all.
+//
+// shell is skipped on Windows: checkSandboxShellSupported refuses before
+// --runtime is ever parsed there, for an unrelated, already-tested reason,
+// so resolve is never called and fake.lastWant would still be its zero
+// value.
+func TestSandboxVerbsThreadRuntimeDockerThroughToResolve(t *testing.T) {
+	for _, tc := range sandboxVerbCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.name == "shell" && goruntime.GOOS == "windows" {
+				t.Skip("shell refuses before resolve on Windows")
+			}
+			fake := &fakeResolver{err: errors.New("stop right after resolve")}
+			_ = tc.run(fake, "docker")
+			if fake.calls != 1 {
+				t.Fatalf("resolve was called %d times, want exactly 1", fake.calls)
+			}
+			if fake.lastWant != sandbox.Docker {
+				t.Errorf("resolve was called with want = %q, want %q", fake.lastWant, sandbox.Docker)
+			}
+		})
+	}
+}
+
+// TestSandboxVerbsWithAnUnknownRuntimeFlagFailBeforeConstructingARuntime is
+// the four-verb version of
+// TestInitWithAnUnknownRuntimeFlagFailsBeforeConstructingARuntime: an
+// unknown --runtime value must be refused through ux.Fail, and resolve
+// must never be called, so nothing is constructed for a value nobody asked
+// for.
+func TestSandboxVerbsWithAnUnknownRuntimeFlagFailBeforeConstructingARuntime(t *testing.T) {
+	for _, tc := range sandboxVerbCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.name == "shell" && goruntime.GOOS == "windows" {
+				t.Skip("shell refuses before resolve on Windows, for an unrelated reason")
+			}
+			fake := &fakeResolver{}
+			err := tc.run(fake, "podman")
+			if err == nil {
+				t.Fatal("error = nil, want a refusal for an unknown --runtime value")
+			}
+			var uxErr *ux.Error
+			if !errors.As(err, &uxErr) {
+				t.Fatalf("error = %v (%T), want *ux.Error", err, err)
+			}
+			if fake.calls != 0 {
+				t.Errorf("resolve was called %d times, want 0: nothing should be constructed for an unknown flag", fake.calls)
+			}
+		})
+	}
+}
+
+// TestSandboxVerbsDefaultToAutoWithNoRuntimeFlag confirms the common case
+// is unchanged: the flag's own default value is "auto", and each verb
+// still resolves sandbox.Auto when it is left at that default.
+func TestSandboxVerbsDefaultToAutoWithNoRuntimeFlag(t *testing.T) {
+	for _, tc := range sandboxVerbCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.name == "shell" && goruntime.GOOS == "windows" {
+				t.Skip("shell refuses before resolve on Windows")
+			}
+			fake := &fakeResolver{err: errors.New("stop right after resolve")}
+			_ = tc.run(fake, "auto")
+			if fake.lastWant != sandbox.Auto {
+				t.Errorf("resolve was called with want = %q, want %q", fake.lastWant, sandbox.Auto)
+			}
+		})
 	}
 }

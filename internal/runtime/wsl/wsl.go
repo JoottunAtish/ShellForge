@@ -173,9 +173,8 @@ func (rt *wslRuntime) listRows(ctx context.Context, op string) ([]distro, error)
 		// stdout was empty, a friendly multi-line sentence that failed to
 		// parse as rows, or anything else unrecognized: that is the honest
 		// answer when there is no stronger signal either way.
-		combined := string(stdout) + string(stderr)
-		if containsAny(combined, kernelOutdatedSignatures...) || containsAny(combined, importBlockedSignatures...) {
-			return nil, rt.classifyFailure(ctx, op, fmt.Errorf("wsl -l -v exited %d: %s", code, stderr), stderr)
+		if failErr := recognizedNonZeroExit(code, stdout, stderr); failErr != nil {
+			return nil, rt.classifyFailure(ctx, op, failErr, stderr)
 		}
 		return nil, nil
 	}
@@ -711,6 +710,28 @@ var (
 	kernelOutdatedSignatures = []string{"WSL_E_KERNEL", "0x80370102", "kernel update"}
 	importBlockedSignatures  = []string{"0x80070005", "Access is denied", "antivirus"}
 )
+
+// recognizedNonZeroExit is the single shared implementation of "is this
+// non-zero wsl.exe exit a recognized failure, or an empty distribution
+// table". listRows and probe.go's version2 probe seam both call this rather
+// than each keeping its own copy of the signature check, so narrowing or
+// widening what counts as a known failure only ever happens here.
+//
+// combined stdout and stderr is checked, because a genuine failure can put
+// everything on stderr and leave stdout empty, which would otherwise parse
+// as a cleanly empty table and let the failure pass unnoticed. A recognized
+// signature returns a non-nil error describing the failure, for the caller
+// to classify further. Anything else, including a plain non-zero exit with
+// no recognizable signature, returns a nil error: that is read as "no
+// distributions", the honest answer when there is no stronger signal
+// either way.
+func recognizedNonZeroExit(code int, stdout, stderr []byte) error {
+	combined := string(stdout) + string(stderr)
+	if containsAny(combined, kernelOutdatedSignatures...) || containsAny(combined, importBlockedSignatures...) {
+		return fmt.Errorf("wsl -l -v exited %d: %s", code, stderr)
+	}
+	return nil
+}
 
 // classifyFailure turns a raw wsl.exe failure into a ux.Fail carrying a
 // remediation and a doc anchor. It mirrors the docker sibling's shape:

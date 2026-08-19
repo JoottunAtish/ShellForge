@@ -67,6 +67,7 @@ func runInit(ctx context.Context, out io.Writer, resolve resolveFunc, wantFlag s
 	}
 
 	fmt.Fprintln(out, choice.Reason)
+	fmt.Fprintln(out, "Preparing the sandbox. The first run builds the image, which takes a few minutes.")
 
 	if err := rt.Provision(ctx, sandbox.Spec()); err != nil {
 		if errors.Is(err, context.Canceled) {

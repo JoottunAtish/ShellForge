@@ -4079,7 +4079,12 @@ four-verb group now: `status` (read-only, exits non-zero with the
 state), `shell` (refuses up front on Windows through the same host guard as
 `run`, before resolving or provisioning anything), `rebuild` (announces both
 steps, then destroys and provisions in that order, behind the same
-confirmation as `destroy`), and `destroy`. `sandbox build` is gone: `Provision`
+confirmation as `destroy`), and `destroy`. Every one of the four now carries
+its own `--runtime` flag, parsed with `sandbox.ParseBackend` exactly as
+`init`'s and defaulting to `auto`, so a learner who provisioned with
+`init --runtime=docker` can tell the other three verbs which backend they
+actually mean instead of each one silently resolving `auto` on its own; see
+the fix round below. `sandbox build` is gone: `Provision`
 is documented idempotent and already builds the image or distribution, so it
 never had behaviour distinct from `init`; this also brings the CLI back in
 line with `docs/design/ARCHITECTURE.md` line 121, which had documented
@@ -4089,6 +4094,12 @@ calling `docker.New` directly, and drops the `internal/runtime/docker` import
 from `cmd_run.go` entirely. `shellforge doctor` is wired to a real
 `sandbox.NewProber()` in place of `nil`, so `sandbox_health` reports real
 state (bounded to a 5 second `Ping`) instead of an unconditional `Warn`.
+`main.go` now calls `platform.EnableVirtualTerminal` once at startup through
+`withConsole`, deferring the restore so every verb gets ANSI output and the
+console mode is put back on every exit path, including a panic; this is in
+scope per #71's own Approach section, which asked for it verbatim, and it is
+the dependency on #68, which added the `GetConsoleMode`/`SetConsoleMode` calls
+`EnableVirtualTerminal` wraps.
 
 **The destroy path, since it is the uninstall path.** `sandbox destroy` and
 `sandbox rebuild` print the full `sandbox.RemovalPlan` before asking anything,
@@ -4190,6 +4201,105 @@ stop, it is intermittent (the same commit range passed on other runs), and it
 is in a package this branch does not touch at all. It is filed separately
 rather than fixed here, because `All checks green` is the merge gate and a
 failure inherited from the base branch is not this branch's to repair.
+
+**Fix round, 2026-08-19: five blocking review findings.** An independent
+review of this branch found five defects strong enough to block, plus a
+handful of smaller items. This round fixed the five, applied the accepted
+smaller items, and left the one declined item alone, without oversell:
+these are defects a review found in code already written, not new work.
+
+1. `internal/runtime/wsl/probe.go`'s `realVersion2Probe` discarded stderr
+   and let `parseList`'s forgiving read of an empty stdout report an empty
+   distribution table on a non-zero exit, even when the real failure
+   (an outdated kernel, an antivirus block) was sitting on stderr the whole
+   time. That made `Version2Available` report WSL2 available on a host
+   where it genuinely was not, so `Decide`'s Auto path never took the
+   Docker fallback `Choice.Fallback` exists for. The non-zero-exit
+   classification that `listRows` already had is now the single shared
+   `recognizedNonZeroExit` helper in `wsl.go`; both `listRows` and the new
+   `probeVersion2` runner seam call it, so there is one implementation of
+   "is this a recognized WSL failure or an empty table" rather than two
+   that could drift. `listRows`'s own behaviour and tests are unchanged;
+   this was a refactor of where the logic lives.
+2. `internal/sandbox/resolve.go`'s `Plan` claimed the Docker backend would
+   remove the `shellforge-sandbox` image on `sandbox destroy`.
+   `dockerRuntime.Destroy` only ever runs `docker rm -f`, never `docker
+   rmi`, so the image was left behind while the printed plan and the
+   `destroy` command's own `--help` text both said otherwise. The image is
+   **not** now removed by `Destroy`; widening that destructive path is its
+   own review and not this round's job. Instead the plan, the `destroy`
+   command's `Short` text, and both `RemovalPlan.Items` and
+   `VerifyCommand` now say plainly that the image stays and name
+   `docker rmi shellforge-sandbox` as the manual step to reclaim the disk
+   space.
+3. `docs/06-uninstall.md` repeated the same false claim twice: once in the
+   list of what `sandbox destroy` removes, and once implying
+   `docker images | grep shellforge` would print nothing after a
+   successful destroy. Both are corrected, and `docker rmi
+   shellforge-sandbox` is now an explicit step under "Manual cleanup, if
+   something went wrong".
+4. `cmd_sandbox.go`'s `verifyRemoved` failed **open**: `if statusErr == nil
+   && st.Provisioned` fell through to printing "Removed." whenever
+   `Status` itself errored after a successful `Destroy`, for example a
+   daemon that went away between the two calls. destructive-safety's hard
+   rule 8 is fail closed. `verifyRemoved` now returns a `ux.Fail` under the
+   `sandbox-unhealthy` anchor when `Status` errors, naming the path to
+   check by hand and stating plainly that `Destroy` itself reported
+   success so the learner knows the likely state, with `statusErr` wrapped
+   as the cause.
+5. All four sandbox verbs (`status`, `shell`, `destroy`, `rebuild`) called
+   `resolve(ctx, sandbox.Auto)` unconditionally. Only `init` had a
+   `--runtime` flag, and nothing persists which backend it chose. On a
+   Windows machine where WSL2 is also available, `init --runtime=docker`
+   followed by `sandbox destroy` could resolve WSL, remove nothing, and
+   still print "Removed." while the real Docker sandbox sat untouched.
+   Each of the four verbs now carries its own `--runtime` flag, parsed
+   with `sandbox.ParseBackend` exactly as `init`'s own, defaulting to
+   `auto` so the common case is unchanged. No state file remembers the
+   choice across commands; that is a design decision for a later ticket,
+   not this fix round.
+
+Each of the five came with a test that was confirmed to fail against the
+original code (by reintroducing the bug in a scratch copy) before being
+confirmed to pass against the fix, per the testing skill's "a test that
+passes before and after your change tests nothing" rule.
+
+**CI found the same first defect independently, from the other side.** The
+first pull request run went red on `Test (windows-latest)` with
+`TestVersion2AvailableCallsTheRealEntryPointOnNonWindows`: "ok = true on a
+non-Windows test host, want false". That test asserted the non-Windows
+answer unconditionally, on its own stated assumption that "this suite never
+runs on Windows", and CI has a windows-latest leg, so the assumption was
+false. What the failure actually proved is finding 1: on the Windows runner,
+which has `wsl.exe` in System32 but no working WSL2, the old probe read the
+non-zero exit as an empty distribution table and reported WSL2 available.
+The probe fix above is the real repair; the test is now pinned to the seam
+with `goos` set explicitly where it asserts the non-Windows short circuit,
+and skips on Windows, where the real function shells out and has no fixed
+answer to assert. Its doc comment records the false assumption so nobody
+restores it.
+
+Smaller accepted items in the same round: `init` now prints the same
+"Preparing the sandbox..." line `run`'s `openSandbox` already printed, so
+the two no longer disagree about progress output; `withConsole`'s
+nil-restore guard is now keyed on `err != nil || restore == nil` rather than
+`err` alone, since a nil restore paired with a nil error was the actual
+crash risk the defer call faced; `sandbox shell` now tells a first-time
+learner to run `shellforge init` directly when `StartSession` fails with
+`runtime.ErrSandboxMissing`, instead of routing them through `sandbox
+status` under the unhealthy anchor first; `internal/runtime/wsl/session.go`'s
+`attachStartError` no longer tells a Windows learner to "use Docker Desktop
+for now", since creack/pty's `ErrUnsupported` hits every backend on a
+Windows console, Docker Desktop included, and instead points at running
+from inside WSL and names issue #138; the confirmation prompt in
+`confirmSandboxName` no longer wraps the sandbox name in `%q`, since a
+learner who copies the quotes along with the name was refused for typing
+exactly what was printed; and `runSandboxShell` now closes `sandboxPTY` in a
+defer placed right after `Attach`, since `Mux.Run`'s two early returns
+happen before it takes ownership of the fd. Declined: lifting the three
+near-identical doc-anchor gate implementations into one shared helper,
+because issue #132 already owns exactly that refactor and it does not belong
+folded into this fix round.
 
 ## Day 6: hardening, CI, packaging
 

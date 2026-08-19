@@ -313,9 +313,9 @@ shellforge sandbox rebuild
 neither backend is usable on this machine.
 
 **What it means:** Shellforge needs one of two things to run the sandbox: WSL2
-on Windows, or Docker on Linux and macOS. Neither was found working. This is
-different from a single missing piece, such as Docker not being installed:
-this message means the whole search came up empty.
+on Windows, or Docker on Windows, Linux and macOS. Neither was found working.
+This is different from a single missing piece, such as Docker not being
+installed: this message means the whole search came up empty.
 
 **Fix:**
 

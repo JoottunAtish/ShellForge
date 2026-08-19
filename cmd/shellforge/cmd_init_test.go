@@ -84,6 +84,12 @@ func (f *fakeRuntime) Capabilities() runtime.Caps { return runtime.Caps{} }
 type fakeResolver struct {
 	calls int
 
+	// lastWant records the backend every caller of resolve most recently
+	// asked for, so a test can assert that a verb actually plumbed its own
+	// --runtime flag through to resolve rather than hardcoding
+	// sandbox.Auto regardless of what the caller passed.
+	lastWant sandbox.Backend
+
 	// resolveFunc, if set, overrides rt/choice/err entirely: tests that need
 	// the real Decide logic (with a fake GOOS) plug it in here.
 	resolveFunc func(ctx context.Context, want sandbox.Backend) (runtime.Runtime, sandbox.Choice, error)
@@ -95,6 +101,7 @@ type fakeResolver struct {
 
 func (f *fakeResolver) resolve(ctx context.Context, want sandbox.Backend) (runtime.Runtime, sandbox.Choice, error) {
 	f.calls++
+	f.lastWant = want
 	if f.resolveFunc != nil {
 		return f.resolveFunc(ctx, want)
 	}

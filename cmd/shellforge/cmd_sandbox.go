@@ -32,6 +32,16 @@ const (
 // subcommands: status, shell, rebuild, and destroy. `build` is gone as of
 // issue #71: Provision is documented idempotent and already builds the
 // image or distribution, so it had no behaviour distinct from `init`.
+//
+// Every subcommand carries its own --runtime flag, parsed with
+// sandbox.ParseBackend exactly as `init` parses its own, defaulting to
+// sandbox.Auto so the common case is unchanged. Without this, a learner
+// who ran `shellforge init --runtime=docker` on a machine where WSL2 is
+// also available has no way to tell `sandbox destroy` which backend they
+// actually provisioned: every verb resolving Auto could pick the other
+// backend, report success, and leave the real sandbox untouched. There is
+// no state file remembering the choice; naming it again on the command
+// line is the only way to be understood correctly.
 func newSandboxCommand(resolve resolveFunc) *cobra.Command {
 	sandboxCmd := &cobra.Command{
 		Use:     "sandbox",
@@ -44,29 +54,35 @@ func newSandboxCommand(resolve resolveFunc) *cobra.Command {
 		Short: "Show whether the sandbox is provisioned and running",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSandboxStatus(cmd.Context(), cmd.OutOrStdout(), resolve)
+			want, _ := cmd.Flags().GetString("runtime")
+			return runSandboxStatus(cmd.Context(), cmd.OutOrStdout(), resolve, want)
 		},
 	}
+	statusCmd.Flags().String("runtime", "auto", "Which backend to check: auto, wsl, or docker. Name the one you provisioned with, if not auto.")
 
 	shellCmd := &cobra.Command{
 		Use:   "shell",
 		Short: "Open an interactive shell inside the sandbox",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSandboxShell(cmd.Context(), resolve)
+			want, _ := cmd.Flags().GetString("runtime")
+			return runSandboxShell(cmd.Context(), resolve, want)
 		},
 	}
+	shellCmd.Flags().String("runtime", "auto", "Which backend to open a shell in: auto, wsl, or docker. Name the one you provisioned with, if not auto.")
 
 	destroyCmd := &cobra.Command{
 		Use:   "destroy",
-		Short: "Remove the sandbox container and image, or the WSL distribution",
+		Short: "Remove the sandbox container, or the WSL distribution",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			yes, _ := cmd.Flags().GetBool("yes")
-			return runSandboxDestroy(cmd.Context(), cmd.InOrStdin(), cmd.OutOrStdout(), resolve, yes)
+			want, _ := cmd.Flags().GetString("runtime")
+			return runSandboxDestroy(cmd.Context(), cmd.InOrStdin(), cmd.OutOrStdout(), resolve, yes, want)
 		},
 	}
 	destroyCmd.Flags().Bool("yes", false, "Skip the confirmation prompt")
+	destroyCmd.Flags().String("runtime", "auto", "Which backend to remove: auto, wsl, or docker. Name the one you provisioned with, if not auto.")
 
 	rebuildCmd := &cobra.Command{
 		Use:   "rebuild",
@@ -74,10 +90,12 @@ func newSandboxCommand(resolve resolveFunc) *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			yes, _ := cmd.Flags().GetBool("yes")
-			return runSandboxRebuild(cmd.Context(), cmd.InOrStdin(), cmd.OutOrStdout(), resolve, yes)
+			want, _ := cmd.Flags().GetString("runtime")
+			return runSandboxRebuild(cmd.Context(), cmd.InOrStdin(), cmd.OutOrStdout(), resolve, yes, want)
 		},
 	}
 	rebuildCmd.Flags().Bool("yes", false, "Skip the confirmation prompt")
+	rebuildCmd.Flags().String("runtime", "auto", "Which backend to rebuild: auto, wsl, or docker. Name the one you provisioned with, if not auto.")
 
 	sandboxCmd.AddCommand(statusCmd, shellCmd, rebuildCmd, destroyCmd)
 	return sandboxCmd
@@ -85,8 +103,17 @@ func newSandboxCommand(resolve resolveFunc) *cobra.Command {
 
 // runSandboxStatus reports whether the sandbox is provisioned and running.
 // It is read-only: it never starts, repairs, or provisions anything.
-func runSandboxStatus(ctx context.Context, out io.Writer, resolve resolveFunc) error {
-	rt, _, err := resolve(ctx, sandbox.Auto)
+//
+// wantFlag is validated BEFORE resolve is ever called, through
+// sandbox.ParseBackend, the same contract runInit follows: an unknown
+// value must construct nothing.
+func runSandboxStatus(ctx context.Context, out io.Writer, resolve resolveFunc, wantFlag string) error {
+	want, err := sandbox.ParseBackend(wantFlag)
+	if err != nil {
+		return err
+	}
+
+	rt, _, err := resolve(ctx, want)
 	if err != nil {
 		return err
 	}
@@ -142,7 +169,7 @@ func confirmSandboxName(in io.Reader, out io.Writer, plan sandbox.RemovalPlan, y
 		return nil
 	}
 
-	fmt.Fprintf(out, "\nType %q to continue, or anything else to cancel: ", plan.Name)
+	fmt.Fprintf(out, "\nType %s to continue, or anything else to cancel: ", plan.Name)
 
 	scanner := bufio.NewScanner(in)
 	if !scanner.Scan() {
@@ -168,8 +195,16 @@ func refuseSandboxConfirmation() error {
 // runSandboxDestroy prints the removal plan, asks for confirmation unless
 // yes is set, destroys the sandbox, and then verifies it is really gone
 // rather than trusting a nil error from Destroy.
-func runSandboxDestroy(ctx context.Context, in io.Reader, out io.Writer, resolve resolveFunc, yes bool) error {
-	rt, choice, err := resolve(ctx, sandbox.Auto)
+//
+// wantFlag is validated before resolve is ever called, same as
+// runSandboxStatus.
+func runSandboxDestroy(ctx context.Context, in io.Reader, out io.Writer, resolve resolveFunc, yes bool, wantFlag string) error {
+	want, err := sandbox.ParseBackend(wantFlag)
+	if err != nil {
+		return err
+	}
+
+	rt, choice, err := resolve(ctx, want)
 	if err != nil {
 		return err
 	}
@@ -200,8 +235,16 @@ func runSandboxDestroy(ctx context.Context, in io.Reader, out io.Writer, resolve
 // runSandboxRebuild says what it is about to do, asks for the SAME
 // confirmation as destroy, then destroys the sandbox and provisions it
 // again, in that order. The announcement prints before either step runs.
-func runSandboxRebuild(ctx context.Context, in io.Reader, out io.Writer, resolve resolveFunc, yes bool) error {
-	rt, choice, err := resolve(ctx, sandbox.Auto)
+//
+// wantFlag is validated before resolve is ever called, same as
+// runSandboxStatus.
+func runSandboxRebuild(ctx context.Context, in io.Reader, out io.Writer, resolve resolveFunc, yes bool, wantFlag string) error {
+	want, err := sandbox.ParseBackend(wantFlag)
+	if err != nil {
+		return err
+	}
+
+	rt, choice, err := resolve(ctx, want)
 	if err != nil {
 		return err
 	}
@@ -243,7 +286,11 @@ func runSandboxRebuild(ctx context.Context, in io.Reader, out io.Writer, resolve
 // verifyRemoved asks the backend again after Destroy returned nil, because
 // a nil error is not proof: it is only proof once Status agrees. A
 // sandbox still reporting Provisioned is a ux.Fail naming the absolute
-// path to check, never a quiet success.
+// path to check, never a quiet success. A Status call that errors is
+// exactly as unproven: destructive-safety's fail-closed rule means a check
+// that cannot determine whether the operation succeeded must not report
+// success, so that case is also a ux.Fail, not a fall-through to
+// "Removed."
 func verifyRemoved(ctx context.Context, out io.Writer, rt runtime.Runtime, plan sandbox.RemovalPlan) error {
 	checkTarget := plan.VerifyPath
 	if checkTarget == "" {
@@ -251,7 +298,15 @@ func verifyRemoved(ctx context.Context, out io.Writer, rt runtime.Runtime, plan 
 	}
 
 	st, statusErr := rt.Status(ctx)
-	if statusErr == nil && st.Provisioned {
+	if statusErr != nil {
+		return ux.Fail(
+			"confirm the sandbox was removed",
+			statusErr,
+			fmt.Sprintf("Destroy itself reported success, but checking afterward failed, so removal is not confirmed. Open %s and check it yourself, then run `shellforge sandbox destroy` again if anything is still there.", checkTarget),
+			anchorSandboxUnhealthy,
+		)
+	}
+	if st.Provisioned {
 		return ux.Fail(
 			"confirm the sandbox was removed",
 			nil,
@@ -290,12 +345,20 @@ func checkSandboxShellSupported() error {
 // points at the same state directory `run` uses, so instrument.bash has
 // somewhere to write, and that is all. The in-sandbox `check` shim will not
 // work here, which is correct: there is no level.
-func runSandboxShell(ctx context.Context, resolve resolveFunc) error {
+//
+// wantFlag is validated before resolve is ever called, same as
+// runSandboxStatus.
+func runSandboxShell(ctx context.Context, resolve resolveFunc, wantFlag string) error {
 	if err := checkSandboxShellSupported(); err != nil {
 		return err
 	}
 
-	rt, _, err := resolve(ctx, sandbox.Auto)
+	want, err := sandbox.ParseBackend(wantFlag)
+	if err != nil {
+		return err
+	}
+
+	rt, _, err := resolve(ctx, want)
 	if err != nil {
 		return err
 	}
@@ -307,6 +370,18 @@ func runSandboxShell(ctx context.Context, resolve resolveFunc) error {
 		Env:      map[string]string{"SF_STATE": setupStateDir()},
 	})
 	if err != nil {
+		// A sandbox that has never been provisioned, or was just destroyed,
+		// is not the same problem as an unhealthy one: sending a first-time
+		// learner to `sandbox status` under sandbox-unhealthy just tells
+		// them to run init anyway, one extra command later than necessary.
+		if errors.Is(err, runtime.ErrSandboxMissing) {
+			return ux.Fail(
+				"start a shell inside the sandbox",
+				err,
+				"Run `shellforge init` to create the sandbox, then run `shellforge sandbox shell` again.",
+				anchorSandboxMissing,
+			)
+		}
 		return ux.Fail(
 			"start a shell inside the sandbox",
 			err,
@@ -328,6 +403,12 @@ func runSandboxShell(ctx context.Context, resolve resolveFunc) error {
 			anchorSandboxUnhealthy,
 		)
 	}
+	// Mux.Run's drain closes sandboxPTY on every select branch, but Run has
+	// two earlier returns, a failed fd resolve and a failed makeRaw, that
+	// happen before it takes ownership. Without this, `shellforge sandbox
+	// shell | cat` on either of those paths leaks the exec child and its
+	// master fd.
+	defer func() { _ = sandboxPTY.Close() }()
 
 	mux := pty.New(sandboxPTY, os.Stdin, os.Stdout)
 	if runErr := mux.Run(ctx); runErr != nil {

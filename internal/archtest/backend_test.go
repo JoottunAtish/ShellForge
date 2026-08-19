@@ -33,6 +33,17 @@ import (
 // asserting the field was populated is verification, not selection, and no
 // behaviour can be chosen from an emptiness check.
 //
+// This is a tripwire, not a proof. It matches only the two syntactic shapes
+// named above, so several ways to branch on the same field pass it clean:
+// comparing against a named constant instead of a string literal
+// (`st.Backend == someBackendConst`), copying the field into a local via an
+// assignment and then switching on the copy rather than the selector
+// itself, and calling strings.EqualFold(st.Backend, "docker") instead of
+// using ==. None of those are exempted on purpose; they are simply outside
+// what this walk looks for. Do not read a clean run of this test as
+// evidence that no code branches on Status.Backend, only as evidence that
+// none does so in the two shapes checked.
+//
 // Verified against a deliberate violation before being trusted: a temporary
 // `if st.Backend == "docker"` added to cmd/shellforge/cmd_sandbox.go made
 // this test fail naming the file and line, then was removed.

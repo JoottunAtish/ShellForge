@@ -20,8 +20,10 @@ This removes the sandbox and nothing else:
 
 - On Windows, the `shellforge-sandbox` WSL distribution, and its install
   directory, including the backing `.vhdx` file of roughly 2 GB.
-- On Linux and macOS, the `shellforge-sandbox` Docker container and the
-  `shellforge-sandbox` image.
+- On Linux and macOS, the `shellforge-sandbox` Docker container. The
+  `shellforge-sandbox` image is deliberately left in place, so a rebuild does
+  not re-download or rebuild it; see "Manual cleanup" below if you want the
+  disk space back.
 
 It asks you to type the sandbox name to confirm, unless you pass `--yes`. Before
 it asks, it prints exactly what it is about to remove, including the absolute
@@ -80,14 +82,24 @@ docker images | grep shellforge
 docker ps -a | grep shellforge
 ```
 
-Both should print nothing. `shellforge sandbox destroy` runs the equivalent
-check itself before it reports success.
+`docker ps -a | grep shellforge` should print nothing. `shellforge sandbox
+destroy` runs that same check itself before it reports success. `docker
+images | grep shellforge` is expected to still print the `shellforge-sandbox`
+image: destroy never removes it, on purpose, so that line is not a sign
+anything went wrong.
 
 ## Manual cleanup, if something went wrong
 
-The exact commands to unregister the distribution by hand, delete the directory,
-remove the container image, and a complete list of every path Shellforge could have
-written to, per operating system.
+The exact commands to unregister the distribution by hand, delete the
+directory, and a complete list of every path Shellforge could have written
+to, per operating system.
+
+To remove the `shellforge-sandbox` Docker image that `sandbox destroy`
+deliberately leaves behind and reclaim its disk space:
+
+```bash
+docker rmi shellforge-sandbox
+```
 
 ## What is left behind after all of this
 

@@ -45,15 +45,20 @@ func main() {
 // restores the console's original mode afterward, on every exit path
 // including a panic unwinding through body.
 //
-// enable is platform.EnableVirtualTerminal, passed in rather than called
-// directly so a test can substitute a recording double with no global
-// variable and no build tag. When enable itself fails, body still runs: a
-// console that cannot take ENABLE_VIRTUAL_TERMINAL_PROCESSING should get
-// plain output, not a program that refuses to start. doctor's
+// This exists because issue #71's Approach section asked for it verbatim:
+// "Console setup belongs in main. Call platform.EnableVirtualTerminal once
+// at startup and defer its restore, so every verb gets ANSI output and the
+// console is restored on every exit path including a panic." enable itself,
+// platform.EnableVirtualTerminal, is the dependency on #68, which added the
+// GetConsoleMode/SetConsoleMode calls behind it; passed in here rather than
+// called directly so a test can substitute a recording double with no
+// global variable and no build tag. When enable itself fails, body still
+// runs: a console that cannot take ENABLE_VIRTUAL_TERMINAL_PROCESSING
+// should get plain output, not a program that refuses to start. doctor's
 // terminal_vt_support probe already reports that machine to anyone who asks.
 func withConsole(enable func() (func(), error), body func() error) error {
 	restore, err := enable()
-	if err != nil {
+	if err != nil || restore == nil {
 		restore = func() {}
 	}
 	defer restore()

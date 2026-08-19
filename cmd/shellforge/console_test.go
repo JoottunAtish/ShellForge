@@ -57,6 +57,31 @@ func TestWithConsoleRestoresTheConsoleOnAnError(t *testing.T) {
 	}
 }
 
+// TestWithConsoleToleratesANilRestoreWithNoError guards the nil-restore
+// branch directly: an enable that returns a nil restore func alongside a
+// nil error must not be called through the deferred restore(), which would
+// otherwise panic. The original guard was keyed on err alone (`if err !=
+// nil { restore = func(){} }`), so a nil restore paired with a nil error
+// slipped through uncaught; this exercises that exact combination.
+func TestWithConsoleToleratesANilRestoreWithNoError(t *testing.T) {
+	enable := func() (func(), error) {
+		return nil, nil
+	}
+
+	bodyRan := false
+	err := withConsole(enable, func() error {
+		bodyRan = true
+		return nil
+	})
+
+	if !bodyRan {
+		t.Fatal("the body never ran")
+	}
+	if err != nil {
+		t.Errorf("withConsole returned %v, want nil", err)
+	}
+}
+
 // TestWithConsoleRunsTheBodyEvenWhenEnablingFails asserts a legacy console
 // that cannot take ENABLE_VIRTUAL_TERMINAL_PROCESSING still gets to run the
 // verb, with plain output, rather than refusing to start.

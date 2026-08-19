@@ -15,11 +15,10 @@ import (
 
 // sandboxContainerName, sandboxImageName and sandboxDistroName are the
 // closed set of compile-time names this package will ever construct a
-// backend with. They match the values cmd/shellforge's own sandboxName and
-// sandboxImage constants use for Docker, and internal/runtime/wsl's own
-// sandboxDistro constant for WSL: see
-// TestSandboxNameIsAcceptedByTheWSLBackend, which fails the moment this
-// package's WSL name drifts from the runtime's own constant.
+// backend with. They match internal/runtime/wsl's own sandboxDistro
+// constant for WSL: see TestSandboxNameIsAcceptedByTheWSLBackend, which
+// fails the moment this package's WSL name drifts from the runtime's own
+// constant.
 const (
 	sandboxContainerName = "shellforge-sandbox"
 	sandboxImageName     = "shellforge-sandbox"
@@ -374,11 +373,11 @@ func Plan(ctx context.Context, c Choice) (RemovalPlan, error) {
 			Name: sandboxContainerName,
 			Items: []string{
 				fmt.Sprintf("the %q container", sandboxContainerName),
-				fmt.Sprintf("the %q image", sandboxImageName),
+				fmt.Sprintf("the %q image is left in place; run `docker rmi %s` by hand if you want the disk space back", sandboxImageName, sandboxImageName),
 				"your progress database is not removed by this; that is a separate step",
 			},
 			VerifyPath:    "",
-			VerifyCommand: "docker ps -a",
+			VerifyCommand: "docker ps -a and docker images",
 		}, nil
 
 	default:

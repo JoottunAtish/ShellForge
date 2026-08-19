@@ -486,10 +486,18 @@ func TestPlanForTheWSLBackendNamesAnAbsoluteInstallDirectory(t *testing.T) {
 	}
 }
 
-// TestPlanForTheDockerBackendNamesTheContainerAndImageAndNoHostDirectory
+// TestPlanForTheDockerBackendNamesTheContainerLeavesTheImageAndNoHostDirectory
 // checks that the Docker removal plan never claims a host directory will be
 // deleted, and that Plan does not reuse the WSL branch's install directory.
-func TestPlanForTheDockerBackendNamesTheContainerAndImageAndNoHostDirectory(t *testing.T) {
+//
+// This test used to be named
+// TestPlanForTheDockerBackendNamesTheContainerAndImageAndNoHostDirectory and
+// asserted that plan.Items named the image as something that would be
+// removed. That assertion was wrong: dockerRuntime.Destroy only ever runs
+// `docker rm -f`, never `docker rmi`, so the image is never removed. This
+// rewrite corrects a wrong assertion that had locked the false claim in
+// place; it does not loosen or bend a correct one.
+func TestPlanForTheDockerBackendNamesTheContainerLeavesTheImageAndNoHostDirectory(t *testing.T) {
 	plan, err := Plan(context.Background(), Choice{Chosen: Docker})
 	if err != nil {
 		t.Fatalf("Plan() error = %v, want nil", err)
@@ -504,14 +512,21 @@ func TestPlanForTheDockerBackendNamesTheContainerAndImageAndNoHostDirectory(t *t
 	if !strings.Contains(plan.VerifyCommand, "docker ps -a") {
 		t.Errorf("VerifyCommand = %q, want it to mention `docker ps -a`", plan.VerifyCommand)
 	}
+	if !strings.Contains(plan.VerifyCommand, "docker images") {
+		t.Errorf("VerifyCommand = %q, want it to mention `docker images`, since the image is left behind", plan.VerifyCommand)
+	}
 
-	var namesContainer, namesImage bool
+	var namesContainer, namesImageAsRemoved, namesManualImageRemoval bool
 	for _, item := range plan.Items {
 		if strings.Contains(item, "container") {
 			namesContainer = true
 		}
 		if strings.Contains(item, "image") {
-			namesImage = true
+			if strings.Contains(item, "docker rmi") {
+				namesManualImageRemoval = true
+			} else if !strings.Contains(item, "left in place") && !strings.Contains(item, "not removed") {
+				namesImageAsRemoved = true
+			}
 		}
 		if strings.Contains(item, string(os.PathSeparator)) {
 			t.Errorf("Items entry %q looks like it names a host directory, which the Docker backend never removes", item)
@@ -520,7 +535,10 @@ func TestPlanForTheDockerBackendNamesTheContainerAndImageAndNoHostDirectory(t *t
 	if !namesContainer {
 		t.Errorf("Items = %v, want one entry naming the container", plan.Items)
 	}
-	if !namesImage {
-		t.Errorf("Items = %v, want one entry naming the image", plan.Items)
+	if namesImageAsRemoved {
+		t.Errorf("Items = %v, want no entry claiming the image is removed: Destroy never runs `docker rmi`", plan.Items)
+	}
+	if !namesManualImageRemoval {
+		t.Errorf("Items = %v, want an entry naming `docker rmi shellforge-sandbox` as the manual step to remove the image", plan.Items)
 	}
 }

@@ -141,16 +141,32 @@ func TestProberHonoursContextCancellation(t *testing.T) {
 	}
 }
 
-// TestNewProberResolvesForReal is a thin smoke test that NewProber wires up
-// the real Resolve path rather than leaving resolve nil, which would panic
-// on the first Ping.
+// TestNewProberResolvesForReal used to call Ping with a live, uncancelled
+// context, which ran the real Resolve and shelled out to `docker inspect`
+// or `wsl -l -v`, whichever this host has: it asserted nothing and could
+// not fail, but it made a plain `go test ./...` spawn subprocesses, unlike
+// every other test in this file. Ping's own doc comment guarantees an
+// already-cancelled context returns before resolve is ever called, so
+// driving it that way proves the same thing, NewProber wires up a non-nil
+// resolve rather than leaving it nil, without ever touching the real
+// backend.
 func TestNewProberResolvesForReal(t *testing.T) {
 	p := NewProber()
 	if p == nil {
 		t.Fatal("NewProber() = nil")
 	}
-	// Calling Ping must not panic, regardless of what backend (if any) this
-	// host actually has: a nil resolve func would panic on the call, and
-	// that is the only thing this test needs to catch.
-	_, _, _, _ = p.Ping(context.Background())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	provisioned, running, _, err := p.Ping(ctx)
+	if provisioned {
+		t.Error("Ping() provisioned = true on an already-cancelled context, want false")
+	}
+	if running {
+		t.Error("Ping() running = true on an already-cancelled context, want false")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Ping() err = %v, want it to wrap context.Canceled", err)
+	}
 }
