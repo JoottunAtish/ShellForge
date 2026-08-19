@@ -2,10 +2,59 @@ package doctor
 
 import (
 	"context"
+	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
+
+// dataDirEnvVar returns the name of the environment variable
+// internal/platform.DataDir consults to resolve its base directory, for
+// goos. DataDir reads XDG_DATA_HOME everywhere except Windows, where it
+// reads LocalAppData through os.UserCacheDir instead (see
+// internal/platform/paths.go). Taking goos as a parameter rather than
+// reading runtime.GOOS inside this function is what makes the Windows
+// branch exercisable by a test running on Linux: see
+// TestDataDirEnvVarSelectsLocalAppDataOnWindows below.
+func dataDirEnvVar(goos string) string {
+	if goos == "windows" {
+		return "LocalAppData"
+	}
+	return "XDG_DATA_HOME"
+}
+
+// setDataDirEnv redirects internal/platform.DataDir to dir for the
+// lifetime of t, on whichever platform the test is actually running on.
+// Setting only XDG_DATA_HOME would leave a Windows CI leg measuring the
+// runner's real %LocalAppData%\shellforge instead of the redirected
+// directory, since DataDir ignores XDG_DATA_HOME on Windows.
+func setDataDirEnv(t *testing.T, dir string) {
+	t.Helper()
+	t.Setenv(dataDirEnvVar(runtime.GOOS), dir)
+}
+
+// TestDataDirEnvVarSelectsLocalAppDataOnWindows covers the Windows branch
+// of dataDirEnvVar directly, since this suite otherwise only ever runs on
+// a Windows GOOS as one leg of CI: it cannot exercise the Windows path of
+// setDataDirEnv's own t.Setenv call on that leg's host OS, but the
+// selection logic itself is plain data and needs no host cooperation to
+// test.
+func TestDataDirEnvVarSelectsLocalAppDataOnWindows(t *testing.T) {
+	tests := []struct {
+		goos string
+		want string
+	}{
+		{"windows", "LocalAppData"},
+		{"linux", "XDG_DATA_HOME"},
+		{"darwin", "XDG_DATA_HOME"},
+	}
+	for _, tt := range tests {
+		if got := dataDirEnvVar(tt.goos); got != tt.want {
+			t.Errorf("dataDirEnvVar(%q) = %q, want %q", tt.goos, got, tt.want)
+		}
+	}
+}
 
 func TestClassifyDiskFree(t *testing.T) {
 	tests := []struct {
@@ -58,7 +107,7 @@ func TestFreeBytesAtReportsSomethingForTheTempDir(t *testing.T) {
 }
 
 func TestDiskFreeProbeIsFullyPopulated(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	setDataDirEnv(t, t.TempDir())
 	p := diskFreeProbe{baseProbe: baseProbe{id: "disk_free", docAnchor: docAnchorDiskSpaceLow}}
 	res := p.Run(context.Background())
 	if res.ID != "disk_free" {
@@ -74,7 +123,7 @@ func TestDiskFreeProbeIsFullyPopulated(t *testing.T) {
 func TestDiskFreeProbeIsFixableOnlyWhenTheDirectoryIsMissing(t *testing.T) {
 	root := t.TempDir()
 	dataDir := filepath.Join(root, "shellforge")
-	t.Setenv("XDG_DATA_HOME", root)
+	setDataDirEnv(t, root)
 
 	p := diskFreeProbe{baseProbe: baseProbe{id: "disk_free", docAnchor: docAnchorDiskSpaceLow}}
 	res := p.Run(context.Background())
@@ -91,5 +140,43 @@ func TestDiskFreeProbeIsFixableOnlyWhenTheDirectoryIsMissing(t *testing.T) {
 	res2 := p.Run(context.Background())
 	if res2.Fixable {
 		t.Errorf("Fixable = true once the data directory already exists, want false")
+	}
+}
+
+// TestFreeBytesFromStatfs is the gosec G115 regression: a raw statfs
+// Bsize is a signed field on some platforms, and this pins the guard that
+// keeps a bad value from turning into a wrong, huge, free-space number
+// instead of an error.
+func TestFreeBytesFromStatfs(t *testing.T) {
+	tests := []struct {
+		name    string
+		bavail  uint64
+		bsize   int64
+		want    uint64
+		wantErr bool
+	}{
+		{"typical 4KiB blocks", 1000, 4096, 4096000, false},
+		{"zero available blocks", 0, 4096, 0, false},
+		{"zero block size is rejected", 1000, 0, 0, true},
+		{"negative block size is rejected", 1000, -1, 0, true},
+		{"the exact overflow boundary still fits", 2, math.MaxInt64, 2 * math.MaxInt64, false},
+		{"one past the overflow boundary is rejected", 3, math.MaxInt64, 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := freeBytesFromStatfs(tt.bavail, tt.bsize)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("freeBytesFromStatfs(%d, %d) = %d, <nil>, want an error", tt.bavail, tt.bsize, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("freeBytesFromStatfs(%d, %d) returned an unexpected error: %v", tt.bavail, tt.bsize, err)
+			}
+			if got != tt.want {
+				t.Errorf("freeBytesFromStatfs(%d, %d) = %d, want %d", tt.bavail, tt.bsize, got, tt.want)
+			}
+		})
 	}
 }

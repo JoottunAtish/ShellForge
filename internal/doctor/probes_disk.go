@@ -3,6 +3,7 @@ package doctor
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 
@@ -67,6 +68,33 @@ func classifyDiskFree(free uint64) Level {
 		return OK
 	}
 	return Fail
+}
+
+// freeBytesFromStatfs computes the bytes available to an unprivileged
+// caller from a raw statfs result, and is the platform independent half of
+// freeBytesAt: the pure arithmetic lives here, untagged, so it can be unit
+// tested on any GOOS, while probes_disk_unix.go and probes_disk_windows.go
+// contribute only the platform specific syscall and field widening.
+//
+// bavail is unix.Statfs_t.Bavail, or the Windows equivalent, widened to
+// uint64. bsize is unix.Statfs_t.Bsize widened to int64: that field is
+// int64 on linux/amd64, int32 on linux/386, and uint32 on darwin, so int64
+// is the common type every platform's value fits into without loss.
+//
+// A non-positive block size is rejected rather than trusted, because a
+// negative or zero Bsize converting to uint64 would otherwise report an
+// enormous, wrong, number of bytes free. The multiplication is guarded
+// against overflow for the same reason: silently wrapping would tell a
+// learner they have plenty of space when they do not.
+func freeBytesFromStatfs(bavail uint64, bsize int64) (uint64, error) {
+	if bsize <= 0 {
+		return 0, fmt.Errorf("statfs reported a non-positive block size (%d bytes)", bsize)
+	}
+	b := uint64(bsize)
+	if bavail != 0 && b > math.MaxUint64/bavail {
+		return 0, fmt.Errorf("statfs result overflows a 64 bit byte count: %d blocks of %d bytes", bavail, bsize)
+	}
+	return bavail * b, nil
 }
 
 // nearestExistingAncestor returns the nearest directory at or above dir
