@@ -150,6 +150,24 @@
   description: "Dependency updates. Raised by Dependabot."
 
 # ---------------------------------------------------------------------------
+# Cluster. Groups open tickets that sit in the same area and can reasonably
+# be picked up together in one pass, even where each still wants its own PR
+# per the one-logical-change rule. Not permanent: drop a cluster label once
+# every ticket it names is closed.
+# ---------------------------------------------------------------------------
+- name: "cluster: 1"
+  color: "e99695"
+  description: "Level format and verify engine. Last item: #96, gated on its own CI preconditions."
+
+- name: "cluster: 2"
+  color: "c2e0c6"
+  description: "Store and journal contract cleanup: #88, #87, #110."
+
+- name: "cluster: 3"
+  color: "bfd4f2"
+  description: "Docker runtime error classification and capability reporting: #74, #77."
+
+# ---------------------------------------------------------------------------
 # Scope management. From the cut ladder in the build plan.
 # ---------------------------------------------------------------------------
 - name: "cut: v0.2"
