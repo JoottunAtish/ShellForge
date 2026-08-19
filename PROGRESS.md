@@ -19,18 +19,18 @@ formally cut.
 | `go test ./...` | Green |
 | Layer dependency enforcement | Done, and verified to fail on a deliberate violation |
 | Punctuation gate | Done, and verified to fail on a deliberate violation |
-| CLI dispatcher | `cmd/shellforge` runs on `spf13/cobra` as of #48, not the hand-rolled dispatcher. Fourteen verbs registered (`doctor` `init` `play` `run` `check` `hint` `reset` `skip` `map` `stats` `sandbox` `bug-report` `author` `version`), plus `sandbox` and `author` as command groups with four stub subcommands each. `version`, `help` and `run demo` work; every other verb fails through `ux.Fail` with a remediation. **The whole `cmd/shellforge` package was untracked by git until #11**: `.gitignore`'s unanchored `shellforge` pattern matched the directory, so it was never committed and CI never compiled or tested it. |
+| CLI dispatcher | `cmd/shellforge` runs on `spf13/cobra` as of #48, not the hand-rolled dispatcher. Fourteen verbs registered (`doctor` `init` `play` `run` `check` `hint` `reset` `skip` `map` `stats` `sandbox` `bug-report` `author` `version`). As of issue #71, `init` and the whole `sandbox` group are real rather than stubs: `init` resolves a backend through `internal/sandbox.Resolve`, prints which one it picked and why, and provisions it; `sandbox` is `status`, `shell`, `rebuild`, `destroy` (`build` is gone: `Provision` already builds the image or distribution, so it had no behaviour distinct from `init`), each real. `run`'s own sandbox resolution now goes through the same `internal/sandbox.Resolve` path as `init`, dropping its direct `internal/runtime/docker` import. `doctor` (issue #70) is wired to a real `sandbox.NewProber()` instead of `nil`, so `sandbox_health` reports real state instead of an unconditional `Warn`. `version`, `help`, `run <level-id>`, `author validate`, `author test`, `doctor`, `init`, and the four `sandbox` subcommands all work; every other verb still fails through `ux.Fail` with a remediation. Acceptance criterion 11 of #71 (an interactive `sandbox shell` on Windows) is deliberately not delivered: see the Day 3 entry below. **The whole `cmd/shellforge` package was untracked by git until #11**: `.gitignore`'s unanchored `shellforge` pattern matched the directory, so it was never committed and CI never compiled or tested it. |
 | `shellforge run <level-id>` | Works on Linux for any level in the pack, with zero Go changes between levels. Loads from the embedded YAML, renders the briefing through glamour, prints the objective checklist, provisions, materializes the level, hands over a real instrumented bash, serves `check` over the existing FIFO control channel, and tears the level world down on every exit path through one cleanup function. An unknown id fails through `ux.Fail` naming the ids that exist. Refuses on a Windows host with the `windows-needs-wsl` anchor. **Never run against a real container from a developer machine**: no Docker socket here, so every end-to-end claim rests on unit tests plus CI's golden run. The learner's shell starts in `/home/learner`, not the level root, which is what a login shell does and what nav-01 teaches. |
-| `shellforge run demo` | Still works, deliberately. The Day 1 hardcoded level is kept until a YAML isolation test and the golden harness have replaced the safety coverage `internal/sandbox/demo_golden_test.go` carries, which is the repository's only live host-isolation test. Tracked as a follow-up. |
+| `shellforge run demo` | Gone, as of #96. The Day 1 hardcoded level and its four files are deleted, and `demo` is now an unknown level id like any other: `run demo` reports that there is no such level and lists the ones there are. The safety coverage its tests carried moved to `cmd/shellforge/isolation_test.go`, against `pipe-05` from the real pack, and is named in the Sandbox image job's own `-run` pattern so it actually runs. |
 | `shellforge author test` | Done. Runs the `docs/LEVEL-FORMAT.md` section 7 golden contract per level and is what `make golden` calls, a target that had been calling a command that did not exist since Day 0. Refuses rather than skips without a Docker daemon, because a `make golden` reporting success having tested nothing is worse than no gate. |
 | Sandbox image | `Containerfile` written, and built by CI's Sandbox image job on every run. Not built on a developer machine here: no Docker socket in this environment. |
 | Shell instrumentation | `instrument.bash` written, and exercised by every learner shell CI's golden run provisions, including the missing-SF_STATE recovery path added in this PR. Not exercised on a developer machine here, for the same reason. |
 | Content pack | `pack.yaml` with six acts declared, and nine levels written: `nav-01` to `nav-04`, `files-01` to `files-04` (issue #54), and `pipe-05`. They validate clean, are embedded via `packs/packs.go`, and are all reachable from `shellforge run`. `pipe-05` is out of curriculum order on purpose: it is the engine's reference fixture, the level `docs/LEVEL-FORMAT.md` section 6 is written against, and the first whose world comes from committed assets rather than inline content. The golden contract has run all nine against a real container in CI's Sandbox image job, which found and fixed four real bugs (see the current-state line above); no developer machine here has a Docker socket, so CI rather than a person is the witness. Levels 9 to 25 are Day 5. |
-| Level assets | First three committed: `assets/app-1.log`, `app-2.log`, `billing.log`, for pipe-05. Produced by the deterministic generator in `internal/sandbox/demo_level.go` rather than hand written, so their numbers came from code that already had consistency tests. The durable guarantee is `internal/content/pipe05_assets_test.go`, not the generator, which is slated for deletion under #96: five tests count the answers out of the committed bytes the way the level's solution counts them, including one that catches a noise line matching `error` case-insensitively without being an ERROR record. |
+| Level assets | First three committed: `assets/app-1.log`, `app-2.log`, `billing.log`, for pipe-05. They were produced by a deterministic generator rather than hand written, so their numbers came from code that already had consistency tests; that generator lived in `internal/sandbox/demo_level.go` and was deleted with it under #96, which changes nothing about the committed bytes. The durable guarantee always was `internal/content/pipe05_assets_test.go`, not the generator: five tests count the answers out of the committed bytes the way the level's solution counts them, including one that catches a noise line matching `error` case-insensitively without being an ERROR record. |
 | `internal/game` | A thin `Session`: load, setup, brief, check, teardown, and nothing else. It declares its own `Verifier` interface so it is testable with a two-method fake, borrows the `runtime.Session` it is given and never closes it, and holds the only `content.CheckSpec` to `verify.Spec` conversion, which has to sit above both peers. No event bus, no scoring, no unlock state, no store writes: all Day 4. |
 | Pack loading and validation | Done in `internal/content` (issue #53). `LoadPack`, `Embedded`, `Pack.Level`, `Pack.Order`, and `Validate` with a `TypeChecker` the caller supplies, so `internal/content` and `internal/verify` stay peers rather than one importing the other. `shellforge author validate <pack>` reports every problem one per line and supports `--json`. A legal `command_matched` or `command_not_matched` check now gets a warning naming issue #88: no runtime session wires a real journal yet, so the check verifies nothing until then, and the validator says so rather than staying quiet. |
 | Level setup and teardown runner | Done in `internal/content/setup` (issue #50). `Runner.Setup`, `Teardown`, and `IsSetUp` materialize and remove a level's world inside the sandbox: teardown-first idempotency, a `loglines` content generator behind a registered kind, CRLF stripping on the host side before a `runtime.FileEntry` is built, rollback on any failure via `context.WithoutCancel`, and a `SETUP_OK` sentinel written under the state directory rather than the level root. Not wired into the game orchestrator or the CLI: no caller constructs a `Runner` yet outside its own tests. That wiring, plus the pack loader and validator that produce a real `content.Level`, is #52, #53, and #54. |
-| Runtimes | `Runtime` and `Session` interfaces plus their value types and sentinel errors are defined in `internal/runtime`, the reusable contract suite is in `internal/runtime/runtimetest`, and `internal/runtime/docker` implements both by shelling out to the `docker` CLI. The contract suite is green against it on Windows with Docker Desktop's Linux engine, except one subtest documented below. `WslRuntime` is not started. |
+| Runtimes | `Runtime` and `Session` interfaces plus their value types and sentinel errors are defined in `internal/runtime`, the reusable contract suite is in `internal/runtime/runtimetest`, and `internal/runtime/docker` implements both by shelling out to the `docker` CLI. The contract suite is green against it on Windows with Docker Desktop's Linux engine, except one subtest documented below. `internal/runtime/wsl` (issue #69) now implements both by shelling out to `wsl.exe`: `New`, `Provision`, `Destroy`, `Status`, `StartSession`, `Capabilities`, and a `Session` with `Exec`, `Attach`, `PushFiles`, `PullFile`. The UTF-16LE decoder, the seven install directory refusals, both Destroy name refusals, the marker check, the enumerate-and-diff guard, the digest and name-collision refusals, and every argv construction are asserted and green on Linux CI. The contract suite wired against it (`TestWslContract`) skips everywhere this run and CI can reach: no `wsl.exe`, no Windows, and no WSL2 on either CI leg. A human on real Windows 11 with WSL2 still owes the thirteen contract assertions passing for real, the hardening probes seeing a genuinely imported distribution, and the install directory (`.vhdx` included) actually gone after `Destroy`, confirmed in Explorer. See the Day 3 entry below for the full list of what is asserted in code versus what still needs that human. |
 | PTY multiplexer and OSC parser | Both done. Parser: streaming OSC 133 and OSC 7 state machine, fuzzed, with a recorded vim session passing through byte-identical. Multiplexer (`internal/pty/mux.go`): host stdin forwarded to the sandbox verbatim including Ctrl-C, host terminal raw mode restored across every exit path including a panic, initial resize plus SIGWINCH on unix, and CommandEvent assembly from the marker stream. `CommandEvent.Raw` is always empty pending #51. Windows resize watching (issue #68) polls `GetConsoleScreenBufferInfo` through the same injectable `getSize`/`resize` fields the unix watcher uses, every 250ms by default, and forwards a change the same way SIGWINCH does on unix. |
 | Verification engine | Done in `internal/verify` (issue #52). `Engine`, `NewEngine`, `WithCheckTimeout`, `WithLevelTimeout`, `Build` and `Run`, the `any_of`/`all_of`/`not` composition nodes, and `LevelResult` matching `docs/LEVEL-FORMAT.md` section 5 field for field. Checks are built once at level load and run on every `check`. 262 tests and subtests. The hermetic half of the purity guarantee is `internal/verify/purity_test.go`, which asserts every check type runs only read-only commands; the filesystem-hash half is in the golden harness and needs Docker. |
 | Progress database | `internal/store` (schema, migrations) and `internal/journal` (the command journal) are both built and unit tested, per #51. Nothing calls `store.Open` outside their own tests: not wired into `cmd/shellforge`, `internal/game`, or `internal/pty`. `CommandEvent.Raw` on the host-side event stream is still always empty. Issues #92 and #90 closed two `Open` classification bugs: a missing progress database file, or one whose parent directory does not exist yet, no longer reads as corrupt, and a SQLite database Shellforge did not create is refused rather than silently adopted. See the Day 3 follow-up entry below for the byte-identity measurement this forced and the fixture change it required. |
@@ -47,6 +47,7 @@ formally cut.
 | `internal/platform` (paths) | Tested. Every function in `paths.go` has at least one test. `DataDir` rejects a relative `XDG_DATA_HOME` instead of silently returning a relative path. The Windows `CacheDir`/`DataDir` collision (#40) is fixed: `CacheDir` nests a `cache` element below `DataDir`, so a cache clear cannot delete progress or the WSL disk image. |
 | `internal/platform` (console mode, issue #68) | Done. `EnableVirtualTerminal`, `SupportsVirtualTerminal`, and `IsWindowsTerminal` in `console.go`, `console_windows.go` (`golang.org/x/sys/windows`), and `console_other.go`. On Windows, `EnableVirtualTerminal` sets `ENABLE_VIRTUAL_TERMINAL_PROCESSING`/`ENABLE_VIRTUAL_TERMINAL_INPUT` and its restore reverts both modes exactly, idempotently; on every other platform both are no-ops. Not yet wired into `main`: that is the CLI ticket's job, out of scope here. Manual confirmation on real Windows 11 hardware, that resizing mid-`vim` no longer corrupts the display, is still outstanding and belongs in the pull request per the ticket's own acceptance criteria; this environment has no Windows console to verify against, only the Linux and cross-compiled Windows builds and the automated suite. |
 | Rootfs release artifact | CI, `make rootfs`, and `.\make.ps1 rootfs` now all produce `rootfs.tar.gz` plus a `sha256sum`-format sidecar with reproducible `gzip -9 -n`, CI uploads both as a build artifact on every run and attaches them to the GitHub release on a tag push, and CI asserts the tarball contains `/etc/wsl.conf`, `/home/learner`, `/opt/shellforge/bin/check`, `/opt/shellforge/.sandbox-id`, and a man page. Not verified here: this environment has no Docker daemon, so the whole `image` job and the two scripts' actual output rest on CI, and the cross-platform digest match between a Linux runner's gzip and Git for Windows' gzip is expected but unproven pending a manual check on both platforms. |
+| `shellforge doctor` (issue #70) | Done, and revised by the pre-merge review round on PR #136 (see the Day 3 follow-up entry below for the full list). `internal/doctor` (L0) implements the twelve probes from the ticket's table (`os_version`, `cpu_virtualization`, `vm_platform_feature`, `wsl_installed`, `wsl_version_2`, `wsl_kernel_current`, `docker_present`, `docker_daemon_running`, `disk_free`, `terminal_vt_support`, `windows_terminal`, `sandbox_health`), a table and `--json` renderer, and `--fix`, wired in at `cmd/shellforge/cmd_doctor.go` in place of the old stub. Windows-only probes are omitted, not failed, on Linux and macOS. Every result carries a non-empty id, status, detail, remediation, and doc anchor, including passing rows. Exit status is 0 unless a probe is `Fail`; a `Warn`-only report exits 0. `--fix`'s entire allowlist is one call, `platform.EnsureDir(platform.DataDir())`, keyed on `sandbox_health` as of the follow-up below (it was `disk_free` in this branch's first commit): confirmed by hand on this host, it creates exactly one directory at mode 0700 and nothing else, and refuses the remediations it does not own. `cpu_virtualization` reports `Warn`, not `Fail`, when no `vmx` or `svm` flag is visible, since Docker on Linux needs no hardware virtualization; this container is exactly that case. `disk_free` is about free space only. `internal/doctor/no_removal_test.go` and `internal/doctor/purity_test.go` were each confirmed to go red against a deliberate one-line violation, then reverted, before being trusted; that confirmation is recorded below, and the follow-up entry records a second such confirmation for the `sandbox_health` fix action itself. `sandbox_health` is wired with a `nil` `SandboxProber`, so its prober-classification branches always report `Warn` today: choosing and provisioning a runtime is the Day 3 CLI ticket, and `newDoctorCommand` takes the prober as a parameter for exactly that reason. Not done: `Level.UnmarshalJSON`, result caching, a `--output` flag, and `--fix --dry-run`, because none of them is this ticket's job. Of those four, only `Level.UnmarshalJSON` carries a `// TODO(v0.2):` marker at its call site (next to `Level.MarshalJSON` in `doctor.go`); the glyph-probe TODO in `probes_terminal.go` is a separate, pre-existing marker for a different gap. Result caching, `--output`, and `--fix --dry-run` have no call site to attach a marker to, since none of that code exists yet; an earlier draft of this row claimed all four were marked, which was not true, and is corrected here rather than left standing. Never run against a real WSL host or a real Docker daemon in Windows-container mode: every WSL and Docker-daemon-state test goes through the fake `runner`, and the two `x/sys` syscall wrappers (`RtlGetVersion`, `GetDiskFreeSpaceEx`, `unix.Statfs`) are covered only by `GOOS=windows go build`/`go vet` cross-compilation, not by execution, on this Linux-only host. `govulncheck`, `gosec`, and `pytest` over `scripts/tests` are not installed here and are left to CI, as with every prior entry that says so; `gosec` was available for the follow-up round and is recorded there. |
 
 **There is no release and nothing to install.**
 
@@ -1280,6 +1281,13 @@ first three real dependencies beyond `creack/pty` and `golang.org/x/term`.
   explicit interface for #48 is the newer, authoritative source here.
   `TestSandboxIsAGroupWithItsFourSubcommands` and
   `TestAuthorIsAGroupWithItsFourSubcommands` pin both sets.
+  **Superseded by issue #71:** `sandbox`'s subcommand set moved back to
+  `shell|status|rebuild|destroy`, this time for real rather than as stubs,
+  which agrees with `docs/design/ARCHITECTURE.md` line 121 and with what Day 0
+  had before this entry changed it. `build` is gone: `Provision` is
+  documented idempotent and already builds the image or distribution, so
+  `sandbox build` never had behaviour distinct from `init`. `author`'s four
+  subcommands are unaffected.
 - **Shell completion is explicitly off.** cobra registers a `completion`
   subcommand by default; `root.CompletionOptions.DisableDefaultCmd = true`
   turns it back off, because the ticket's own "Out of scope" section names
@@ -1366,7 +1374,8 @@ first three real dependencies beyond `creack/pty` and `golang.org/x/term`.
   exercised the built binary on Linux: grouped `help` output, `version`,
   several stub verbs including a subcommand (`sandbox build`,
   `author validate`), an unknown command, and `run` with no level, each
-  producing the expected user-facing error or output.
+  producing the expected user-facing error or output. **`sandbox build` no
+  longer exists as of issue #71**; see the Day 3 entry below.
 
 ### Day 2 follow-up, 2026-08-13: review fix on #80, cobra's own errors and -v/--version
 
@@ -2833,6 +2842,15 @@ grew in this branch, so the Security job is the first real read on it.
 - [ ] Inside the sandbox: `echo $PATH` is clean and `/mnt/c` does not exist
 - [ ] `sandbox destroy` unregisters the distro and deletes the vhdx directory
 
+All four boxes stay unchecked after issue #71: the code path each one exercises
+now exists (`init` resolves and provisions through `internal/sandbox.Resolve`,
+`sandbox destroy` prints the absolute install directory and verifies removal
+before reporting success), but nothing in this box has run against a real
+Windows 11 machine with WSL2, because this host has neither Windows nor
+`wsl.exe`. A human still owes all four. `sandbox shell` (an interactive shell
+on Windows) is not part of this list and is explicitly not done either way:
+see the Day 3 entry below for why criterion 11 of #71 was not delivered.
+
 **Gate at 18:00.** If `WslRuntime` is not working, cut it, switch Windows to
 "requires Docker Desktop", and spend Day 4 on content. Do not let this bleed.
 
@@ -3571,6 +3589,830 @@ mode handling the doctor ticket and the CLI ticket both consume next.
   deliberately leaves to the CLI ticket, so no console mode is being changed
   for a restore to get wrong. Both stay open for a hand check on an
   interactive Windows terminal.
+
+### Day 3, 2026-08-19: the WSL runtime, argv by argv
+
+Issue #69. `internal/runtime/wsl` now implements `runtime.Runtime` and
+`runtime.Session` by shelling out to `wsl.exe`, the way `internal/runtime/docker`
+already implements them by shelling out to `docker`. This entry is deliberately
+plain about what a Linux run with no Windows and no `wsl.exe` on PATH can and
+cannot prove.
+
+- **New package, ten files.** `doc.go` names the layer and the import list.
+  `wsl.go` carries `New`, `wslRuntime`, `Provision`, `Destroy`, `Status`,
+  `StartSession`, `Capabilities`, the two closed distribution-name constants, the
+  marker check, and `classifyFailure`. `session.go` carries `wslSession`, `Exec`,
+  `Attach`, `PushFiles`, `PullFile`, the sandbox-path validator, `stripCR`, and the
+  tar builder. `runner.go` carries the `runner` and `fetcher` injection points,
+  `execRunner`, `httpFetcher`, and `verifyDigest`. `list.go` carries the hand
+  written UTF-16LE decoder and `parseList`/`parseQuietList`. `paths.go` carries
+  `installDir`, `validateInstallDir`, `validateInstallDirUnder`, and
+  `resolveRootfs`. `resize_windows.go` and `resize_other.go` are three lines each,
+  carrying only `wslPTY.Resize`; every other symbol in the package, including
+  every refusal test, compiles and runs on Linux.
+- **The destroy target is a closed set of two compile-time constants.**
+  `sandboxDistro = "shellforge-sandbox"` and
+  `contractDistro = "shellforge-contracttest"`, the latter pinned equal to
+  `runtimetest.SandboxName` by `TestContractDistroMatchesRuntimetestSandboxName` so
+  a rename of the suite constant is a test failure rather than a contract run that
+  silently cannot destroy what it created. `New` refuses any other name before it
+  ever resolves `wsl.exe`; `Destroy` re-checks against the same set immediately
+  before acting and is asserted to make zero `wsl.exe` invocations when refused.
+  `internal/runtime/runtimetest/contract.go` was not touched.
+- **UTF-16LE has its own decoder and eleven tests**, because `wsl.exe` writes
+  every list command in it and a naive UTF-8 read produces NUL-interleaved text
+  that almost parses. `decodeUTF16LE` strips the little-endian BOM, refuses a
+  big-endian one outright, refuses an odd-length body, and decodes through
+  `encoding/binary` plus `unicode/utf16`, so a surrogate pair round trips. A
+  parsed distribution name is only ever compared, counted, and displayed: every
+  argv element naming a distribution is one of the two package constants, never a
+  value read back from `wsl -l -v` or `wsl -l -q`.
+- **The install directory has seven refusal tests plus the derivation test.**
+  `validateInstallDirUnder(dataDir, dir)` is the pure form the table drives
+  against a `t.TempDir()`, refusing in order: empty, a `..` segment checked before
+  cleaning, not absolute, the data directory root itself, not strictly under that
+  root, then a symlink whose resolved target escapes it. `installDirFor` gives the
+  production and contract-test distributions distinct directories under
+  `platform.DataDir()/wsl/<distro>`, so a contract run can never reach the
+  production `.vhdx`.
+- **Provision, in order: resolve and digest-verify the rootfs only when a fresh
+  import is needed, import, write `/etc/wsl.conf`, read it back to confirm,
+  terminate, start, then verify by observation.** The digest is checked before
+  `wsl --import` touches anything, never after; an empty `SHA256` against an https
+  `Reference` is a refusal, not a skipped check. A digest mismatch on a file this
+  package downloaded deletes the download and refuses; a mismatch on a
+  caller-supplied local path refuses and leaves the file alone, because deleting a
+  developer's own `make rootfs` output is itself a destructive act on a file
+  Shellforge did not create. An existing, marked, WSL2 distribution is reused with
+  no `--import`: `/etc/wsl.conf` is rewritten and the distribution terminated only
+  when the readback differs from what Shellforge expects, and the three hardening
+  probes (`/mnt/c` absent, `$PATH` free of `/mnt/`, `id -un` is `learner`) run
+  either way. This is a deliberate deviation from the Phase 1 plan's literal
+  step order, which read as resolving and digest-checking the rootfs
+  unconditionally before the collision check: doing that unconditionally would
+  make every idempotent `Provision` call on an already-healthy sandbox depend on a
+  rootfs tarball being present on disk, which defeats the point of idempotency and
+  is not what `TestProvisionIsIdempotentAgainstAnAlreadyMarkedDistribution` (which
+  supplies no rootfs at all) is asserting. The safety property the plan actually
+  cares about, that an unverified artifact never reaches `wsl --import`, holds
+  either way and is what the tests assert.
+- **`TestWslConfConstantMatchesImagesWslConf`** reads `images/wsl.conf` from the
+  repository and compares it byte for byte, after CRLF normalisation, against the
+  `wslConf` package constant, so the two cannot drift silently. `go:embed` cannot
+  reach outside a package's own directory, which is why this is a constant and a
+  test rather than an embed.
+- **`rootfs-not-found`** is a new heading in `docs/05-troubleshooting.md`, for the
+  case where `ImageSpec.Reference` is empty and neither `images/out/rootfs.tar.gz`
+  nor a cached download exists. Placed after `rootfs-checksum-mismatch` and before
+  `command-not-found`, in the same house shape as its neighbors.
+- **Review pass on #134 fixed three defects, two of them blocking.** `Attach`
+  now recognizes `pty.ErrUnsupported` (the same unconditional Windows failure
+  `checkInteractiveShellSupported` in `cmd/shellforge` already refuses in front
+  of) and reports it through `ux.Fail` with the `windows-needs-wsl` anchor
+  instead of leaking `wsl.exe --exec: unsupported` as a bare Go error; this is
+  defense in depth; the CLI guard is what a learner actually sees today.
+  `Destroy` no longer reports success while orphaning the `.vhdx`: the
+  not-present branch now resolves the install directory and runs it through
+  `removeInstallDir` before returning nil, so a `Destroy` retried after a
+  directory removal that failed the first time (an open handle on `ext4.vhdx`,
+  say) finishes the job the second time instead of quietly forgetting the
+  leftover 2 GB file. `Status` no longer treats a non-zero `wsl -l -v` exit as
+  an error when the output does not carry a recognized failure signature: a
+  host with WSL present and zero distributions registered now answers
+  `Provisioned: false` rather than surfacing `wsl -l -v exited <code>` as an
+  opaque failure, which is what a GitHub `windows-latest` runner does and what
+  broke `Test (windows-latest)` on this PR's first CI run. `findRow`, which
+  `Provision` depends on for the exact same reason on a learner's first-ever
+  run, shares the fix through one `listRows` helper rather than repeating the
+  bug in a second place.
+- **`TestWslContract`'s factory now skips honestly on a host that cannot
+  actually run the suite, not just one where `wsl.exe` fails to answer.** The
+  `--version` probe now carries a timeout, so a wedged WSL service is a skip
+  rather than a hang. Beyond that, `wsl.exe --version` succeeding proves only
+  that the client binary runs, the same gap the docker sibling's factory closes
+  by asking its daemon which OS its containers run rather than merely whether
+  it answers: GitHub's hosted `windows-latest` runners answer `--version` with
+  no distributions and no usable WSL2 underneath. The suite needs a rootfs to
+  import, so the factory now also skips when `defaultRootfs()` cannot resolve
+  one, which is always true in a plain `go test` job that never ran `make
+  rootfs`, and is the same honest signal a developer's own Windows 11 machine
+  gives once a rootfs is actually built.
+- **What is honestly not verified here, because this run has no Windows, no
+  `wsl.exe`, and no WSL2 on either CI leg.** `TestWslContract` (thirteen
+  assertions, the same suite `internal/runtime/docker` runs) skips cleanly on this
+  host and skips cleanly by design on both `ubuntu-latest` and `windows-latest`
+  CI runners, the latter because GitHub's hosted Windows runners have no WSL2
+  installed. Nothing here has proven: a real `wsl --import` actually completing
+  against a real rootfs tarball; the three hardening probes observing a genuinely
+  hardened distribution rather than a scripted fake answer; `wsl --unregister`
+  actually leaving a developer's own `Debian` or `Ubuntu` untouched; the install
+  directory, `.vhdx` included, actually gone from disk after `Destroy`, confirmed
+  by eye in Explorer; or ConPTY resize, which `resize_windows.go` stubs as a
+  documented no-op pending a real tracking issue (the TODO used to point at #68,
+  which landed on main in 3a6ff31 without touching this). That is a gap in
+  manual verification, not the same thing as the interactive shell itself:
+  `vim`, `less`, and `htop` inside a real distribution are not merely
+  unverified, they are provably unreachable today on any Windows host,
+  because `creack/pty`'s Windows `Start` returns `ErrUnsupported`
+  unconditionally and both `Attach` and the CLI guard in front of it now say
+  so through `ux.Fail` rather than a bare error. All of the remaining,
+  genuinely hardware-gated items need a human on a real Windows 11 machine
+  with WSL2 installed. The Day 3 go/no-go gate in
+  `docs/design/SEVEN-DAY-PLAN.md` names exactly this risk, and this entry is
+  the honest record that the gate is not yet cleared by this run alone.
+- **Gates run on this host:** `gofmt -s -w .`, `go vet ./...`, `go build ./...`,
+  `go test ./...`, `go test -race ./...`,
+  `go test ./internal/archtest/...`, `./scripts/check-punctuation.sh`,
+  `./scripts/check-allowlist-regexp.sh`, `./scripts/check-links.sh`,
+  `python3 scripts/check-ci-gates.py`, all green. `govulncheck`, `gosec`, and
+  `pytest` over `scripts/tests` are not installed on this host and are left to CI,
+  as they were for the Day 3 console mode entry above.
+
+### Day 3, 2026-08-19: doctor, twelve probes, the table, and --json
+
+Issue #70, Day 3 ticket C. `internal/doctor` moves from a `doc.go`-only stub to a
+full package, and `shellforge doctor` moves from a stub to the first fully
+diagnostic verb in the CLI.
+
+- **The package.** `doctor.go` carries `Level` (with a lowercase-word
+  `MarshalJSON`, never a number, so a shell script can compare against `"fail"`),
+  `Probe`, `Result`, `Report`, `Report.Failed`, the `SandboxProber` interface,
+  `Run`/`run`, `Fix`/`fix`, `fixAction`/`fixActions`, `baseProbe`, and the twelve
+  anchor constants. `runner.go` copies the shape of
+  `internal/runtime/docker/runner.go`, with one difference forced by this
+  package's own job: docker's `execRunner` binds to one fixed binary name at
+  construction, but doctor's probes shell out to `uname`, `docker`, `wsl.exe`,
+  and `powershell.exe`, so `execRunner` here resolves `argv[0]` with
+  `exec.LookPath` fresh on every call instead. The twelve probes live in
+  `probes_os.go` (`os_version`, `cpu_virtualization`, `vm_platform_feature`),
+  `probes_wsl.go` (`wsl_installed`, `wsl_version_2`, `wsl_kernel_current`),
+  `probes_docker.go` (`docker_present`, `docker_daemon_running`),
+  `probes_terminal.go` (`terminal_vt_support`, `windows_terminal`),
+  `probes_sandbox.go` (`sandbox_health`), and `probes_disk.go`
+  (`disk_free`), each embedding `baseProbe` and each guarded by its own
+  `ctx.Err()` check both before and after any subprocess call, so a hung
+  `docker version` costs exactly its own five-second `probeTimeout` and not the
+  rest of the report. Four files sit behind build tags because they touch a
+  real OS API: `probes_os_windows.go` (`RtlGetVersion`), `probes_os_other.go`
+  (`uname -r` through the runner), `probes_disk_windows.go`
+  (`GetDiskFreeSpaceEx`), and `probes_disk_unix.go` (`unix.Statfs`, reading
+  `Bavail * Bsize`, the available-to-unprivileged-users count). Every pure
+  classifier (`classifyKernelRelease`, `classifyWindowsBuild`,
+  `classifyCPUFlags`, `decodeWSLText`, `classifyWSLList`, `classifyWSLVersion`,
+  `classifyDockerOutput`, `classifyDiskFree`) lives in the untagged file next to
+  its probe, so the Windows classifier is unit tested on the ubuntu leg and the
+  Linux one on the windows leg, and only the two syscall wrappers actually need
+  the tag.
+- **No new dependency, no `go.mod`/`go.sum` edit.** `golang.org/x/sys` was
+  already a direct requirement at v0.34.0 as of #68; this adds imports of its
+  `unix` and `windows` subpackages, verified against the pinned version before
+  writing a line of the build-tagged files: `RtlGetVersion` and
+  `GetDiskFreeSpaceEx` exist with the signatures assumed, and `unix.Statfs_t`
+  has `Bavail` and `Bsize` on both `linux/amd64` and `darwin/arm64`, though
+  `Bsize` is `int64` on Linux and `uint32` on Darwin, which is why the
+  multiplication casts both operands to `uint64` explicitly rather than relying
+  on one side's type. `golang.org/x/sys` is not in `confinedImports` in
+  `internal/archtest/dependencies_test.go`, so a second importer needed no
+  table edit.
+- **The layer.** `internal/doctor` already carried `"internal/doctor": 0` in
+  `internal/archtest/layers_test.go`'s table before this ticket, so no archtest
+  edit was made or needed. `sandbox_health` reaches the sandbox through the
+  `SandboxProber` interface declared in this package and satisfied by the
+  caller at L5; `internal/doctor` imports nothing from this module except
+  `internal/platform` and `internal/platform/ux`, confirmed by reading every
+  import in the package rather than by inspection alone.
+- **`internal/platform/ux` gained `DocURL(anchor string) string`.** `Render`
+  now calls it instead of building the `docBaseURL + "#" + anchor` string
+  itself, so the two cannot drift. `TestDocURLOmitsTheFragmentForAnEmptyAnchor`
+  is new; every existing `ux` test still passes with no assertion changed.
+- **The exit status contract (AC3), the case a reviewer should check first.**
+  `cmd/shellforge/cmd_doctor.go`'s `doctorExitError` returns a `*ux.Error` when
+  and only when at least one `Result.Status` is `Fail`; a report with only
+  `Warn` rows returns `nil`, and `main.go`'s existing `os.Exit(1)` on a non-nil
+  `RunE` error is the only place doctor's exit status is decided. No
+  `os.Exit` call was added anywhere in this package or in `cmd_doctor.go`.
+- **`--fix`'s entire allowlist is one action.** `fixActions()` maps exactly
+  `"disk_free"` to `platform.EnsureDir(platform.DataDir())` at this entry's
+  original merge. **Superseded by the Day 3 follow-up below:** that key moved
+  to `"sandbox_health"`, and `disk_free` no longer reports `Fixable` at all,
+  because whether the data directory exists is a provisioning fact, not a
+  disk-space fact. The design point this paragraph originally made still
+  holds under the new key: the fixable row reports `Warn`, not `OK`, because
+  `Fix` only considers a result whose status is not `OK`, so an `OK`
+  "fixable" row would silently never be reached, which is the one place this
+  run's own first draft got the design wrong and a test caught it (see the
+  refusal-test note below). Every other remediation this package can report
+  needs elevation (`wsl --install`, `dism.exe /online /enable-feature`,
+  `wsl --update`, starting the Docker daemon) and is only ever printed, never
+  executed. Every remediation string that also appears in
+  `docs/01-install-windows.md` or `docs/05-troubleshooting.md` was checked
+  against those files by hand and matches verbatim; no doc was edited,
+  because none needed to be: all twelve anchors already existed as headings,
+  and the follow-up round below reused two of them rather than adding a
+  thirteenth.
+- **The two temporary-violation confirmations the plan required, both done
+  and both reverted before this entry was written.** `TestRunMutatesNothing`
+  and `TestProbesNeverInvokeAFixAction` were confirmed to fail with a one-line
+  `platform.EnsureDir(dir)` call inserted unconditionally into
+  `diskFreeProbe.Run`: both went red, one on the filesystem-hash comparison
+  and one on `platform.DataDir()` existing where it should not, then the line
+  was removed and both went green again. Separately,
+  `TestPackageMakesNoRemovalCall` was confirmed to fail with a temporary
+  `os.RemoveAll` call added to `probes_disk.go`, reporting the exact file,
+  line, and selector, then the call was removed and the test passed again.
+- **Manually exercised on this Linux host**, against the real, broken machine
+  RECON already described (no `vmx`/`svm` flag visible in `/proc/cpuinfo`
+  inside this container, Docker daemon down): `shellforge doctor` printed
+  three `ok`, two `warn`, two `fail` rows with a `Fix:` and `More detail:` line
+  under every non-`ok` row and exited 1; `shellforge doctor --json` produced
+  the same report as parseable JSON on stdout with the `*ux.Error` on stderr,
+  stdout untouched; `shellforge doctor --fix` created exactly
+  `~/.local/share/shellforge` at mode `0700`, printed one `Fixed:` line and
+  three `Not fixed, run it yourself:` lines naming the remediations it does
+  not own, and created nothing else. `shellforge help` and `shellforge
+  version` still work unchanged. **Superseded by the Day 3 follow-up below:**
+  the missing-`vmx`/`svm` row is `warn` now, not `fail`, so a re-run on this
+  same host is four `ok`, two `warn`, one `fail` (the Docker daemon is still
+  down here), and the fixable row's own text moved from `disk_free` to
+  `sandbox_health`.
+- **What is honestly not verified here.** No WSL probe has ever seen a real
+  `wsl.exe`: `wsl_installed`, `wsl_version_2`, and `wsl_kernel_current` are
+  covered only through the fake `runner`, including the UTF-16LE decoding and
+  the localized-`wsl --status`-body table the ticket's test plan named. No
+  Docker probe has seen a real daemon in Windows-container mode; that state is
+  covered the same way, through `classifyDockerOutput`'s table test. The two
+  Windows-only syscall wrappers, `RtlGetVersion` and `GetDiskFreeSpaceEx`, are
+  covered by `GOOS=windows go build ./...` and `GOOS=windows go vet ./...`
+  compiling clean on this host, and by the pure classifiers they feed being
+  unit tested on Linux, but neither wrapper has executed on a real Windows
+  machine in this run. `GOOS=darwin GOARCH=arm64 go build ./...` also compiles
+  clean, unexercised beyond that. `sandbox_health` has only ever seen a `nil`
+  prober and a scripted fake one; no real runtime has ever answered its
+  `Ping`. The one remaining acceptance criterion this entry cannot close by
+  itself is a human on real Windows 11 confirming the same table renders
+  sensibly in the legacy console and in Windows Terminal, which needs the
+  hardware `docs/01-install-windows.md` keeps asking for.
+- **Deviations from the plan, recorded rather than hidden.** (1) The plan
+  described the `--json`/`--fix` output seam as an unexported `renderJSON`
+  call made directly by "the CLI"; that cannot compile, since `cmd/shellforge`
+  and `internal/doctor` are different packages, so `render.go` gained one
+  exported wrapper, `RenderJSONWithFixOutcome(w, r, fixed, refused)`, that
+  `RenderJSON` itself now calls with `nil, nil`. (2) `cmd_doctor.go` reads the
+  build version from this package's own `version` package-level variable
+  (already set by the linker for every other verb) rather than threading a
+  `VersionInfo` parameter through `newDoctorCommand`, so that the call site
+  the plan specifies literally, `newDoctorCommand(nil)`, compiles exactly as
+  written. (3) `disk_free`'s "fixable, space is fine, directory missing" case
+  reports `Warn`, not `OK`: seven paragraphs earlier in the plan's own design
+  notes it says `Fix` only ever considers a non-`OK` result, so an `OK`
+  "fixable" row cannot exist without contradicting that sentence, and Warn is
+  also the more honest word for "not yet initialized" than "passing".
+- **Gates run on this host:** `gofmt -s -w .`, `go vet ./...`, `go build ./...`,
+  `go test ./...`, `go test -race ./...`, `go test ./internal/archtest/...`,
+  `./scripts/check-punctuation.sh`, `./scripts/check-allowlist-regexp.sh`,
+  `./scripts/check-links.sh`, `./scripts/check-cli-package.sh`,
+  `python3 scripts/check-ci-gates.py`, `GOOS=windows GOARCH=amd64 go build
+  ./...`, `GOOS=windows GOARCH=amd64 go vet ./...`, and `GOOS=darwin
+  GOARCH=arm64 go build ./...`, all green. `govulncheck`, `gosec`, and
+  `pytest` over `scripts/tests` are not installed on this host and are left to
+  CI; the Docker daemon is down on this host, which #70 needs for none of its
+  tests, all of which go through the fake runner.
+
+### Day 3 follow-up, 2026-08-19: review fixes on PR #136
+
+An independent review of #70's diff raised two blocking findings, eight
+suggestions, two nits and three notes of praise. Seven suggestions and both
+nits were accepted; one suggestion was explicitly declined. This entry
+records what changed, file by file, and the confirmation the ticket asked
+for on the one mutating action.
+
+- **Blocking 1: `cpu_virtualization` no longer fails a healthy Linux
+  machine.** `probes_os.go`'s non-Windows branch reported `Fail` whenever no
+  `vmx` or `svm` flag was visible in `/proc/cpuinfo`, which is every Linux VM,
+  cloud instance, or dev container without nested virtualization exposed,
+  this container included: Docker on Linux uses namespaces and cgroups and
+  needs no hardware virtualization at all. That branch now reports `Warn`,
+  naming that Docker on Linux does not need it, and pointing at firmware
+  setup only for a learner who plans to run nested virtualization or WSL2 on
+  the same machine. `Fail` stays on the Windows branch, where WSL2 genuinely
+  requires it. `cpuVirtualizationProbe` gained a `cpuInfoPath` field, empty
+  in production and set only by
+  `TestCPUVirtualizationProbeLinuxClassifiesInjectedCPUInfo` in
+  `probes_os_test.go`, which feeds a fixture body through both the
+  present-flag and absent-flag paths without depending on this host's real
+  hardware, and asserts the absent-flag path is never `Fail`. Reading a path
+  from a struct field rather than the `"/proc/cpuinfo"` literal made `gosec`
+  flag G304; the field is a test-only seam that a production caller can never
+  set to anything else, so it carries a `#nosec G304` comment saying so,
+  matching the existing comment style in `runner.go`.
+- **Blocking 2: `terminal_vt_support` no longer fails a redirected stdout on
+  Windows.** `internal/platform.SupportsVirtualTerminal` on Windows calls
+  `GetConsoleMode` on the stdout handle, which fails whenever stdout is a
+  file or a pipe, not only when it is a real console that cannot do virtual
+  terminal processing; the probe treated both as `Fail`, so
+  `shellforge doctor --json > report.json` failed a healthy Windows Terminal
+  machine and told the learner to install the terminal they were already
+  running. `internal/platform` gained `StdoutIsRedirected() (bool, string)`,
+  in the same two-file shape as `SupportsVirtualTerminal`
+  (`console_windows.go`, `console_other.go`), so callers need no build tag.
+  The Windows implementation uses `windows.GetFileType`, a genuinely
+  different Win32 call from `GetConsoleMode`, comparing against
+  `FILE_TYPE_CHAR`, so the two questions stay independent signals rather than
+  one parsing the other's prose; the non-Windows implementation is the
+  standard `os.ModeCharDevice` check on `os.Stdout.Stat()`. `probes_terminal.go`
+  now checks `StdoutIsRedirected` before reporting `Fail`, and reports `OK`
+  when it says stdout was redirected. New tests in `console_test.go` swap
+  `os.Stdout` for a pipe and for a temp file and assert `true` on every
+  platform, since a pipe is `FILE_TYPE_PIPE` on Windows and not a character
+  device anywhere else; `console_realconsole_windows_test.go` gained one more
+  assertion, that a real console reports `false`, alongside its existing
+  round-trip check. The end-to-end claim, that a real Windows machine piping
+  `doctor --json` to a file now reports `OK` and exits 0, is not verified
+  from this Linux host; see the closing paragraph below.
+- **3: the fix action now has a test with teeth.** Added
+  `TestFixActionCreatesTheDataDirectoryAtMode0700` in `doctor_test.go`, which
+  calls the real `fixActions()["sandbox_health"].apply` directly, with the
+  data directory redirected to a temp directory via the existing
+  `setDataDirEnv` helper, and asserts the directory exists at mode `0700`
+  afterward. Confirmed with the exact mutation the review made: replacing the
+  action's body with `_, err := platform.DataDir(); return err` in a scratch
+  copy of `doctor.go`. `go test ./internal/doctor/... -run
+  'TestFixActionCreatesTheDataDirectoryAtMode0700|TestFixPerformsOnlyAllowlistedFixableActions|TestFixExecutesNothingWhenNoFailureIsFixable|TestFixRefusesAFixableClaimItDoesNotOwn|TestProbesNeverInvokeAFixAction'`
+  against the mutated file showed exactly what the review predicted: the new
+  test failed with "data directory ... does not exist after apply", while
+  all three refusal tests and `TestFixPerformsOnlyAllowlistedFixableActions`
+  stayed green, because none of them calls the real action. The file was then
+  restored from the pre-mutation copy and the same run went green again.
+- **4: `disk_free` is about space only; the missing-data-directory
+  observation and the `Fixable` claim both moved to `sandbox_health`.**
+  `probes_disk.go`'s `diskFreeProbe.Run` no longer stats the data directory
+  at all: ample space is `OK`, never `Warn`, regardless of whether
+  `shellforge init` has run yet, and the `disk-space-low` anchor now only
+  ever describes a space problem, matching its own heading in
+  `docs/05-troubleshooting.md`. `probes_sandbox.go`'s `sandboxHealthProbe.Run`
+  now checks `platform.DataDir()` first, before consulting the
+  `SandboxProber`, and reports a `Fixable` `Warn` naming the missing
+  directory when it does not exist yet, reusing its own existing
+  `sandbox-unhealthy` anchor rather than a new one: that heading already
+  covers a not-yet-provisioned install. `fixActions()` in `doctor.go` is now
+  keyed on `"sandbox_health"`, not `"disk_free"`; the invariant that exactly
+  one action is ever fixable is unchanged, just re-pointed.
+  `TestDiskFreeProbeIsFixableOnlyWhenTheDirectoryIsMissing` in
+  `probes_disk_test.go` became
+  `TestDiskFreeProbeIsNeverFixableRegardlessOfDataDirExistence`, asserting
+  `OK` and never `Fixable` either way; the Fixable behaviour it used to pin
+  moved to a new `TestSandboxHealthProbeIsFixableOnlyWhenDataDirMissing` in
+  `probes_sandbox_test.go`. The other `sandbox_health` tests, which
+  previously never touched `platform.DataDir()`, now call a small
+  `createDataDir` test helper first so they keep exercising the
+  prober-classification branches rather than the new missing-directory
+  branch.
+- **5: `decodeWSLText` no longer loses odd-length UTF-8 input.**
+  `probes_wsl.go`'s decoder rejected any odd-length input outright, so
+  `decodeWSLText([]byte("Kernel version: 5.15.146.1\n"))`, 27 bytes, came
+  back empty, contradicting its own documented UTF-8 pass-through. It now
+  checks the BOM and the `looksLikeUTF16LE` heuristic first and only treats
+  odd length as invalid when the input is UTF-16 shaped in the first place;
+  a genuine UTF-8 string of any length, odd included, passes through
+  unchanged. `looksLikeUTF16LE`'s own doc comment was corrected to say it
+  tolerates an odd-length slice, which it always could, since it only reads
+  whole pairs. `probes_wsl_test.go` gained the odd-length UTF-8 case next to
+  the existing `{0x41, 0x00, 0x42}` one.
+- **6: a foreign WSL1 distribution no longer fails a machine that would
+  work.** `classifyWSLList` required every listed distribution to be on WSL
+  version 2 when the Shellforge sandbox distribution was absent, so the
+  review's own repro, `"  NAME    STATE     VERSION\n* Ubuntu  Stopped
+  1\n"`, reported `Fail` and a `wsl --set-default-version 2` remediation, a
+  machine-global change, for a learner's unrelated legacy WSL1 distribution.
+  `classifyWSLList` now returns a small `wslListOutcome{Level,
+  OtherVersion1Name}`: absence of the sandbox distribution alongside a
+  foreign WSL1 one is `Warn`, naming that distribution and that it only
+  matters if the sandbox lands there; the sandbox distribution itself being
+  on WSL1 is still `Fail`, since that is a real blocker.
+  `TestClassifyWSLListReadsTheVersionColumn` in `probes_wsl_test.go` was
+  restructured to check both fields and gained the review's own repro string
+  as a table case, plus a case for the sandbox distribution itself being on
+  WSL1.
+- **7: the `cpu_virtualization` Windows query is narrower.**
+  `cpuVirtWindowsArgv` in `probes_os.go` now asks
+  `(Get-ComputerInfo -Property HyperVRequirementVirtualizationFirmwareEnabled).HyperVRequirementVirtualizationFirmwareEnabled`
+  instead of materializing the whole `Get-ComputerInfo` object, which
+  commonly takes well over the probe's five second budget on a cold WMI.
+  This stays the same question, not `Win32_ComputerSystem.HypervisorPresent`,
+  which answers "a hypervisor is running" rather than "virtualization is
+  enabled in firmware"; the payload is still a compile-time constant with no
+  interpolation, and `-NoProfile`/`-NonInteractive` are unchanged.
+- **8: `vm_platform_feature` can now return `ok` without elevation.**
+  `Get-WindowsOptionalFeature -Online` is a DISM online query that needs an
+  Administrator terminal, so from an ordinary one it always exited non-zero
+  and the row could never be anything but an uninformative `Warn`.
+  `vmPlatformArgv` now reads
+  `(Get-CimInstance -ClassName Win32_OptionalFeature -Filter "Name='VirtualMachinePlatform'").InstallState`,
+  which needs no elevation; `InstallState` `1` maps to enabled, anything else
+  to `Fail`, and an empty result stays `Warn`.
+  `TestVMPlatformProbeClassifiesDismState` became
+  `TestVMPlatformProbeClassifiesCimInstallState`, with numeric `InstallState`
+  fixtures in place of the old `"Enabled"`/`"Disabled"` strings.
+- **9 in the original numbering does not exist in the accepted list**; the
+  ticket's suggestions are numbered 3 through 12 with no 9, and this entry
+  follows that numbering rather than renumbering.
+- **10: `PROGRESS.md`'s TODO-marker claim now matches the tree.** The `#70`
+  summary row claimed four things were "each marked `// TODO(v0.2):` at its
+  call site"; `grep -rn TODO internal/doctor/*.go cmd/shellforge/cmd_doctor.go`
+  finds only two markers, `Level.UnmarshalJSON` and the glyph probe, and the
+  glyph probe was never one of the four things the row named. The row above
+  is corrected to say only `Level.UnmarshalJSON` carries a marker, and that
+  the other three, result caching, a `--output` flag, and `--fix --dry-run`,
+  have no call site to attach one to, since none of that code exists. The
+  code was not changed to manufacture markers for features that do not
+  exist; the claim was changed to match the code, which was the more honest
+  of the two fixes available. The `#70` row and this Day 3 entry's own
+  "Manually exercised" and "`--fix`'s entire allowlist" paragraphs were also
+  reread and marked superseded where this round changed the behaviour they
+  described, rather than silently left to disagree with the code.
+- **11: one package comment, not two.** `doctor.go` and `doc.go` both opened
+  with `// Package doctor ...`, disagreeing about which packages this one may
+  import; godoc concatenates the two in unspecified order. `doctor.go`'s
+  version is now an ordinary file comment, kept for context but detached from
+  the package clause by a blank line so godoc does not fold it in; `doc.go`
+  keeps the fuller, accurate statement.
+- **12: no more hand-rolled substring search.** `containsString` and
+  `indexOf` in `doctor_test.go` are gone; every call site, in
+  `doctor_test.go` and `probes_docker_test.go`, now calls `strings.Contains`
+  directly.
+- **Declined, per the ticket's own instruction: moving `osVersionProbe.Run`
+  and `cpuVirtualizationProbe.Run`'s per-platform classification behind a
+  build tag.** Both probes genuinely apply on both platforms and need
+  per-platform classification, not gating, which `AppliesTo` already
+  provides; moving the classifiers behind build tags would mean each is only
+  ever compiled and tested on one CI leg instead of both, a net loss in
+  coverage. This round's edits to both functions kept them in their existing
+  untagged files.
+- **Gates run on this host, all green:** `gofmt -s -w .`, `go vet ./...`,
+  `go test ./...`, `./scripts/check-punctuation.sh`,
+  `go test -race ./internal/doctor/... ./cmd/shellforge/...
+  ./internal/platform/...`, `go test ./internal/archtest/...`,
+  `gosec -exclude-dir=docs ./...` (Issues: 0, `/root/go/bin/gosec` was
+  available for this round), `GOOS=windows GOARCH=amd64 go build ./...` and
+  `go vet ./...`, `GOOS=linux GOARCH=386 go build ./...`,
+  `GOOS=darwin GOARCH=arm64 go build ./...`, `./scripts/check-links.sh`,
+  `./scripts/check-cli-package.sh`, `./scripts/check-allowlist-regexp.sh`,
+  `python3 scripts/check-ci-gates.py`, and
+  `go test ./internal/doctor/... -run Anchor -v` (both anchor tests pass).
+  `govulncheck` and `pytest` over `scripts/tests` remain not installed on
+  this host and are left to CI, as with every prior entry that says so.
+  `shellforge doctor` on this host, after this round, reports `ok`
+  `os_version`, `warn` `cpu_virtualization` (still no `vmx`/`svm` flag
+  visible, now correctly a `warn`), `ok` `docker_present`, `fail`
+  `docker_daemon_running` (the daemon is genuinely down in this container),
+  `ok` `disk_free` (now `ok` rather than `warn`, since the missing data
+  directory is no longer its concern), `ok` `terminal_vt_support`, and
+  `warn` `sandbox_health` (`Fixable`, naming the missing data directory);
+  four `ok`, two `warn`, one `fail`, exit status 1. `shellforge doctor --fix`
+  created `~/.local/share/shellforge` at mode `0700` and nothing else, exactly
+  as `TestFixActionCreatesTheDataDirectoryAtMode0700` now pins directly.
+- **What this round could not verify from Linux.** Blocking 2's actual
+  end-to-end claim, that `shellforge doctor --json > report.json` on real
+  Windows now exits 0 for a healthy machine instead of failing, needs a real
+  Windows console and a real redirected handle to observe together; this
+  host can only unit test `StdoutIsRedirected` against a pipe and a file, and
+  cross-compile the Windows build, which it did. The narrowed
+  `Get-ComputerInfo -Property` query (7) and the `Get-CimInstance` query for
+  Virtual Machine Platform (8) are new PowerShell payloads that have never
+  executed against a real `powershell.exe`; both compile-clean under
+  `GOOS=windows go build`/`go vet` and are covered on the classifier side by
+  the fake runner, same as every other Windows-only probe in this package,
+  but neither has run on real Windows in this round any more than it had in
+  the original entry above.
+
+
+### Day 3 follow-up, 2026-08-19: the demo level is gone, and its safety tests are on a real one
+
+Issue #96. `internal/sandbox/demo_level.go` was the Day 1 hardcoded level,
+marked for deletion from the day it was written and kept well past that date for
+one reason: its own tests held the repository's only live host-isolation
+coverage, its only live filesystem-purity check outside the golden harness, its
+only sudo refusal test, and the only place `images/rc/instrument.bash` actually
+ran against a container. The ticket's own rule was that none of that could be
+closed by deleting the files and asserting a replacement exists somewhere, so the
+replacement was built first.
+
+- **`cmd/shellforge/isolation_test.go` is new, and holds four tests against
+  `pipe-05` from the embedded pack.** `TestSandboxIsolationLeavesTheHostUntouched`
+  is the one the ticket names: it writes a canary into `t.TempDir()` on the host,
+  records the host working directory, runs
+  `rm -rf / ; rm -rf /* ; rm -rf ~` inside the sandbox as the learner with no
+  sudo, and then asserts the canary is unchanged byte for byte, the host working
+  directory lost no entries, the level world really was destroyed, and the
+  level's own `Setup` puts it back well enough that the level's solution passes
+  its checks again. `TestSandboxHasNoHostMounts` and
+  `TestSudoIsRefusedByNoNewPrivileges` are level-agnostic ports, unchanged in what
+  they assert. `TestInstrumentationEmitsMarkersForARealSession` is the scripted
+  bash session through `pty.NewParser`, ported because nothing else in the
+  repository runs the rc file for real.
+- **Two of those assertions are stronger than the ones they replace.** The
+  destructive test now reads `/opt/shellforge/.sandbox-id` and refuses outright
+  unless it names our sandbox, which is the marker check the `destructive-safety`
+  skill asks for before anything recursive runs, and which the demo version did
+  not have. Its "the removal really executed" assertion now probes the level root
+  itself: the old pair of probes was joined with an `&&` and one half was a file
+  the learner had not created yet, so that assertion could never actually fire.
+- **The Sandbox image job's `-run` pattern is an exact-name allowlist, so the
+  four names were added to it.** This is the part that makes the deletion honest
+  rather than a coverage trade: a test that exists and never runs proves nothing,
+  which is the trap the ticket warned about. Nothing else in `ci.yml` changed.
+- **Deleted:** `internal/sandbox/demo_level.go`, `demo_level_test.go`,
+  `demo_golden_test.go`, `demo_isolation_test.go`, the `demoLevel` and
+  `demoResponder` adapters, the `demoLevelID` constant, the special-case branch
+  in `cmdRun`, and `runDemo`. `internal/sandbox` is down to its `doc.go`. The
+  `playable` and `controlResponder` interface declarations are byte for byte
+  unchanged: they are what stops the FIFO plumbing, the teardown ordering and the
+  raw-mode rules from existing twice, and they outlive the demo on purpose. Their
+  doc comments lost the sentence naming the demo, because a comment describing
+  something the code no longer has is the staleness `CLAUDE.md` calls worse than
+  none.
+- **Three tests were reworked rather than deleted, and two were deleted rather
+  than reworked.** `TestControlChannelAnswersTheShim` now drives the production
+  `gameResponder` over a real `game.Session` for `pipe-05`, and asks the engine
+  directly alongside the shim so that a missing `PASS:` says whether the control
+  channel or the level is at fault. Its verdict assertions moved from a prefix
+  check to a substring check, because a real check reply leads with the objective
+  checklist and the verdict is a line inside it; the checklist is now asserted
+  too. `TestHandleControlVerb` and `TestHandleControlVerbReportsABrokenRuntime`
+  now build a `game.Session` over the existing `fakeSession` and a new
+  two-method fake `game.Verifier`, which is exactly what that interface is
+  declared in the consuming package for, so both still run with no daemon.
+  `TestPrintBriefingShowsTheObjective` was pure duplication of
+  `render_brief_test.go`'s existing coverage of the real briefing path and is
+  gone. `TestBriefingDoesNotLeakTheAnswer` was a genuine gap there, so it moved
+  into that file, scoped to `pipe-05` and reading the forbidden strings out of
+  the level's own `file_content` checks rather than hardcoding them.
+- **`docs/05-troubleshooting.md` told a Windows learner to run
+  `./bin/shellforge run demo`.** That command now fails, so the line names
+  `nav-01` instead.
+- **What this run could NOT verify, and why.** This host has a Docker CLI and no
+  daemon, so every test that needs a container was skipped locally, cleanly and
+  by design: all four new tests in `isolation_test.go`,
+  `TestControlChannelAnswersTheShim`, `TestEveryLevelGoldenPath`,
+  `TestPipe05RejectsNearMisses`, and the `internal/runtime/docker` contract
+  suite. CI's Sandbox image job is the witness for the isolation, purity and
+  instrumentation claims above, exactly as it was for the Day 2 golden run.
+  `govulncheck` and `gosec` are not installed here either and are left to CI.
+- **Residual staleness, left deliberately.** Comments in
+  `internal/content/setup/runner.go`, `internal/content/setup/runner_test.go` and
+  `packs/core-linux-basics/assets/README.md` still name
+  `internal/sandbox/demo_level.go` as the prior art they were derived from. They
+  are provenance notes rather than instructions, and this change was scoped to
+  keep out of `internal/content` and the pack, so they stay for whoever next
+  edits those files.
+- **Gates run on this host:** `gofmt -s -w .`, `go vet ./...`, `go build ./...`,
+  `go test ./...`, `go test -race ./...`, `go test ./internal/archtest/...`,
+  `./scripts/check-punctuation.sh`, `./scripts/check-allowlist-regexp.sh`,
+  `./scripts/check-links.sh`, `./scripts/check-cli-package.sh`,
+  `python3 scripts/check-ci-gates.py`, all green.
+
+### Day 3, 2026-08-19: the CLI wires init, sandbox, and doctor to a real backend
+
+Issue #71, the L5 half. Built on top of an already-green L1 half from the same
+issue (`internal/sandbox/resolve.go`, `internal/sandbox/prober.go`,
+`internal/runtime/wsl/probe.go`, and the `wsl.InstallDir()` accessor), which
+this round consumed rather than re-verified.
+
+**What now works.** `shellforge init` resolves a backend through
+`internal/sandbox.Resolve` (auto by default, or `--runtime=wsl|docker`),
+prints `Choice.Reason` so a fallback is never silent, provisions through
+`sandbox.Spec()`, and names the first level in campaign order to run next,
+falling back to `shellforge help` if the pack cannot be read. It is
+idempotent: a second `init` provisions again rather than refusing or
+destroying anything first, and a cancellation mid-provision reports through
+`ux.Fail` without ever calling `Destroy`, because the CLI cannot tell a first
+provision from a repair of a working sandbox. `shellforge sandbox` is a real
+four-verb group now: `status` (read-only, exits non-zero with the
+`sandbox-missing` anchor when nothing is provisioned, but still prints the
+state), `shell` (refuses up front on Windows through the same host guard as
+`run`, before resolving or provisioning anything), `rebuild` (announces both
+steps, then destroys and provisions in that order, behind the same
+confirmation as `destroy`), and `destroy`. Every one of the four now carries
+its own `--runtime` flag, parsed with `sandbox.ParseBackend` exactly as
+`init`'s and defaulting to `auto`, so a learner who provisioned with
+`init --runtime=docker` can tell the other three verbs which backend they
+actually mean instead of each one silently resolving `auto` on its own; see
+the fix round below. `sandbox build` is gone: `Provision`
+is documented idempotent and already builds the image or distribution, so it
+never had behaviour distinct from `init`; this also brings the CLI back in
+line with `docs/design/ARCHITECTURE.md` line 121, which had documented
+`shell|status|rebuild|destroy` all along. `run`'s own `openSandbox` now
+resolves through the same `internal/sandbox.Resolve` path as `init` instead of
+calling `docker.New` directly, and drops the `internal/runtime/docker` import
+from `cmd_run.go` entirely. `shellforge doctor` is wired to a real
+`sandbox.NewProber()` in place of `nil`, so `sandbox_health` reports real
+state (bounded to a 5 second `Ping`) instead of an unconditional `Warn`.
+`main.go` now calls `platform.EnableVirtualTerminal` once at startup through
+`withConsole`, deferring the restore so every verb gets ANSI output and the
+console mode is put back on every exit path, including a panic; this is in
+scope per #71's own Approach section, which asked for it verbatim, and it is
+the dependency on #68, which added the `GetConsoleMode`/`SetConsoleMode` calls
+`EnableVirtualTerminal` wraps.
+
+**The destroy path, since it is the uninstall path.** `sandbox destroy` and
+`sandbox rebuild` print the full `sandbox.RemovalPlan` before asking anything,
+including the absolute WSL install directory on Windows, and a line stating
+plainly that the progress database is a separate step and is not touched.
+Confirmation requires typing the sandbox name back exactly: not
+case-insensitive, not a substring match, not "yes". Empty input and EOF both
+refuse. `--yes` is the only bypass and skips the prompt entirely, never
+reading stdin. After `Destroy` returns nil, both verbs call `Status` again and
+verify rather than trust the nil error; a sandbox still reporting `Provisioned`
+is a `ux.Fail` naming the absolute path to check, never a silent success.
+Nothing in `cmd/shellforge` calls `os.RemoveAll`, and no name or path is ever
+passed into `Destroy`, which still takes only a context.
+
+**A new module-wide tripwire.** `internal/archtest/backend_test.go` adds
+`TestNoCodeBranchesOnStatusBackend`: no comparison of a `.Backend` selector
+against a non-empty string literal, and no switch on a `.Backend` selector,
+anywhere in the module's non-test Go files. This holds today because
+`sandbox.Choice`'s own selection field is named `Chosen`, not `Backend`, on
+purpose, so the resolver's own switch needs no exemption, and nothing in
+`cmd/shellforge` compares `Status.Backend` to decide anything; it only prints
+it.
+
+**Deliberately not delivered: acceptance criterion 11.**
+`checkInteractiveShellSupported` (used by both `run` and `sandbox shell`)
+still refuses an interactive shell on a Windows host, for both backends. Only
+the wording changed: the stale claim that "Windows gets a real answer on Day 3
+with WslRuntime" is gone, and the remediation no longer implies the refusal is
+Docker-specific. `creack/pty` returns `ErrUnsupported` unconditionally on every
+Windows build, and `internal/runtime/wsl/session.go`'s `Attach` and
+`resize_windows.go`'s `Resize` return the same, so relaxing the gate for the
+WSL backend, which is what the original ticket text asked for, would trade a
+correct up-front refusal for a multi-minute provision followed by an
+unavoidable failure at attach. A real fix needs Windows console support
+(ConPTY) and is a separate, larger piece of work than this ticket; it is not
+started here. It is filed as issue #138, which the reworded comments in
+`cmd_run.go`, `cmd_sandbox.go` and `resize_windows.go` all now name, and it
+is the issue that would finally let criterion 11 be met. Issue #77 is a
+different and narrower question, still open and still marked by the
+`TODO(v0.2)` next to the guard: how the CLI should ask, through
+`Runtime.Capabilities()` rather than a `goruntime.GOOS` test. #138 is whether
+the answer can ever be yes on Windows. The Day 3 exit criteria checklist above stays honest about this:
+its four boxes are still unchecked, and a fifth line was added there
+explaining why `sandbox shell` on Windows is not part of that list either way.
+
+**Deliberate-violation confirmations**, each reverted immediately after:
+temporarily removing the `defer restore()` in `withConsole` made
+`TestWithConsoleRestoresTheConsoleOnAPanic` fail with `restore count = 0, want
+1`; temporarily adding an `os.RemoveAll` call to `main.go` made
+`TestThisPackageNeverCallsOsRemoveAll` fail naming the file and line;
+temporarily adding `if st.Backend == "docker"` to `cmd_sandbox.go` made
+`TestNoCodeBranchesOnStatusBackend` fail naming the file and line. All three
+were confirmed to pass again once reverted, and `git diff` afterward showed no
+residue.
+
+**What could not be run on this host, as expected**: `govulncheck`, `gosec`,
+and `python3 -m pytest scripts/tests` are not installed here. Every
+Docker-gated test skips, because there is no `/var/run/docker.sock` on this
+host, and every WSL-gated test skips or short-circuits on `GOOS`, because
+there is no `wsl.exe` and no Windows. Nothing in this round was exercised
+against a real Docker daemon or a real Windows machine; every assertion is
+against a fake `runtime.Runtime` and a fake resolver. `internal/runtime/runtimetest`
+already covers the real backends' contract and gained no new tests here, per
+the project's own rule that adding a caller should not mean writing
+runtime-specific tests.
+
+**Gates run on this host, all green:** `gofmt -s -w .`, `go vet ./...`,
+`go test ./...`, `go test -race ./...`, `./scripts/check-punctuation.sh` (303
+tracked files after staging the new ones; a gate that scans `git ls-files`
+is blind to untracked files, so the new files were staged before this run,
+not committed), `./scripts/check-links.sh` (64 links), `./scripts/check-cli-package.sh`,
+`./scripts/check-allowlist-regexp.sh`, `python3 scripts/check-ci-gates.py`,
+`go test ./internal/archtest/...`, and cross-compilation with
+`GOOS=windows GOARCH=amd64 go build ./...` and `GOOS=darwin GOARCH=arm64 go
+build ./...`. `go.mod` and `go.sum` are byte-for-byte unchanged; no dependency
+was added.
+
+
+**Merged `main` in mid-flight.** Issue #96 landed on `main` while this branch
+was being built, deleting `internal/sandbox/demo_level.go`, `run demo`, and
+the demo adapter. That touched two of the same files, so `main` was merged in
+rather than rebased and the two conflicts resolved by hand:
+`cmd/shellforge/cmd_run.go`'s import block, where #96 removed the
+`internal/sandbox` import that had served `sandbox.Demo()` and this branch
+re-adds it for `sandbox.Resolve` while dropping the
+`internal/runtime/docker` import #96 kept; and this file, where both changes
+appended a log entry and both are kept, #96's first because it merged first.
+One claim of this branch's own had to be corrected in the merge: the CLI
+dispatcher row above said `run demo` works, which stopped being true when #96
+deleted it, and now reads `run <level-id>`. Nothing else in this entry
+depended on the demo level.
+
+**`main` is red, and was before this branch existed.**
+`Test (windows-latest)` fails on `main` at both cf7fe2d and 155ebe9 with
+`TestStartResizeWatcher_StopEndsTheGoroutine` in `internal/pty` under
+`-race`: "resize count grew from 1 to 2 after stop, want the watcher
+goroutine to have exited". That is #68's Windows resize watcher racing its own
+stop, it is intermittent (the same commit range passed on other runs), and it
+is in a package this branch does not touch at all. It is filed separately
+rather than fixed here, because `All checks green` is the merge gate and a
+failure inherited from the base branch is not this branch's to repair.
+
+**Fix round, 2026-08-19: five blocking review findings.** An independent
+review of this branch found five defects strong enough to block, plus a
+handful of smaller items. This round fixed the five, applied the accepted
+smaller items, and left the one declined item alone, without oversell:
+these are defects a review found in code already written, not new work.
+
+1. `internal/runtime/wsl/probe.go`'s `realVersion2Probe` discarded stderr
+   and let `parseList`'s forgiving read of an empty stdout report an empty
+   distribution table on a non-zero exit, even when the real failure
+   (an outdated kernel, an antivirus block) was sitting on stderr the whole
+   time. That made `Version2Available` report WSL2 available on a host
+   where it genuinely was not, so `Decide`'s Auto path never took the
+   Docker fallback `Choice.Fallback` exists for. The non-zero-exit
+   classification that `listRows` already had is now the single shared
+   `recognizedNonZeroExit` helper in `wsl.go`; both `listRows` and the new
+   `probeVersion2` runner seam call it, so there is one implementation of
+   "is this a recognized WSL failure or an empty table" rather than two
+   that could drift. `listRows`'s own behaviour and tests are unchanged;
+   this was a refactor of where the logic lives.
+2. `internal/sandbox/resolve.go`'s `Plan` claimed the Docker backend would
+   remove the `shellforge-sandbox` image on `sandbox destroy`.
+   `dockerRuntime.Destroy` only ever runs `docker rm -f`, never `docker
+   rmi`, so the image was left behind while the printed plan and the
+   `destroy` command's own `--help` text both said otherwise. The image is
+   **not** now removed by `Destroy`; widening that destructive path is its
+   own review and not this round's job. Instead the plan, the `destroy`
+   command's `Short` text, and both `RemovalPlan.Items` and
+   `VerifyCommand` now say plainly that the image stays and name
+   `docker rmi shellforge-sandbox` as the manual step to reclaim the disk
+   space.
+3. `docs/06-uninstall.md` repeated the same false claim twice: once in the
+   list of what `sandbox destroy` removes, and once implying
+   `docker images | grep shellforge` would print nothing after a
+   successful destroy. Both are corrected, and `docker rmi
+   shellforge-sandbox` is now an explicit step under "Manual cleanup, if
+   something went wrong".
+4. `cmd_sandbox.go`'s `verifyRemoved` failed **open**: `if statusErr == nil
+   && st.Provisioned` fell through to printing "Removed." whenever
+   `Status` itself errored after a successful `Destroy`, for example a
+   daemon that went away between the two calls. destructive-safety's hard
+   rule 8 is fail closed. `verifyRemoved` now returns a `ux.Fail` under the
+   `sandbox-unhealthy` anchor when `Status` errors, naming the path to
+   check by hand and stating plainly that `Destroy` itself reported
+   success so the learner knows the likely state, with `statusErr` wrapped
+   as the cause.
+5. All four sandbox verbs (`status`, `shell`, `destroy`, `rebuild`) called
+   `resolve(ctx, sandbox.Auto)` unconditionally. Only `init` had a
+   `--runtime` flag, and nothing persists which backend it chose. On a
+   Windows machine where WSL2 is also available, `init --runtime=docker`
+   followed by `sandbox destroy` could resolve WSL, remove nothing, and
+   still print "Removed." while the real Docker sandbox sat untouched.
+   Each of the four verbs now carries its own `--runtime` flag, parsed
+   with `sandbox.ParseBackend` exactly as `init`'s own, defaulting to
+   `auto` so the common case is unchanged. No state file remembers the
+   choice across commands; that is a design decision for a later ticket,
+   not this fix round.
+
+Each of the five came with a test that was confirmed to fail against the
+original code (by reintroducing the bug in a scratch copy) before being
+confirmed to pass against the fix, per the testing skill's "a test that
+passes before and after your change tests nothing" rule.
+
+**CI found the same first defect independently, from the other side.** The
+first pull request run went red on `Test (windows-latest)` with
+`TestVersion2AvailableCallsTheRealEntryPointOnNonWindows`: "ok = true on a
+non-Windows test host, want false". That test asserted the non-Windows
+answer unconditionally, on its own stated assumption that "this suite never
+runs on Windows", and CI has a windows-latest leg, so the assumption was
+false. What the failure actually proved is finding 1: on the Windows runner,
+which has `wsl.exe` in System32 but no working WSL2, the old probe read the
+non-zero exit as an empty distribution table and reported WSL2 available.
+The probe fix above is the real repair; the test is now pinned to the seam
+with `goos` set explicitly where it asserts the non-Windows short circuit,
+and skips on Windows, where the real function shells out and has no fixed
+answer to assert. Its doc comment records the false assumption so nobody
+restores it.
+
+Smaller accepted items in the same round: `init` now prints the same
+"Preparing the sandbox..." line `run`'s `openSandbox` already printed, so
+the two no longer disagree about progress output; `withConsole`'s
+nil-restore guard is now keyed on `err != nil || restore == nil` rather than
+`err` alone, since a nil restore paired with a nil error was the actual
+crash risk the defer call faced; `sandbox shell` now tells a first-time
+learner to run `shellforge init` directly when `StartSession` fails with
+`runtime.ErrSandboxMissing`, instead of routing them through `sandbox
+status` under the unhealthy anchor first; `internal/runtime/wsl/session.go`'s
+`attachStartError` no longer tells a Windows learner to "use Docker Desktop
+for now", since creack/pty's `ErrUnsupported` hits every backend on a
+Windows console, Docker Desktop included, and instead points at running
+from inside WSL and names issue #138; the confirmation prompt in
+`confirmSandboxName` no longer wraps the sandbox name in `%q`, since a
+learner who copies the quotes along with the name was refused for typing
+exactly what was printed; and `runSandboxShell` now closes `sandboxPTY` in a
+defer placed right after `Attach`, since `Mux.Run`'s two early returns
+happen before it takes ownership of the fd. Declined: lifting the three
+near-identical doc-anchor gate implementations into one shared helper,
+because issue #132 already owns exactly that refactor and it does not belong
+folded into this fix round.
 
 ## Day 6: hardening, CI, packaging
 

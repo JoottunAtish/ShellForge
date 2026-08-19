@@ -9,10 +9,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/JoottunAtish/ShellForge/internal/content"
+	"github.com/JoottunAtish/ShellForge/internal/game"
 	"github.com/JoottunAtish/ShellForge/internal/platform/ux"
 	"github.com/JoottunAtish/ShellForge/internal/pty"
 	"github.com/JoottunAtish/ShellForge/internal/runtime"
-	"github.com/JoottunAtish/ShellForge/internal/sandbox"
+	"github.com/JoottunAtish/ShellForge/internal/verify"
 )
 
 // Nothing in this file may reach a Docker daemon. Every test either exercises
@@ -102,9 +104,12 @@ func TestCmdRunRefusesAnUnknownLevel(t *testing.T) {
 				t.Errorf("the remediation does not list the real level %q: %q", want, uxErr.Remediation)
 			}
 		}
-		// The demo is not a campaign level and must never be suggested.
-		if strings.Contains(uxErr.Remediation, demoLevelID) {
-			t.Errorf("the remediation offers the demo level: %q", uxErr.Remediation)
+		// An id that is not in the pack must never be offered back as the
+		// fix for a typo. "demo" is the one worth naming: it was a real,
+		// specially cased level until #96 deleted it, so it is the id most
+		// likely to creep back into a suggestion list by habit.
+		if strings.Contains(uxErr.Remediation, "demo") {
+			t.Errorf("the remediation offers an id that is not in the pack: %q", uxErr.Remediation)
 		}
 	}
 }
@@ -202,38 +207,106 @@ func TestParseControlRequest(t *testing.T) {
 	}
 }
 
-// TestHandleControlVerb drives the verb table against a fake session, so the
-// reply a learner would see is asserted without a container.
+// controlVerbLevel is the level the two tests below answer verbs for.
+//
+// A real level out of the embedded pack rather than a hand-built one: `brief`
+// renders the authored briefing and prints the authored checklist, so a
+// synthetic level would only prove the renderer can echo a Go string literal.
+func controlVerbLevel(t *testing.T) *content.Level {
+	t.Helper()
+
+	pack, err := content.Embedded()
+	if err != nil {
+		t.Fatalf("load the embedded pack: %v", err)
+	}
+	level, ok := pack.Level("pipe-05")
+	if !ok {
+		t.Fatal("pipe-05 is not in the embedded pack")
+	}
+	return level
+}
+
+// controlVerbResponder builds the production responder over a fake session and
+// a fake verifier, so the reply a learner would see is asserted with no
+// container and no check engine.
+//
+// game.Verifier is an interface declared in the consuming package for exactly
+// this: Session's orchestration is testable with a two-method fake. Run
+// answers with the canned result the subtest wants, which is what decides
+// whether the learner reads PASS or NOT YET.
+func controlVerbResponder(t *testing.T, result verify.LevelResult) *gameResponder {
+	t.Helper()
+
+	level := controlVerbLevel(t)
+	session, err := game.NewSession(game.Config{
+		Level: level,
+		Sess:  &fakeSession{},
+		Verifier: &fakeVerifier{
+			run: func(context.Context, []verify.Check, verify.Env) verify.LevelResult {
+				return result
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("build the level: %v", err)
+	}
+	return &gameResponder{session: session, level: level, color: false}
+}
+
+// TestHandleControlVerb drives the verb table against a fake session and a fake
+// verifier, so the reply a learner would see is asserted without a container.
 func TestHandleControlVerb(t *testing.T) {
-	level := sandbox.Demo()
+	passing := verify.LevelResult{
+		Passed: true,
+		Objectives: []verify.ObjectiveResult{
+			{ID: "obj1", Text: "report.txt holds the total ERROR count", Status: verify.StatusPass},
+		},
+	}
+	failing := verify.LevelResult{
+		Objectives: []verify.ObjectiveResult{
+			{ID: "obj1", Text: "report.txt holds the total ERROR count", Status: verify.StatusFail, Message: "report.txt is missing"},
+		},
+		PrimaryFailure: &verify.ObjectiveResult{
+			ID: "obj1", Text: "report.txt holds the total ERROR count", Status: verify.StatusFail, Message: "report.txt is missing",
+		},
+	}
+	inconclusive := verify.LevelResult{
+		Objectives: []verify.ObjectiveResult{
+			{ID: "obj1", Text: "report.txt holds the total ERROR count", Status: verify.StatusError, Message: "the daemon went away"},
+		},
+		PrimaryFailure: &verify.ObjectiveResult{
+			ID: "obj1", Text: "report.txt holds the total ERROR count", Status: verify.StatusError, Message: "the daemon went away",
+		},
+	}
 
 	cases := []struct {
-		name       string
-		verb       string
-		catExit    int
-		catStdout  string
-		wantPrefix string
+		name    string
+		verb    string
+		result  verify.LevelResult
+		want    string
+		notWant string
 	}{
-		{"check passes on the right answer", "check", 0, level.Answer(), "PASS:"},
-		{"check fails on a wrong answer", "check", 0, "1", "FAIL:"},
-		{"check fails when report.txt is missing", "check", 1, "", "FAIL:"},
-		{"brief reprints the briefing", "brief", 0, "", "##"},
-		{"hint is honest about not existing", "hint", 0, "", "`hint` is not built yet"},
-		{"reset is honest about not existing", "reset", 0, "", "`reset` is not built yet"},
-		{"an unknown verb says so", "wat", 0, "", `unknown request "wat"`},
+		{name: "check passes on the right answer", verb: "check", result: passing, want: "PASS:"},
+		{name: "check fails on a wrong answer", verb: "check", result: failing, want: "NOT YET:", notWant: "PASS:"},
+		{name: "a failing check shows the authored on_fail", verb: "check", result: failing, want: "report.txt is missing"},
+		{name: "a check that could not decide says so, and is not a wrong answer", verb: "check", result: inconclusive, want: "not a wrong answer", notWant: "PASS:"},
+		{name: "brief reprints the briefing", verb: "brief", want: "Billing service"},
+		{name: "brief reprints the objective checklist", verb: "brief", want: "report.txt holds the total ERROR count"},
+		{name: "hint is honest about not existing", verb: "hint", want: "`hint` is not built yet"},
+		{name: "reset is honest about not existing", verb: "reset", want: "`reset` is not built yet"},
+		{name: "an unknown verb says so", verb: "wat", want: `unknown request "wat"`},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s := &fakeSession{
-				exec: func(argv []string, _ runtime.ExecOpts) (runtime.ExecResult, error) {
-					return runtime.ExecResult{ExitCode: tc.catExit, Stdout: []byte(tc.catStdout)}, nil
-				},
-			}
-			responder := &demoResponder{level: level, sess: s}
+			responder := controlVerbResponder(t, tc.result)
 			reply := responder.Reply(context.Background(), tc.verb, "")
-			if !strings.HasPrefix(strings.TrimSpace(reply), tc.wantPrefix) {
-				t.Errorf("reply = %q, want it to start with %q", reply, tc.wantPrefix)
+
+			if !strings.Contains(reply, tc.want) {
+				t.Errorf("reply = %q, want it to contain %q", reply, tc.want)
+			}
+			if tc.notWant != "" && strings.Contains(reply, tc.notWant) {
+				t.Errorf("reply = %q, want it NOT to contain %q", reply, tc.notWant)
 			}
 			if !strings.HasSuffix(reply, "\n") {
 				t.Errorf("reply %q does not end in a newline, so the shim's output would run into the next prompt", reply)
@@ -244,20 +317,67 @@ func TestHandleControlVerb(t *testing.T) {
 
 // TestHandleControlVerbReportsABrokenRuntime asserts a runtime failure is
 // reported to the learner rather than silently read as a failed level.
+//
+// There are two ways one reaches the learner and both are covered, because
+// they are rendered by different code. A check that could not determine an
+// answer comes back inside a LevelResult and is rendered as an inconclusive
+// verdict; a run that could not be attempted at all comes back as an error and
+// is rendered by renderCheckError. Neither may ever say PASS.
 func TestHandleControlVerbReportsABrokenRuntime(t *testing.T) {
-	s := &fakeSession{
-		exec: func(_ []string, _ runtime.ExecOpts) (runtime.ExecResult, error) {
-			return runtime.ExecResult{}, errors.New("the daemon went away")
-		},
+	t.Run("a check that could not determine an answer", func(t *testing.T) {
+		responder := controlVerbResponder(t, verify.LevelResult{
+			Objectives: []verify.ObjectiveResult{
+				{ID: "obj1", Text: "report.txt holds the total ERROR count", Status: verify.StatusError, Message: "the daemon went away"},
+			},
+			PrimaryFailure: &verify.ObjectiveResult{
+				ID: "obj1", Text: "report.txt holds the total ERROR count", Status: verify.StatusError, Message: "the daemon went away",
+			},
+		})
+
+		reply := responder.Reply(context.Background(), "check", "")
+		if !strings.Contains(reply, "could not be checked") {
+			t.Errorf("reply = %q, want the objective line to say it could not be checked", reply)
+		}
+		if !strings.Contains(reply, "not a wrong answer") {
+			t.Errorf("reply = %q, want it to tell the learner this is not a wrong answer", reply)
+		}
+		if strings.Contains(reply, "PASS") {
+			t.Errorf("a broken runtime must never report PASS: %q", reply)
+		}
+	})
+
+	t.Run("a run that could not be attempted", func(t *testing.T) {
+		reply := renderCheckError(errors.New("the daemon went away"), "pipe-05")
+		if !strings.Contains(reply, "could not run") {
+			t.Errorf("reply = %q, want it to say the check could not run", reply)
+		}
+		if strings.Contains(reply, "PASS") {
+			t.Errorf("a broken runtime must never report PASS: %q", reply)
+		}
+	})
+}
+
+// fakeVerifier is a game.Verifier that answers from injected functions, so a
+// game.Session can be built and checked with no engine and no sandbox.
+type fakeVerifier struct {
+	build func(specs []verify.Spec) ([]verify.Check, error)
+	run   func(ctx context.Context, checks []verify.Check, env verify.Env) verify.LevelResult
+}
+
+var _ game.Verifier = (*fakeVerifier)(nil)
+
+func (f *fakeVerifier) Build(specs []verify.Spec) ([]verify.Check, error) {
+	if f.build == nil {
+		return nil, nil
 	}
-	responder := &demoResponder{level: sandbox.Demo(), sess: s}
-	reply := responder.Reply(context.Background(), "check", "")
-	if !strings.Contains(reply, "could not run") {
-		t.Errorf("reply = %q, want it to say the check could not run", reply)
+	return f.build(specs)
+}
+
+func (f *fakeVerifier) Run(ctx context.Context, checks []verify.Check, env verify.Env) verify.LevelResult {
+	if f.run == nil {
+		return verify.LevelResult{}
 	}
-	if strings.HasPrefix(reply, "PASS") {
-		t.Error("a broken runtime must never report PASS")
-	}
+	return f.run(ctx, checks, env)
 }
 
 // --------------------------------------------------------------------------
@@ -424,36 +544,6 @@ func TestLogCommandEventsStopsOnContextCancellation(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("logCommandEvents ignored context cancellation and would outlive the session")
-	}
-}
-
-// --------------------------------------------------------------------------
-// The briefing
-// --------------------------------------------------------------------------
-
-// TestPrintBriefingShowsTheObjective asserts the learner is told what to do
-// and how to submit before the prompt appears.
-func TestPrintBriefingShowsTheObjective(t *testing.T) {
-	var buf bytes.Buffer
-	(&demoLevel{level: sandbox.Demo()}).PrintBriefing(&buf, false)
-	out := buf.String()
-
-	for _, want := range []string{"report.txt", "logs/", "check"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("the briefing never mentions %q: %s", want, out)
-		}
-	}
-}
-
-// TestBriefingDoesNotLeakTheAnswer asserts the briefing poses the problem
-// rather than solving it.
-func TestBriefingDoesNotLeakTheAnswer(t *testing.T) {
-	level := sandbox.Demo()
-	var buf bytes.Buffer
-	(&demoLevel{level: level}).PrintBriefing(&buf, false)
-
-	if strings.Contains(buf.String(), level.Answer()) {
-		t.Errorf("the briefing contains the answer %q", level.Answer())
 	}
 }
 

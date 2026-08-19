@@ -19,6 +19,17 @@ import (
 // against the headings that actually exist in the troubleshooting guide.
 const docBaseURL = "https://github.com/JoottunAtish/ShellForge/blob/main/docs/05-troubleshooting.md"
 
+// DocURL returns the troubleshooting page URL for an anchor, or the empty
+// string when there is no anchor. Callers outside this package need the
+// same link Render prints, and docBaseURL is unexported so that it has one
+// home.
+func DocURL(anchor string) string {
+	if anchor == "" {
+		return ""
+	}
+	return docBaseURL + "#" + anchor
+}
+
 // Error is a failure that is safe to show a learner.
 //
 // Construct one with Fail. Every field except Err is aimed at someone who does
@@ -89,7 +100,7 @@ func Render(w io.Writer, err error) {
 		fmt.Fprintf(w, "\n%s %s\n", c.good("Try this:"), ue.Remediation)
 	}
 	if ue.DocAnchor != "" {
-		fmt.Fprintf(w, "%s %s#%s\n", c.dim("More detail:"), docBaseURL, ue.DocAnchor)
+		fmt.Fprintf(w, "%s %s\n", c.dim("More detail:"), DocURL(ue.DocAnchor))
 	}
 }
 
