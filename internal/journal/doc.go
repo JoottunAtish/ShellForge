@@ -64,23 +64,23 @@
 // against 4.11 is tracked in issue #87, as a change to the design record,
 // not to this package.
 //
-// # ScopeLevel, SetLevel, and the level boundary
+// # scope.Level, SetLevel, and the level boundary
 //
-// ScopeLevel answers only for the level and attempt SetLevel most recently
+// scope.Level answers only for the level and attempt SetLevel most recently
 // named, bounded by the events.id SetLevel was given: Commands never infers
 // a level from the newest row in the table, because the newest row can
 // belong to a different level than the one currently under verification.
 // See journal.go's SetLevel doc comment for the exact contract.
 //
-// ScopeLastN and ScopeLast deliberately keep their global, level-agnostic
+// scope.LastN and scope.Last deliberately keep their global, level-agnostic
 // semantics: the most recent N commands, or the single most recent command,
 // regardless of which level recorded them. This is a considered decision,
-// not an oversight left over from fixing ScopeLevel. Their exposure to the
-// same wrong-level window ScopeLevel had is far smaller and self-correcting:
+// not an oversight left over from fixing scope.Level. Their exposure to the
+// same wrong-level window scope.Level had is far smaller and self-correcting:
 // a learner who runs `check` before typing anything in a new level sees at
 // most one stale command from the level they just left, and it ages out of
 // scope the moment they type their own first command, rather than
-// persisting for the rest of the attempt the way ScopeLevel's bug did.
+// persisting for the rest of the attempt the way scope.Level's bug did.
 // Scoping them to the level boundary as well is a reasonable future change,
 // but it is not this ticket's fix and would need its own test pass over
 // every level that uses "last" or "last_n:N" scope today.
@@ -93,29 +93,29 @@
 // stored as REAL unix seconds with microsecond precision; see Append's own
 // doc comment for the exact round trip.
 //
-// # ScopeKind, Scope, and verify.JournalReader
+// # Scope and verify.JournalReader
 //
-// This package declares its own ScopeKind and Scope, mirroring
-// verify.ScopeKind and verify.Scope field for field and value for value,
-// rather than naming verify's types directly. internal/journal is layer 2
-// and internal/verify is layer 3; a layer 2 package importing layer 3 in
-// production code is exactly the upward edge internal/archtest's layer
-// rule forbids, and CLAUDE.md's dependency rule outranks a ticket's fixed
-// method signature when the two disagree.
+// Commands takes scope.Scope, from internal/scope at layer 0. internal/verify
+// declares verify.Scope and verify.ScopeKind as type ALIASES for that
+// package's, so verify.Scope and scope.Scope are one type, not two that
+// happen to match. *Journal therefore satisfies verify.JournalReader
+// outright: no adapter, no field by field translation, and nothing that can
+// drift.
 //
-// The honest statement: *Journal does not itself satisfy
-// verify.JournalReader. A three line adapter in
-// verifycontract_test.go does, because that file is in the external
-// journal_test package and archtest never parses _test.go files at all, so
-// an upward import there widens nothing. The acceptance criterion "Commands
-// satisfies verify.JournalReader ... without internal/verify importing this
-// package" is met in substance (the method set is pinned at compile time by
-// the adapter, a reflect-based drift test in the same file fails loudly if
-// verify.Scope's shape or values ever change without a matching update
-// here, and internal/verify still imports nothing from this package) and
-// not in letter (the parameter type Commands actually takes is
-// journal.Scope, not verify.Scope). The durable fix, moving Scope and
-// ScopeKind into a small layer 0 package that both internal/journal and
-// internal/verify alias, needs its own ticket: it edits an exported type in
-// internal/verify, which is outside this ticket's authorization.
+// The vocabulary type lives below both packages because neither may import
+// the other. internal/journal is layer 2 and internal/verify is layer 3, so
+// naming a verify type in this package's production code would be the upward
+// edge internal/archtest forbids, and internal/verify declines to import this
+// package in the other direction by its own contract (see
+// internal/verify/doc.go). A type both of them need has to sit underneath
+// both, which is what internal/scope is for and all it is for.
+//
+// The compile-time proof of the interface being satisfied lives in
+// verifycontract_test.go, and it has to be a _test.go file: writing
+// verify.JournalReader anywhere requires importing internal/verify from the
+// file that writes it, which a non-test file here may not do for the reason
+// above. archtest's collectImports skips _test.go files, so the external
+// journal_test package can name both sides and assert they meet. That file
+// also asserts the aliases really are aliases and pins the three scope kind
+// strings, which are the level YAML surface.
 package journal

@@ -4042,6 +4042,86 @@ replacement was built first.
   `python3 scripts/check-ci-gates.py`, all green.
 
 
+### Day 3 follow-up, 2026-08-19: Scope moves below both packages, and the journal adapter is gone
+
+Issue #88. `internal/journal` used to declare its own `ScopeKind` and `Scope`,
+mirroring `verify.ScopeKind` and `verify.Scope` field for field and value for
+value, because layer 2 may not import layer 3 and `internal/verify` declines to
+import `internal/journal` in the other direction. The mirror worked, but it cost
+a three line translating adapter in `verifycontract_test.go` and a reflect-based
+drift test whose only job was to notice when the two copies stopped matching.
+Both are now deleted, because there is nothing left to drift.
+
+- **`internal/scope` is new, at layer 0, and imports nothing at all.** It holds
+  `ScopeKind`, `Scope`, and the constants `Level`, `LastN`, and `Last`. It exists
+  for one reason: two packages that may never import each other need to name the
+  same type, so that type has to sit underneath both. `internal/archtest`'s
+  layers table gets exactly one new entry for it and nothing else in that file
+  changed.
+- **`internal/verify.Scope` and `.ScopeKind` are now type ALIASES, not new named
+  types**, and `ScopeLevel`, `ScopeLastN`, and `ScopeLast` are the lower
+  package's constants under the old names. The distinction is the whole ticket:
+  an alias makes `verify.Scope` and `scope.Scope` one type, so
+  `*journal.Journal` satisfies `verify.JournalReader` outright. A named type
+  would compile here and silently reinstate the adapter. Every existing caller
+  of `verify.Scope`, including `internal/game`'s `noJournal` and every test that
+  builds one, compiles unchanged; that is what an alias is for.
+- **`journal.Commands` and `journal.commands` now take `scope.Scope`.** The
+  parameter is named `sc`, not `scope`, so it does not shadow the package
+  identifier the switch arms need. Nothing about the query logic moved: the three
+  arms, the ordering rationale, the non-positive `N` guard, and the `Err()`
+  behaviour are byte for byte what they were.
+- **`verifycontract_test.go` is a fifth of its former size.** The adapter type
+  and the mirror drift test are gone. What replaces them is
+  `var _ verify.JournalReader = (*journal.Journal)(nil)` with no wrapper,
+  a `var aliasProof scope.Scope = verify.Scope{...}` that fails to compile if the
+  aliases ever become named types (Go assignability needs one side unnamed, so
+  two separate named structs cannot satisfy it however identical their fields),
+  a reflect check that reports which package and name each side actually has when
+  it does break, a table pinning the three kind strings `"level"`, `"last_n"`,
+  and `"last"` because those are the level YAML surface, and one behavioural test
+  driving a real journal through the `verify.JournalReader` interface for all
+  three kinds.
+- **Both guards were confirmed to fire.** Reverting `internal/verify/check.go` to
+  self-consistent named types, so that `internal/verify` itself still builds,
+  breaks `internal/journal`'s test build in six places with the exact message the
+  ticket is about: `*journal.Journal does not implement verify.JournalReader
+  (wrong type for method Commands)`. A test that passes before and after a change
+  tests nothing, so this was worth checking rather than assuming.
+- **One acceptance criterion in #88 cannot be met as literally worded, and was
+  not.** The ticket asks for
+  `var _ verify.JournalReader = (*journal.Journal)(nil)` in a NON-test file in
+  `internal/journal`, with no import of `internal/verify` anywhere in the
+  package. Those two halves contradict each other: naming `verify.JournalReader`
+  requires importing `internal/verify` from the file that names it, so such a
+  non-test file would itself be the upward edge the same ticket exists to remove.
+  The assertion therefore stays in the external `journal_test` package, which is
+  legal because `archtest`'s `collectImports` skips `_test.go` files. What
+  actually changed, and what "literally satisfies" was reaching for, is that the
+  assertion no longer needs a wrapper struct.
+- **Two files outside the ticket's own list were touched, both mechanically.**
+  `internal/journal/journal_test.go` is an in-package test that named the removed
+  `Scope`, `ScopeKind`, and the three constants; it now names them through
+  `scope`. `internal/journal/doc.go`'s earlier section on the level boundary
+  referred to `ScopeLevel`, `ScopeLastN`, and `ScopeLast`, identifiers this
+  package no longer has, so those names were updated in place. No sentence in
+  that section changed meaning.
+- **Left alone deliberately.** `internal/game/session.go`'s comment on
+  `Env.Journal` still says a real journal is not wired in because
+  `journal.Journal` does not satisfy `verify.JournalReader`. The first clause is
+  still true and the second is now false, but wiring a journal into
+  `internal/game` is not this ticket and the comment misleads nobody into a bug.
+  Issue #87, the `events` table drift against ARCHITECTURE.md section 4.11, is a
+  separate ticket in the same cluster and was not touched.
+- **Gates run on this host:** `gofmt -s -w .`, `go vet ./...`, `go build ./...`,
+  `go test ./...`, `go test -race ./...`, `go test ./internal/archtest/...`,
+  `./scripts/check-punctuation.sh`, `./scripts/check-allowlist-regexp.sh`,
+  `./scripts/check-links.sh`, `./scripts/check-cli-package.sh`,
+  `python3 scripts/check-ci-gates.py`, all green. `govulncheck` and `gosec` are
+  not installed here and are left to CI. No container is involved anywhere in
+  this change, so nothing was skipped for want of a Docker daemon.
+
+
 ## Day 6: hardening, CI, packaging
 
 - [ ] CI green on both platforms
