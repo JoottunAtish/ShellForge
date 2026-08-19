@@ -158,10 +158,10 @@ func (r *Runner) StateDir() string {
 
 // validateLevelRoot refuses, rather than adjusts, any path that is not safe
 // to hand to a recursive delete inside the sandbox. The lexical rule itself
-// lives in platform.UnsafeLevelRoot, shared with internal/sandbox and
-// internal/content's validator; this wrapper keeps this package's own
-// sentinel error and message shape, both of which resolveLevelRoot's callers
-// and this package's tests depend on.
+// lives in platform.UnsafeLevelRoot, shared with internal/content's
+// validator; this wrapper keeps this package's own sentinel error and
+// message shape, both of which resolveLevelRoot's callers and this
+// package's tests depend on.
 func validateLevelRoot(root string) error {
 	if reason := platform.UnsafeLevelRoot(root); reason != nil {
 		return fmt.Errorf("refusing to use %q as a level root: %v: %w", root, reason, ErrUnsafeLevelRoot)

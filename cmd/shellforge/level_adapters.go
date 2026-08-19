@@ -10,21 +10,20 @@ import (
 	"github.com/JoottunAtish/ShellForge/internal/content"
 	"github.com/JoottunAtish/ShellForge/internal/content/setup"
 	"github.com/JoottunAtish/ShellForge/internal/game"
-	"github.com/JoottunAtish/ShellForge/internal/runtime"
-	"github.com/JoottunAtish/ShellForge/internal/sandbox"
 	"github.com/JoottunAtish/ShellForge/internal/verify"
 )
 
-// The two things `run` can play, behind one interface.
+// What `run` can play, behind one interface.
 //
-// gameLevel is a level loaded from the YAML pack, which is every real level.
-// demoLevel is the Day 1 hardcoded one, kept reachable until the golden harness
-// has replaced the safety coverage its tests carry. See demoLevelID in
-// cmd_run.go for the full reason and the follow-up.
+// gameLevel is a level loaded from the YAML pack, which is every level there
+// is. It was not always the only one: the Day 1 hardcoded demo sat beside it
+// until #96 deleted it, and playable outlived the demo on purpose.
 //
-// Keeping both behind playable is what stops the FIFO plumbing, the teardown
-// ordering and the raw-mode rules from existing twice. Those are exactly the
-// parts that were hard to get right, and a second copy would drift.
+// Keeping the flow behind an interface is what stops the FIFO plumbing, the
+// teardown ordering and the raw-mode rules from existing twice. Those are
+// exactly the parts that were hard to get right, and a second copy would
+// drift, so the next thing `run` has to play adapts to playable rather than
+// forking the flow.
 
 // setupStateDir returns SF_STATE for a run.
 //
@@ -117,66 +116,13 @@ func (r *gameResponder) check(ctx context.Context) string {
 
 	res, err := r.session.Check(checkCtx)
 	if err != nil {
+		// Unreachable and untested today: game.Session.Check's own doc comment
+		// says it always returns a nil error. Keep this branch so a future
+		// Verifier.Run (or Session.Check) that can actually fail has somewhere
+		// to report it, but do not assume it is covered until it is reachable.
 		return renderCheckError(err, r.level.ID)
 	}
 	return renderCheckReply(res, r.color)
-}
-
-// --- the Day 1 demo level ---
-
-// demoLevel adapts internal/sandbox's hardcoded level to playable.
-//
-// It closes over the session because DemoLevel's own Setup, Teardown and Check
-// each take one, which is the shape that predates game.Session.
-type demoLevel struct {
-	level sandbox.DemoLevel
-	sess  runtime.Session
-}
-
-func (d *demoLevel) LevelID() string  { return d.level.ID }
-func (d *demoLevel) Root() string     { return d.level.Root }
-func (d *demoLevel) StateDir() string { return d.level.StateDir() }
-
-func (d *demoLevel) Setup(ctx context.Context) error    { return d.level.Setup(ctx, d.sess) }
-func (d *demoLevel) Teardown(ctx context.Context) error { return d.level.Teardown(ctx, d.sess) }
-
-// PrintBriefing keeps the demo's original plain presentation.
-//
-// Deliberately not routed through the markdown renderer. The demo exists to be
-// deleted, and its briefing is a Go string literal rather than authored level
-// content, so rendering it would only create a second thing to keep working.
-func (d *demoLevel) PrintBriefing(w io.Writer, _ bool) {
-	fmt.Fprintf(w, "\n%s\n%s\n%s\n\n", briefingRule, d.level.Briefing, briefingRule)
-}
-
-func (d *demoLevel) Responder(_ bool) controlResponder {
-	return &demoResponder{level: d.level, sess: d.sess}
-}
-
-// demoResponder is the Day 1 control logic, unchanged.
-type demoResponder struct {
-	level sandbox.DemoLevel
-	sess  runtime.Session
-}
-
-func (r *demoResponder) Reply(ctx context.Context, verb, _ string) string {
-	switch verb {
-	case "check":
-		passed, message, err := r.level.Check(ctx, r.sess)
-		if err != nil {
-			return fmt.Sprintf("check could not run: %v\n", err)
-		}
-		if passed {
-			return fmt.Sprintf("PASS: %s\n", message)
-		}
-		return fmt.Sprintf("FAIL: %s\n", message)
-	case "brief":
-		return r.level.Briefing + "\n"
-	case "hint", "reset":
-		return fmt.Sprintf("`%s` is not built yet. It lands later in the build plan; see PROGRESS.md.\n", verb)
-	default:
-		return fmt.Sprintf("unknown request %q\n", verb)
-	}
 }
 
 // verifyLevelBudget is the engine's whole-run budget, which bounds one `check`.
