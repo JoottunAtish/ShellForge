@@ -268,7 +268,7 @@ the game runs from inside WSL, which is a real Linux host.
 
 ```bash
 go build -o bin/shellforge ./cmd/shellforge
-./bin/shellforge run demo
+./bin/shellforge run nav-01
 ```
 
 Docker Desktop's WSL integration shares one daemon between Windows and WSL, so

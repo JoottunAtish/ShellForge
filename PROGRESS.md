@@ -19,14 +19,14 @@ formally cut.
 | `go test ./...` | Green |
 | Layer dependency enforcement | Done, and verified to fail on a deliberate violation |
 | Punctuation gate | Done, and verified to fail on a deliberate violation |
-| CLI dispatcher | `cmd/shellforge` runs on `spf13/cobra` as of #48, not the hand-rolled dispatcher. Fourteen verbs registered (`doctor` `init` `play` `run` `check` `hint` `reset` `skip` `map` `stats` `sandbox` `bug-report` `author` `version`). As of issue #71, `init` and the whole `sandbox` group are real rather than stubs: `init` resolves a backend through `internal/sandbox.Resolve`, prints which one it picked and why, and provisions it; `sandbox` is `status`, `shell`, `rebuild`, `destroy` (`build` is gone: `Provision` already builds the image or distribution, so it had no behaviour distinct from `init`), each real. `run`'s own sandbox resolution now goes through the same `internal/sandbox.Resolve` path as `init`, dropping its direct `internal/runtime/docker` import. `doctor` (issue #70) is wired to a real `sandbox.NewProber()` instead of `nil`, so `sandbox_health` reports real state instead of an unconditional `Warn`. `version`, `help`, `run demo`, `author validate`, `author test`, `doctor`, `init`, and the four `sandbox` subcommands all work; every other verb still fails through `ux.Fail` with a remediation. Acceptance criterion 11 of #71 (an interactive `sandbox shell` on Windows) is deliberately not delivered: see the Day 3 entry below. **The whole `cmd/shellforge` package was untracked by git until #11**: `.gitignore`'s unanchored `shellforge` pattern matched the directory, so it was never committed and CI never compiled or tested it. |
+| CLI dispatcher | `cmd/shellforge` runs on `spf13/cobra` as of #48, not the hand-rolled dispatcher. Fourteen verbs registered (`doctor` `init` `play` `run` `check` `hint` `reset` `skip` `map` `stats` `sandbox` `bug-report` `author` `version`). As of issue #71, `init` and the whole `sandbox` group are real rather than stubs: `init` resolves a backend through `internal/sandbox.Resolve`, prints which one it picked and why, and provisions it; `sandbox` is `status`, `shell`, `rebuild`, `destroy` (`build` is gone: `Provision` already builds the image or distribution, so it had no behaviour distinct from `init`), each real. `run`'s own sandbox resolution now goes through the same `internal/sandbox.Resolve` path as `init`, dropping its direct `internal/runtime/docker` import. `doctor` (issue #70) is wired to a real `sandbox.NewProber()` instead of `nil`, so `sandbox_health` reports real state instead of an unconditional `Warn`. `version`, `help`, `run <level-id>`, `author validate`, `author test`, `doctor`, `init`, and the four `sandbox` subcommands all work; every other verb still fails through `ux.Fail` with a remediation. Acceptance criterion 11 of #71 (an interactive `sandbox shell` on Windows) is deliberately not delivered: see the Day 3 entry below. **The whole `cmd/shellforge` package was untracked by git until #11**: `.gitignore`'s unanchored `shellforge` pattern matched the directory, so it was never committed and CI never compiled or tested it. |
 | `shellforge run <level-id>` | Works on Linux for any level in the pack, with zero Go changes between levels. Loads from the embedded YAML, renders the briefing through glamour, prints the objective checklist, provisions, materializes the level, hands over a real instrumented bash, serves `check` over the existing FIFO control channel, and tears the level world down on every exit path through one cleanup function. An unknown id fails through `ux.Fail` naming the ids that exist. Refuses on a Windows host with the `windows-needs-wsl` anchor. **Never run against a real container from a developer machine**: no Docker socket here, so every end-to-end claim rests on unit tests plus CI's golden run. The learner's shell starts in `/home/learner`, not the level root, which is what a login shell does and what nav-01 teaches. |
-| `shellforge run demo` | Still works, deliberately. The Day 1 hardcoded level is kept until a YAML isolation test and the golden harness have replaced the safety coverage `internal/sandbox/demo_golden_test.go` carries, which is the repository's only live host-isolation test. Tracked as a follow-up. |
+| `shellforge run demo` | Gone, as of #96. The Day 1 hardcoded level and its four files are deleted, and `demo` is now an unknown level id like any other: `run demo` reports that there is no such level and lists the ones there are. The safety coverage its tests carried moved to `cmd/shellforge/isolation_test.go`, against `pipe-05` from the real pack, and is named in the Sandbox image job's own `-run` pattern so it actually runs. |
 | `shellforge author test` | Done. Runs the `docs/LEVEL-FORMAT.md` section 7 golden contract per level and is what `make golden` calls, a target that had been calling a command that did not exist since Day 0. Refuses rather than skips without a Docker daemon, because a `make golden` reporting success having tested nothing is worse than no gate. |
 | Sandbox image | `Containerfile` written, and built by CI's Sandbox image job on every run. Not built on a developer machine here: no Docker socket in this environment. |
 | Shell instrumentation | `instrument.bash` written, and exercised by every learner shell CI's golden run provisions, including the missing-SF_STATE recovery path added in this PR. Not exercised on a developer machine here, for the same reason. |
 | Content pack | `pack.yaml` with six acts declared, and nine levels written: `nav-01` to `nav-04`, `files-01` to `files-04` (issue #54), and `pipe-05`. They validate clean, are embedded via `packs/packs.go`, and are all reachable from `shellforge run`. `pipe-05` is out of curriculum order on purpose: it is the engine's reference fixture, the level `docs/LEVEL-FORMAT.md` section 6 is written against, and the first whose world comes from committed assets rather than inline content. The golden contract has run all nine against a real container in CI's Sandbox image job, which found and fixed four real bugs (see the current-state line above); no developer machine here has a Docker socket, so CI rather than a person is the witness. Levels 9 to 25 are Day 5. |
-| Level assets | First three committed: `assets/app-1.log`, `app-2.log`, `billing.log`, for pipe-05. Produced by the deterministic generator in `internal/sandbox/demo_level.go` rather than hand written, so their numbers came from code that already had consistency tests. The durable guarantee is `internal/content/pipe05_assets_test.go`, not the generator, which is slated for deletion under #96: five tests count the answers out of the committed bytes the way the level's solution counts them, including one that catches a noise line matching `error` case-insensitively without being an ERROR record. |
+| Level assets | First three committed: `assets/app-1.log`, `app-2.log`, `billing.log`, for pipe-05. They were produced by a deterministic generator rather than hand written, so their numbers came from code that already had consistency tests; that generator lived in `internal/sandbox/demo_level.go` and was deleted with it under #96, which changes nothing about the committed bytes. The durable guarantee always was `internal/content/pipe05_assets_test.go`, not the generator: five tests count the answers out of the committed bytes the way the level's solution counts them, including one that catches a noise line matching `error` case-insensitively without being an ERROR record. |
 | `internal/game` | A thin `Session`: load, setup, brief, check, teardown, and nothing else. It declares its own `Verifier` interface so it is testable with a two-method fake, borrows the `runtime.Session` it is given and never closes it, and holds the only `content.CheckSpec` to `verify.Spec` conversion, which has to sit above both peers. No event bus, no scoring, no unlock state, no store writes: all Day 4. |
 | Pack loading and validation | Done in `internal/content` (issue #53). `LoadPack`, `Embedded`, `Pack.Level`, `Pack.Order`, and `Validate` with a `TypeChecker` the caller supplies, so `internal/content` and `internal/verify` stay peers rather than one importing the other. `shellforge author validate <pack>` reports every problem one per line and supports `--json`. A legal `command_matched` or `command_not_matched` check now gets a warning naming issue #88: no runtime session wires a real journal yet, so the check verifies nothing until then, and the validator says so rather than staying quiet. |
 | Level setup and teardown runner | Done in `internal/content/setup` (issue #50). `Runner.Setup`, `Teardown`, and `IsSetUp` materialize and remove a level's world inside the sandbox: teardown-first idempotency, a `loglines` content generator behind a registered kind, CRLF stripping on the host side before a `runtime.FileEntry` is built, rollback on any failure via `context.WithoutCancel`, and a `SETUP_OK` sentinel written under the state directory rather than the level root. Not wired into the game orchestrator or the CLI: no caller constructs a `Runner` yet outside its own tests. That wiring, plus the pack loader and validator that produce a real `content.Level`, is #52, #53, and #54. |
@@ -3972,6 +3972,92 @@ for on the one mutating action.
   but neither has run on real Windows in this round any more than it had in
   the original entry above.
 
+
+### Day 3 follow-up, 2026-08-19: the demo level is gone, and its safety tests are on a real one
+
+Issue #96. `internal/sandbox/demo_level.go` was the Day 1 hardcoded level,
+marked for deletion from the day it was written and kept well past that date for
+one reason: its own tests held the repository's only live host-isolation
+coverage, its only live filesystem-purity check outside the golden harness, its
+only sudo refusal test, and the only place `images/rc/instrument.bash` actually
+ran against a container. The ticket's own rule was that none of that could be
+closed by deleting the files and asserting a replacement exists somewhere, so the
+replacement was built first.
+
+- **`cmd/shellforge/isolation_test.go` is new, and holds four tests against
+  `pipe-05` from the embedded pack.** `TestSandboxIsolationLeavesTheHostUntouched`
+  is the one the ticket names: it writes a canary into `t.TempDir()` on the host,
+  records the host working directory, runs
+  `rm -rf / ; rm -rf /* ; rm -rf ~` inside the sandbox as the learner with no
+  sudo, and then asserts the canary is unchanged byte for byte, the host working
+  directory lost no entries, the level world really was destroyed, and the
+  level's own `Setup` puts it back well enough that the level's solution passes
+  its checks again. `TestSandboxHasNoHostMounts` and
+  `TestSudoIsRefusedByNoNewPrivileges` are level-agnostic ports, unchanged in what
+  they assert. `TestInstrumentationEmitsMarkersForARealSession` is the scripted
+  bash session through `pty.NewParser`, ported because nothing else in the
+  repository runs the rc file for real.
+- **Two of those assertions are stronger than the ones they replace.** The
+  destructive test now reads `/opt/shellforge/.sandbox-id` and refuses outright
+  unless it names our sandbox, which is the marker check the `destructive-safety`
+  skill asks for before anything recursive runs, and which the demo version did
+  not have. Its "the removal really executed" assertion now probes the level root
+  itself: the old pair of probes was joined with an `&&` and one half was a file
+  the learner had not created yet, so that assertion could never actually fire.
+- **The Sandbox image job's `-run` pattern is an exact-name allowlist, so the
+  four names were added to it.** This is the part that makes the deletion honest
+  rather than a coverage trade: a test that exists and never runs proves nothing,
+  which is the trap the ticket warned about. Nothing else in `ci.yml` changed.
+- **Deleted:** `internal/sandbox/demo_level.go`, `demo_level_test.go`,
+  `demo_golden_test.go`, `demo_isolation_test.go`, the `demoLevel` and
+  `demoResponder` adapters, the `demoLevelID` constant, the special-case branch
+  in `cmdRun`, and `runDemo`. `internal/sandbox` is down to its `doc.go`. The
+  `playable` and `controlResponder` interface declarations are byte for byte
+  unchanged: they are what stops the FIFO plumbing, the teardown ordering and the
+  raw-mode rules from existing twice, and they outlive the demo on purpose. Their
+  doc comments lost the sentence naming the demo, because a comment describing
+  something the code no longer has is the staleness `CLAUDE.md` calls worse than
+  none.
+- **Three tests were reworked rather than deleted, and two were deleted rather
+  than reworked.** `TestControlChannelAnswersTheShim` now drives the production
+  `gameResponder` over a real `game.Session` for `pipe-05`, and asks the engine
+  directly alongside the shim so that a missing `PASS:` says whether the control
+  channel or the level is at fault. Its verdict assertions moved from a prefix
+  check to a substring check, because a real check reply leads with the objective
+  checklist and the verdict is a line inside it; the checklist is now asserted
+  too. `TestHandleControlVerb` and `TestHandleControlVerbReportsABrokenRuntime`
+  now build a `game.Session` over the existing `fakeSession` and a new
+  two-method fake `game.Verifier`, which is exactly what that interface is
+  declared in the consuming package for, so both still run with no daemon.
+  `TestPrintBriefingShowsTheObjective` was pure duplication of
+  `render_brief_test.go`'s existing coverage of the real briefing path and is
+  gone. `TestBriefingDoesNotLeakTheAnswer` was a genuine gap there, so it moved
+  into that file, scoped to `pipe-05` and reading the forbidden strings out of
+  the level's own `file_content` checks rather than hardcoding them.
+- **`docs/05-troubleshooting.md` told a Windows learner to run
+  `./bin/shellforge run demo`.** That command now fails, so the line names
+  `nav-01` instead.
+- **What this run could NOT verify, and why.** This host has a Docker CLI and no
+  daemon, so every test that needs a container was skipped locally, cleanly and
+  by design: all four new tests in `isolation_test.go`,
+  `TestControlChannelAnswersTheShim`, `TestEveryLevelGoldenPath`,
+  `TestPipe05RejectsNearMisses`, and the `internal/runtime/docker` contract
+  suite. CI's Sandbox image job is the witness for the isolation, purity and
+  instrumentation claims above, exactly as it was for the Day 2 golden run.
+  `govulncheck` and `gosec` are not installed here either and are left to CI.
+- **Residual staleness, left deliberately.** Comments in
+  `internal/content/setup/runner.go`, `internal/content/setup/runner_test.go` and
+  `packs/core-linux-basics/assets/README.md` still name
+  `internal/sandbox/demo_level.go` as the prior art they were derived from. They
+  are provenance notes rather than instructions, and this change was scoped to
+  keep out of `internal/content` and the pack, so they stay for whoever next
+  edits those files.
+- **Gates run on this host:** `gofmt -s -w .`, `go vet ./...`, `go build ./...`,
+  `go test ./...`, `go test -race ./...`, `go test ./internal/archtest/...`,
+  `./scripts/check-punctuation.sh`, `./scripts/check-allowlist-regexp.sh`,
+  `./scripts/check-links.sh`, `./scripts/check-cli-package.sh`,
+  `python3 scripts/check-ci-gates.py`, all green.
+
 ### Day 3, 2026-08-19: the CLI wires init, sandbox, and doctor to a real backend
 
 Issue #71, the L5 half. Built on top of an already-green L1 half from the same
@@ -4079,6 +4165,31 @@ not committed), `./scripts/check-links.sh` (64 links), `./scripts/check-cli-pack
 `GOOS=windows GOARCH=amd64 go build ./...` and `GOOS=darwin GOARCH=arm64 go
 build ./...`. `go.mod` and `go.sum` are byte-for-byte unchanged; no dependency
 was added.
+
+
+**Merged `main` in mid-flight.** Issue #96 landed on `main` while this branch
+was being built, deleting `internal/sandbox/demo_level.go`, `run demo`, and
+the demo adapter. That touched two of the same files, so `main` was merged in
+rather than rebased and the two conflicts resolved by hand:
+`cmd/shellforge/cmd_run.go`'s import block, where #96 removed the
+`internal/sandbox` import that had served `sandbox.Demo()` and this branch
+re-adds it for `sandbox.Resolve` while dropping the
+`internal/runtime/docker` import #96 kept; and this file, where both changes
+appended a log entry and both are kept, #96's first because it merged first.
+One claim of this branch's own had to be corrected in the merge: the CLI
+dispatcher row above said `run demo` works, which stopped being true when #96
+deleted it, and now reads `run <level-id>`. Nothing else in this entry
+depended on the demo level.
+
+**`main` is red, and was before this branch existed.**
+`Test (windows-latest)` fails on `main` at both cf7fe2d and 155ebe9 with
+`TestStartResizeWatcher_StopEndsTheGoroutine` in `internal/pty` under
+`-race`: "resize count grew from 1 to 2 after stop, want the watcher
+goroutine to have exited". That is #68's Windows resize watcher racing its own
+stop, it is intermittent (the same commit range passed on other runs), and it
+is in a package this branch does not touch at all. It is filed separately
+rather than fixed here, because `All checks green` is the merge gate and a
+failure inherited from the base branch is not this branch's to repair.
 
 ## Day 6: hardening, CI, packaging
 
