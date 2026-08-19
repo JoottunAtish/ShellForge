@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -50,9 +51,14 @@ func TestValidateInstallDirRefusesTheUserProfile(t *testing.T) {
 	if err != nil {
 		t.Skipf("no user home directory on this host to test against: %v", err)
 	}
+	// The refusal formats the data directory with %q, so a Windows path
+	// arrives in the message with every backslash doubled. Look for the
+	// quoted form rather than the raw one: comparing against the raw path
+	// passes on Linux and fails on Windows for a reason that has nothing
+	// to do with what this test is checking.
 	if err := validateInstallDirUnder(tmp, home); err == nil {
 		t.Fatalf("validateInstallDirUnder(tmp, %q) (the real user profile directory) = nil error, want a refusal", home)
-	} else if !strings.Contains(err.Error(), tmp) {
+	} else if !strings.Contains(err.Error(), strconv.Quote(tmp)) {
 		t.Errorf("validateInstallDirUnder(tmp, %q) error = %q, want it to name the data directory %q", home, err.Error(), tmp)
 	}
 }
