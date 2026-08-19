@@ -3132,6 +3132,61 @@ runs for free inside `go test ./...` in both `Test` jobs, so a developer
 finds a missing heading locally before pushing, which was the whole appeal of
 option 2 over widening the grep.
 
+#### Review round, 2026-08-19
+
+One blocking finding, real: matching a call site on the literal identifier
+text `ux` made an aliased import, `uxpkg "internal/platform/ux"`, or a dot
+import invisible to the gate. "Not broken, just unable to notice" is exactly
+the state issue #86 describes, and nothing in the tree does either today, so
+it would have shipped unnoticed. Fixed at the root rather than guarded
+against: `uxBinding` now records how each file actually refers to package
+ux, computed from that file's own import declarations, and matches against
+the real local name instead of assuming one. Two fixture tests pin it, an
+aliased import and a dot import, each with a bad anchor that must be found.
+
+A suggestion narrowed the plumbing exemption from #86's own build: ux.Fail
+constructing `&Error{..., DocAnchor: docAnchor, ...}` from its own parameter
+was being exempted by skipping the whole ux package's composite literals,
+which would have also skipped a real literal anchor written by some future
+second constructor in that package. Narrowed to exempt the unresolvable
+value specifically, not the site. A new fixture, a literal `DocAnchor` in a
+hypothetical second ux constructor, proves the narrower version still
+catches what the broad one would have missed.
+
+A second suggestion closed a silent gap: `ux.Fail(spreadArgs()...)` is legal
+Go with `len(v.Args) == 1`, and the old code read that as "not a Fail call"
+rather than "a Fail call I cannot read," so the anchor argument passed
+through unreported in the one shape a call arity check could not name. Now
+reported as unverifiable like every other unresolvable anchor, with its own
+fixture.
+
+Two nits: an unreachable `&` unwrap in `resolveString` guarding against a
+string-typed value that can never structurally be a pointer, with a comment
+that misdescribed how the struct-literal form was actually found (`ast.Inspect`
+already recurses into the composite literal inside the unary expression on
+its own); and a stale comment on `parsedFile` describing an `fset` field the
+struct does not have. Both fixed; `parsedFile` earned its second field
+anyway once it started carrying the per-file `uxBinding`.
+
+Rebased onto `main` past #108, #109, and #131, none of which touch this
+package; only `PROGRESS.md` conflicted, resolved by keeping both entries.
+
+Not fixed here, filed as #132 instead, per the reviewer's own read that it
+is a clean follow-up and not something to bolt onto this branch: three
+implementations of the same doc-anchor rule now exist in the tree
+(`cmd/shellforge`'s local gate from #103, `internal/store`'s hardcoded
+anchor list, and this package), and roughly 250 lines of near-identical AST
+walking and heading matching exist in two of them. The alias and dot-import
+guard has moved across in this round, closing the gap the reviewer named
+explicitly. A second gap was found while writing that fix rather than
+reported by review: `cmd/shellforge`'s local gate also follows a registered
+`anchorForwarders` map so a helper function forwarding its caller's anchor
+is not flagged, and this package has no equivalent. #103's
+`failUnlessAlreadyUserFacing` is the one real forwarder that shape covers,
+and #103 has not merged yet, so this package has nothing to regress against
+today; #132 records that the two gates must be reconciled on that point
+before the narrower one is deleted, not after.
+
 ### Day 3 follow-up, 2026-08-17: optional has one home, the objective
 
 Issue #97. `internal/content`, `internal/game`, six level files, and the docs

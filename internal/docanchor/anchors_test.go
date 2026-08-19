@@ -18,11 +18,97 @@ import (
 // against.
 const troubleshootingPath = "docs/05-troubleshooting.md"
 
-// parsedFile is one non-test .go file, parsed. fset carries the position
-// information an unverifiable finding reports; this groups a file's AST
-// with the others in its package for the two-pass const-then-call scan.
+// uxImportPath is what a file must import to reach ux.Fail or ux.Error from
+// outside the ux package itself.
+const uxImportPath = "github.com/JoottunAtish/ShellForge/internal/platform/ux"
+
+// parsedFile is one non-test .go file, parsed, together with how THIS file
+// (import bindings are per file, not per package) refers to package ux.
 type parsedFile struct {
-	ast *ast.File
+	ast    *ast.File
+	uxBind uxBinding
+}
+
+// uxBinding describes how one file refers to package ux: qualified under a
+// local name (the ordinary case, "ux" unless the import is aliased),
+// unqualified because the file dot-imports it, or unqualified because the
+// file IS internal/platform/ux and Fail/Error are its own declarations.
+//
+// Matching on the literal identifier "ux" was the bug this type fixes: an
+// aliased import, `uxpkg "internal/platform/ux"`, or a dot import made a
+// real ux.Fail call site invisible to the old, identifier-text-only match.
+// Nothing in this repository does either today, but "not broken, just
+// unable to notice" is exactly the state issue #86 was filed to fix, so the
+// binding is computed from the actual import rather than assumed.
+type uxBinding struct {
+	localName   string // e.g. "ux", or an alias; empty when dot or samePackage
+	dot         bool
+	samePackage bool
+}
+
+// reachable reports whether Fail or Error could possibly be reached from
+// this file at all. A file that imports nothing of ux, and is not ux
+// itself, cannot contain a real call site, so its AST is not worth walking.
+func (b uxBinding) reachable() bool {
+	return b.dot || b.samePackage || b.localName != ""
+}
+
+// isFailCall reports whether fun names Fail as this file would have to
+// spell it: the bare identifier when dot-imported or same-package, the
+// qualified selector under this file's own local name otherwise.
+func (b uxBinding) isFailCall(fun ast.Expr) bool {
+	switch v := fun.(type) {
+	case *ast.Ident:
+		return (b.dot || b.samePackage) && v.Name == "Fail"
+	case *ast.SelectorExpr:
+		if b.localName == "" {
+			return false
+		}
+		pkg, ok := v.X.(*ast.Ident)
+		return ok && pkg.Name == b.localName && v.Sel.Name == "Fail"
+	}
+	return false
+}
+
+// isErrorType is isFailCall's counterpart for the Error{} struct literal.
+func (b uxBinding) isErrorType(t ast.Expr) bool {
+	switch v := t.(type) {
+	case *ast.Ident:
+		return (b.dot || b.samePackage) && v.Name == "Error"
+	case *ast.SelectorExpr:
+		if b.localName == "" {
+			return false
+		}
+		pkg, ok := v.X.(*ast.Ident)
+		return ok && pkg.Name == b.localName && v.Sel.Name == "Error"
+	}
+	return false
+}
+
+// computeUxBinding inspects one file's own import declarations. samePackage
+// is decided by the caller from the file's directory, since a file never
+// imports its own package.
+func computeUxBinding(f *ast.File, samePackage bool) uxBinding {
+	if samePackage {
+		return uxBinding{samePackage: true}
+	}
+	for _, imp := range f.Imports {
+		path, err := strconv.Unquote(imp.Path.Value)
+		if err != nil || path != uxImportPath {
+			continue
+		}
+		switch {
+		case imp.Name == nil:
+			return uxBinding{localName: "ux"}
+		case imp.Name.Name == ".":
+			return uxBinding{dot: true}
+		case imp.Name.Name == "_":
+			return uxBinding{} // a blank import brings no identifier into scope
+		default:
+			return uxBinding{localName: imp.Name.Name}
+		}
+	}
+	return uxBinding{} // this file does not import ux at all
 }
 
 // findDocAnchors walks every non-test .go file under root and reports every
@@ -69,7 +155,8 @@ func findDocAnchors(t *testing.T, root string) (anchors []string, unverifiable [
 			return err
 		}
 		pkgDir := filepath.Dir(p)
-		byPkg[pkgDir] = append(byPkg[pkgDir], parsedFile{ast: f})
+		samePackage := strings.HasSuffix(filepath.ToSlash(pkgDir), "internal/platform/ux")
+		byPkg[pkgDir] = append(byPkg[pkgDir], parsedFile{ast: f, uxBind: computeUxBinding(f, samePackage)})
 		return nil
 	})
 	if err != nil {
@@ -78,25 +165,38 @@ func findDocAnchors(t *testing.T, root string) (anchors []string, unverifiable [
 
 	seen := map[string]bool{}
 
-	for pkgDir, files := range byPkg {
+	for _, files := range byPkg {
 		consts := packageStringConsts(files)
-		// ux.Fail itself constructs &Error{..., DocAnchor: docAnchor, ...}
-		// from its own parameter. That is plumbing, not a real emission
-		// site: every anchor it can ever carry is already checked at the
-		// ux.Fail(...) call site that supplied it. Matching the composite
-		// literal here too would flag that parameter as unverifiable on
-		// every run, for a call this package already covers by its other
-		// detection path.
-		insideUx := strings.HasSuffix(filepath.ToSlash(pkgDir), "internal/platform/ux")
 
 		for _, f := range files {
+			if !f.uxBind.reachable() {
+				continue // this file cannot contain a real ux.Fail or ux.Error site
+			}
 			ast.Inspect(f.ast, func(n ast.Node) bool {
-				expr, ok := docAnchorArg(n, insideUx)
+				expr, ok := docAnchorArg(n, f.uxBind)
 				if !ok {
+					return true
+				}
+				if expr == nil {
+					// A recognised Fail(...) call or Error{} literal whose
+					// anchor argument this package could not even locate,
+					// e.g. ux.Fail(spreadArgs()...). Reported rather than
+					// silently passed over, for the same reason any other
+					// unresolvable anchor is: a silently skipped anchor is
+					// exactly how the grep this package replaces went blind.
+					unverifiable = append(unverifiable, position(fset, n.Pos()))
 					return true
 				}
 				value, resolvable := resolveString(expr, consts)
 				if !resolvable {
+					if f.uxBind.samePackage {
+						// ux.Fail itself constructs &Error{..., DocAnchor:
+						// docAnchor, ...} from its own parameter. That is
+						// plumbing, not a real emission site: every anchor
+						// it can carry is already checked at the
+						// ux.Fail(...) call site that supplied it.
+						return true
+					}
 					unverifiable = append(unverifiable, position(fset, expr.Pos()))
 					return true
 				}
@@ -151,31 +251,36 @@ func packageStringConsts(files []parsedFile) map[string]string {
 }
 
 // docAnchorArg reports the expression carrying the doc anchor argument at n,
-// if n is one of the two shapes this package recognises.
+// if n is one of the two shapes this package recognises for pkg, the
+// enclosing file's binding for package ux.
 //
 // Shape one: ux.Fail(op, err, remediation, anchor), the positional form
 // every real call site in this repository uses. Shape two:
-// Error{..., DocAnchor: anchor, ...} or ux.Error{...}, optionally behind a
-// leading &, the struct-literal form ux.Fail itself is built from and the
-// one the old CI grep looked for exclusively.
+// Error{..., DocAnchor: anchor, ...}, the struct-literal form ux.Fail itself
+// is built from and the one the old CI grep looked for exclusively.
 //
-// insideUx disables shape two: see the comment on findDocAnchors' own use of
-// it for why matching the composite literal inside ux.go itself would flag
-// Fail's own parameter rather than a real anchor.
-func docAnchorArg(n ast.Node, insideUx bool) (ast.Expr, bool) {
+// ok is true whenever n IS a Fail call or an Error composite literal, even
+// when no readable anchor expression could be extracted from it (expr is
+// then nil): an oddly-shaped real call site, ux.Fail(spreadArgs()...) for
+// instance, is reported as unverifiable by the caller rather than silently
+// treated as not a call site at all. An Error{} literal that never sets
+// DocAnchor is not that case: the field defaults to "", which is the
+// already-legal no-doc-link value, so ok is false and there is nothing to
+// report.
+func docAnchorArg(n ast.Node, pkg uxBinding) (expr ast.Expr, ok bool) {
 	switch v := n.(type) {
 	case *ast.CallExpr:
-		if !isFailCall(v.Fun, insideUx) {
+		if !pkg.isFailCall(v.Fun) {
 			return nil, false
 		}
 		const docAnchorArgIndex = 3
 		if len(v.Args) <= docAnchorArgIndex {
-			return nil, false
+			return nil, true
 		}
 		return v.Args[docAnchorArgIndex], true
 
 	case *ast.CompositeLit:
-		if insideUx || !isErrorType(v.Type) {
+		if !pkg.isErrorType(v.Type) {
 			return nil, false
 		}
 		for _, elt := range v.Elts {
@@ -189,49 +294,19 @@ func docAnchorArg(n ast.Node, insideUx bool) (ast.Expr, bool) {
 			}
 			return kv.Value, true
 		}
+		return nil, false
 	}
 	return nil, false
 }
 
-// isFailCall reports whether fun names ux.Fail. Outside the ux package, only
-// the qualified form counts, so a function named Fail in some unrelated
-// package cannot be mistaken for this one. Inside the ux package, only the
-// bare form counts, since a same-package caller would never write the
-// qualified form and Fail itself is the only real construction site, per
-// docAnchorArg's composite-literal comment above.
-func isFailCall(fun ast.Expr, insideUx bool) bool {
-	switch v := fun.(type) {
-	case *ast.Ident:
-		return insideUx && v.Name == "Fail"
-	case *ast.SelectorExpr:
-		pkg, ok := v.X.(*ast.Ident)
-		return !insideUx && ok && pkg.Name == "ux" && v.Sel.Name == "Fail"
-	}
-	return false
-}
-
-// isErrorType reports whether t names ux.Error, the qualified form used
-// outside package ux, or the bare Error, the form ux.Fail itself uses from
-// inside its own package.
-func isErrorType(t ast.Expr) bool {
-	switch v := t.(type) {
-	case *ast.Ident:
-		return v.Name == "Error"
-	case *ast.SelectorExpr:
-		pkg, ok := v.X.(*ast.Ident)
-		return ok && pkg.Name == "ux" && v.Sel.Name == "Error"
-	}
-	return false
-}
-
 // resolveString resolves expr to a string value, either directly as a
-// literal or through a same-package constant, unwrapping a leading & first
-// since ux.Fail itself writes &Error{...}. ok is false when expr is neither,
-// which is the unverifiable case.
+// literal or through a same-package constant. ok is false when expr is
+// neither, which is the unverifiable case.
+//
+// expr is always itself a string expression here: docAnchorArg only ever
+// returns a positional call argument or a struct field value, and DocAnchor
+// is typed string, so there is no address-of form to unwrap.
 func resolveString(expr ast.Expr, consts map[string]string) (value string, ok bool) {
-	if u, isUnary := expr.(*ast.UnaryExpr); isUnary && u.Op == token.AND {
-		expr = u.X
-	}
 	switch v := expr.(type) {
 	case *ast.BasicLit:
 		if v.Kind != token.STRING {
@@ -542,10 +617,121 @@ func helper() error {
 	}
 }
 
+// TestFindDocAnchorsChecksALiteralInsideUxToo is the review finding that
+// narrowed the plumbing suppression: it must exempt Fail's own forwarded
+// parameter specifically, not every Error{} literal anywhere in the ux
+// package. A hypothetical second constructor writing a real literal anchor
+// must still be checked, exactly as it would be anywhere else in the
+// module.
+func TestFindDocAnchorsChecksALiteralInsideUxToo(t *testing.T) {
+	root := writeFixture(t, map[string]string{
+		"internal/platform/ux/ux.go": `package ux
+
+type Error struct {
+	Op, Remediation, DocAnchor string
+	Err                        error
+}
+
+func Fail(op string, err error, remediation, docAnchor string) *Error {
+	return &Error{Op: op, Err: err, Remediation: remediation, DocAnchor: docAnchor}
+}
+
+func namedErrorHelper() *Error {
+	return &Error{Op: "op", DocAnchor: "hypothetical-future-literal"}
+}
+`,
+	})
+	anchors, unverifiable := findDocAnchors(t, root)
+	if len(unverifiable) != 0 {
+		t.Fatalf("unverifiable = %v, want none", unverifiable)
+	}
+	if len(anchors) != 1 || anchors[0] != "hypothetical-future-literal" {
+		t.Fatalf("anchors = %v, want [hypothetical-future-literal]: a literal DocAnchor elsewhere in "+
+			"the ux package must be checked, not skipped along with Fail's own plumbing", anchors)
+	}
+}
+
 // TestFindDocAnchorsIgnoresAnUnrelatedFail guards the precision half of the
 // same fix: a function that merely happens to be named Fail in a package
 // that is not internal/platform/ux, called unqualified, must not be treated
 // as ux.Fail. Only the qualified form counts outside the ux package.
+// TestFindDocAnchorsDetectsAnAliasedImport pins the fix for the review
+// finding on #107: matching on the literal identifier "ux" made an aliased
+// import invisible. A real call site must not come back as two empty
+// slices when an author writes `uxpkg "internal/platform/ux"`.
+func TestFindDocAnchorsDetectsAnAliasedImport(t *testing.T) {
+	root := writeFixture(t, map[string]string{
+		"pkg/a.go": `package pkg
+
+import uxpkg "github.com/JoottunAtish/ShellForge/internal/platform/ux"
+
+func f() error {
+	return uxpkg.Fail("op", nil, "remediation", "aliased-anchor")
+}
+`,
+	})
+	anchors, unverifiable := findDocAnchors(t, root)
+	if len(unverifiable) != 0 {
+		t.Fatalf("unverifiable = %v, want none", unverifiable)
+	}
+	if len(anchors) != 1 || anchors[0] != "aliased-anchor" {
+		t.Fatalf("anchors = %v, want [aliased-anchor]: an aliased import must not make the call site invisible", anchors)
+	}
+}
+
+// TestFindDocAnchorsDetectsADotImport is the other half of the same finding:
+// a file outside package ux that dot-imports it can call Fail unqualified,
+// and that call site must be found too.
+func TestFindDocAnchorsDetectsADotImport(t *testing.T) {
+	root := writeFixture(t, map[string]string{
+		"pkg/a.go": `package pkg
+
+import . "github.com/JoottunAtish/ShellForge/internal/platform/ux"
+
+func f() error {
+	return Fail("op", nil, "remediation", "dot-import-anchor")
+}
+`,
+	})
+	anchors, unverifiable := findDocAnchors(t, root)
+	if len(unverifiable) != 0 {
+		t.Fatalf("unverifiable = %v, want none", unverifiable)
+	}
+	if len(anchors) != 1 || anchors[0] != "dot-import-anchor" {
+		t.Fatalf("anchors = %v, want [dot-import-anchor]: a dot import must not make the call site invisible", anchors)
+	}
+}
+
+// TestFindDocAnchorsReportsTooFewArguments covers ux.Fail(spreadArgs()...),
+// legal Go where a single multi-value call supplies all four parameters.
+// len(v.Args) is 1 in that shape, and the anchor is neither present as a
+// literal nor absent in a way that means "not a Fail call": it is a real
+// call site this package cannot read, so it must be reported rather
+// than silently treated as no call site at all.
+func TestFindDocAnchorsReportsTooFewArguments(t *testing.T) {
+	root := writeFixture(t, map[string]string{
+		"pkg/a.go": `package pkg
+
+import "github.com/JoottunAtish/ShellForge/internal/platform/ux"
+
+func parts() (string, error, string, string) {
+	return "op", nil, "remediation", "spread-anchor"
+}
+
+func f() error {
+	return ux.Fail(parts())
+}
+`,
+	})
+	anchors, unverifiable := findDocAnchors(t, root)
+	if len(anchors) != 0 {
+		t.Fatalf("anchors = %v, want none: this package cannot read an argument list built from a spread call", anchors)
+	}
+	if len(unverifiable) != 1 {
+		t.Fatalf("unverifiable = %v, want exactly one entry naming the call site", unverifiable)
+	}
+}
+
 func TestFindDocAnchorsIgnoresAnUnrelatedFail(t *testing.T) {
 	root := writeFixture(t, map[string]string{
 		"pkg/a.go": `package pkg
