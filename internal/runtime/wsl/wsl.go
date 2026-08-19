@@ -142,22 +142,55 @@ func normalizeCRLF(s string) string {
 	return strings.ReplaceAll(s, "\r\n", "\n")
 }
 
-// findRow runs `wsl -l -v` and returns the row matching rt.distro, if any.
-func (rt *wslRuntime) findRow(ctx context.Context) (distro, bool, error) {
+// listRows runs `wsl -l -v` and returns every distribution row it reports.
+//
+// A non-zero exit is not automatically an error: wsl.exe reports "no
+// distributions registered on this host at all" in more than one shape
+// depending on the build. Some print nothing and exit 0, which parseList
+// already reads as zero rows. Others print a human-readable sentence,
+// worded differently per display language and so never safe to match by
+// text the way the header row is dropped, and exit non-zero; a GitHub
+// hosted windows-latest runner is exactly this case. Both are read the same
+// way: no rows, no error. The one thing this must not paper over is a
+// genuine failure, so a non-zero exit whose output carries one of the
+// signatures classifyFailure recognizes is still reported as that failure.
+// Anything else non-zero and otherwise unrecognized is treated as "no
+// distributions", which is the honest answer when there is no stronger
+// signal either way: op names the caller's operation for a genuine failure's
+// message.
+func (rt *wslRuntime) listRows(ctx context.Context, op string) ([]distro, error) {
 	stdout, stderr, code, err := rt.run.run(ctx, []string{"wsl.exe", "-l", "-v"}, nil)
 	if err != nil {
-		return distro{}, false, rt.classifyFailure(ctx, "list WSL distributions", err, stderr)
+		return nil, rt.classifyFailure(ctx, op, err, stderr)
 	}
 	if code != 0 {
-		rows, parseErr := parseList(stdout)
-		if parseErr == nil && len(rows) == 0 {
-			return distro{}, false, nil
+		// Check for a recognizable failure signature before ever trying to
+		// parse stdout as a distribution table: a genuine failure can carry
+		// an empty stdout with everything on stderr, which parseList would
+		// otherwise read as a cleanly-parsed empty table and let win by
+		// accident. Only when nothing recognizable explains the non-zero
+		// exit is it read as "no distributions", regardless of whether
+		// stdout was empty, a friendly multi-line sentence that failed to
+		// parse as rows, or anything else unrecognized: that is the honest
+		// answer when there is no stronger signal either way.
+		combined := string(stdout) + string(stderr)
+		if containsAny(combined, kernelOutdatedSignatures...) || containsAny(combined, importBlockedSignatures...) {
+			return nil, rt.classifyFailure(ctx, op, fmt.Errorf("wsl -l -v exited %d: %s", code, stderr), stderr)
 		}
-		return distro{}, false, rt.classifyFailure(ctx, "list WSL distributions", fmt.Errorf("wsl -l -v exited %d: %s", code, stderr), stderr)
+		return nil, nil
 	}
 	rows, err := parseList(stdout)
 	if err != nil {
-		return distro{}, false, fmt.Errorf("wsl: list WSL distributions: %w", err)
+		return nil, fmt.Errorf("wsl: %s: %w", op, err)
+	}
+	return rows, nil
+}
+
+// findRow returns the row of `wsl -l -v` matching rt.distro, if any.
+func (rt *wslRuntime) findRow(ctx context.Context) (distro, bool, error) {
+	rows, err := rt.listRows(ctx, "list WSL distributions")
+	if err != nil {
+		return distro{}, false, err
 	}
 	for _, row := range rows {
 		if row.Name == rt.distro {
@@ -228,6 +261,7 @@ func (rt *wslRuntime) Provision(ctx context.Context, spec runtime.ImageSpec) err
 	if err != nil {
 		return err
 	}
+	terminated := false
 	if normalizeCRLF(current) != normalizeCRLF(wslConf) {
 		if err := rt.writeAndVerifyWslConf(ctx); err != nil {
 			return err
@@ -235,9 +269,18 @@ func (rt *wslRuntime) Provision(ctx context.Context, spec runtime.ImageSpec) err
 		if err := rt.terminate(ctx); err != nil {
 			return err
 		}
+		terminated = true
 	}
 
-	if err := rt.ensureRunning(ctx, row.State == "Running"); err != nil {
+	// row.State was captured before any terminate this call might have just
+	// run: an already-Running distribution whose /etc/wsl.conf needed
+	// rewriting is stopped by the terminate above, so ensureRunning must be
+	// told the real, current state, not the stale one findRow observed.
+	// Otherwise a successful Provision can leave the sandbox stopped, only
+	// appearing to satisfy "a successful Provision leaves the sandbox
+	// running" because verifyHardening's first probe boots it as a side
+	// effect.
+	if err := rt.ensureRunning(ctx, row.State == "Running" && !terminated); err != nil {
 		return err
 	}
 	return rt.verifyHardening(ctx)
@@ -478,17 +521,24 @@ func (rt *wslRuntime) present(ctx context.Context) (bool, error) {
 }
 
 // hasSandboxMarker reads markerPath as root inside rt.distro and reports
-// whether it holds exactly markerContent. A missing file is reported as
-// (false, nil); a read that fails outright is reported as (false, err).
-// Both make the caller refuse, because this fails closed: a marker Destroy
-// or Provision cannot positively confirm is treated the same as a marker
-// that is absent.
+// whether it holds exactly markerContent. A missing file (the read runs but
+// exits non-zero) is reported as (false, nil): both Destroy and Provision
+// still refuse on that, because a marker they cannot positively confirm is
+// treated the same as a marker that is absent, which is the fail-closed
+// half of this function's contract. A read that could not run at all (wsl.exe
+// itself failed to start or be waited on) is a different fact and is
+// reported as (false, err), wrapped through classifyFailure rather than
+// returned raw: a caller that folded this into "no marker" would tell a
+// learner their sandbox is a name collision with something Shellforge did
+// not create, and point them at `wsl --unregister`, the one command that
+// would destroy a healthy sandbox by hand, when the real cause was wsl.exe
+// not answering at all.
 func (rt *wslRuntime) hasSandboxMarker(ctx context.Context) (bool, error) {
-	stdout, _, code, err := rt.run.run(ctx, []string{
+	stdout, stderr, code, err := rt.run.run(ctx, []string{
 		"wsl.exe", "-d", rt.distro, "-u", "root", "--exec", "/bin/cat", "--", markerPath,
 	}, nil)
 	if err != nil {
-		return false, err
+		return false, rt.classifyFailure(ctx, "read the Shellforge sandbox marker", err, stderr)
 	}
 	if code != 0 {
 		return false, nil
@@ -500,21 +550,9 @@ func (rt *wslRuntime) hasSandboxMarker(ctx context.Context) (bool, error) {
 // row: Provision is where that is refused, so Status stays the cheap
 // non-judging probe the contract expects.
 func (rt *wslRuntime) Status(ctx context.Context) (runtime.Status, error) {
-	stdout, stderr, code, err := rt.run.run(ctx, []string{"wsl.exe", "-l", "-v"}, nil)
+	rows, err := rt.listRows(ctx, "check the Windows sandbox status")
 	if err != nil {
-		return runtime.Status{}, rt.classifyFailure(ctx, "check the Windows sandbox status", err, stderr)
-	}
-	if code != 0 {
-		rows, parseErr := parseList(stdout)
-		if parseErr == nil && len(rows) == 0 {
-			return runtime.Status{Backend: "wsl"}, nil
-		}
-		return runtime.Status{}, rt.classifyFailure(ctx, "check the Windows sandbox status", fmt.Errorf("wsl -l -v exited %d: %s", code, stderr), stderr)
-	}
-
-	rows, err := parseList(stdout)
-	if err != nil {
-		return runtime.Status{}, fmt.Errorf("wsl: check the Windows sandbox status: %w", err)
+		return runtime.Status{}, err
 	}
 	for _, row := range rows {
 		if row.Name != rt.distro {
@@ -567,11 +605,30 @@ func (rt *wslRuntime) Destroy(ctx context.Context) error {
 		return err
 	}
 	if !containsString(before, rt.distro) {
+		// Idempotent success means "no sandbox remains", not merely "wsl no
+		// longer lists it". A previous Destroy can unregister the
+		// distribution and then fail to remove its install directory, for
+		// instance because Windows still held ext4.vhdx open; retrying
+		// Destroy must finish that job rather than reporting success a
+		// second time while the 2 GB backing file sits orphaned forever.
+		// removeInstallDir validates dir itself, and os.RemoveAll on a
+		// directory that was never created is a no-op, so the ordinary
+		// never-provisioned case stays exactly as clean as before.
+		dir, err := rt.installDir()
+		if err != nil {
+			return err
+		}
+		if err := removeInstallDir(dir); err != nil {
+			return fmt.Errorf("wsl: remove the install directory %s: %w", dir, err)
+		}
 		return nil
 	}
 
 	hasMarker, err := rt.hasSandboxMarker(ctx)
-	if err != nil || !hasMarker {
+	if err != nil {
+		return err
+	}
+	if !hasMarker {
 		return ux.Fail(
 			"remove the Windows sandbox",
 			fmt.Errorf("distribution %q does not carry the Shellforge marker at %s", rt.distro, markerPath),
@@ -644,6 +701,17 @@ func missingFrom(before, after []string) []string {
 	return gone
 }
 
+// kernelOutdatedSignatures and importBlockedSignatures are the stderr
+// substrings that identify a genuine wsl.exe failure, as opposed to the
+// many shapes a non-zero exit with no real failure at all can otherwise
+// take (see listRows). classifyFailure and listRows both match against
+// these same two lists, so narrowing or widening what counts as a known
+// failure only ever happens in one place.
+var (
+	kernelOutdatedSignatures = []string{"WSL_E_KERNEL", "0x80370102", "kernel update"}
+	importBlockedSignatures  = []string{"0x80070005", "Access is denied", "antivirus"}
+)
+
 // classifyFailure turns a raw wsl.exe failure into a ux.Fail carrying a
 // remediation and a doc anchor. It mirrors the docker sibling's shape:
 // distinguish what is knowable from the failure text, and fall back to a
@@ -652,9 +720,14 @@ func missingFrom(before, after []string) []string {
 func (rt *wslRuntime) classifyFailure(_ context.Context, op string, err error, stderr []byte) error {
 	msg := string(stderr)
 	switch {
-	case containsAny(msg, "kernel", "update", "0x80370102", "WSL_E_KERNEL"):
+	// Match the specific kernel-outdated signatures only. The bare words
+	// "kernel" and "update" alone are too eager: "Access is denied. Please
+	// update your antivirus exclusions" contains "update" and would
+	// otherwise route here first and tell the learner to run `wsl
+	// --update`, which does nothing for an antivirus block.
+	case containsAny(msg, kernelOutdatedSignatures...):
 		return ux.Fail(op, err, "run `wsl --update` from an administrator PowerShell, then try again", "wsl-kernel-outdated")
-	case containsAny(msg, "0x80070005", "Access is denied", "antivirus"):
+	case containsAny(msg, importBlockedSignatures...):
 		return ux.Fail(op, err, "add an antivirus exclusion for the Shellforge cache directory and try again; see the troubleshooting guide", "wsl-import-blocked")
 	default:
 		return fmt.Errorf("%s: %w", op, err)

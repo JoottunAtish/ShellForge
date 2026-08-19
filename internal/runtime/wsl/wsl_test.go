@@ -191,6 +191,38 @@ func TestDestroyRefusesAnEmptyDistributionName(t *testing.T) {
 	}
 }
 
+// TestDestroyReportsAMarkerReadFailureDistinctFromNoMarker covers the case
+// where hasSandboxMarker's own wsl.exe invocation could not run at all, as
+// opposed to running and reporting no marker. Before this was split, both
+// were reported as wsl-name-collision, whose remediation tells the learner
+// to run `wsl --unregister shellforge-sandbox` by hand: exactly the
+// destructive command that removes a healthy sandbox when the real cause is
+// wsl.exe not answering.
+func TestDestroyReportsAMarkerReadFailureDistinctFromNoMarker(t *testing.T) {
+	readErr := errors.New("exec: \"wsl.exe\": file already closed")
+	fake := &fakeRunner{results: []fakeResult{
+		{stdout: quietListFixture(sandboxDistro), code: 0}, // enumerate: present
+		{err: readErr}, // marker read: the invocation itself failed
+	}}
+	rt := &wslRuntime{distro: sandboxDistro, run: fake}
+
+	err := rt.Destroy(context.Background())
+	if err == nil {
+		t.Fatal("Destroy with a failed marker read = nil error, want a refusal")
+	}
+	if hasDocAnchor(err, "wsl-name-collision") {
+		t.Errorf("Destroy error = %v, want it not to claim a name collision when the marker read itself failed", err)
+	}
+	if !errors.Is(err, readErr) {
+		t.Errorf("Destroy error = %v, want it to wrap the underlying marker-read failure so the cause is not lost", err)
+	}
+	for _, call := range fake.calls {
+		if containsArg(call, "--unregister") {
+			t.Errorf("Destroy with a failed marker read ran %v, want no --unregister at all", call)
+		}
+	}
+}
+
 func TestDestroyRefusesADistributionWithoutTheSandboxMarker(t *testing.T) {
 	fake := &fakeRunner{results: []fakeResult{
 		{stdout: quietListFixture(sandboxDistro), code: 0}, // enumerate: present
@@ -234,6 +266,11 @@ func TestDestroyRefusesAMarkerWithTheWrongContent(t *testing.T) {
 }
 
 func TestDestroyReturnsNilWhenNothingIsProvisioned(t *testing.T) {
+	// The not-present branch now also resolves and removes the install
+	// directory, so this needs an isolated DataDir/CacheDir like every other
+	// test that exercises paths.go's real filesystem calls; without it,
+	// Destroy would resolve a real path on the machine running the test.
+	setTestDataDirs(t, t.TempDir(), t.TempDir())
 	fake := &fakeRunner{results: []fakeResult{
 		{stdout: quietListFixture("Ubuntu", "Debian"), code: 0},
 	}}
@@ -245,6 +282,47 @@ func TestDestroyReturnsNilWhenNothingIsProvisioned(t *testing.T) {
 	for _, call := range fake.calls {
 		if containsArg(call, "--unregister") {
 			t.Errorf("Destroy with nothing provisioned ran %v, want no --unregister at all", call)
+		}
+	}
+}
+
+// TestDestroyRemovesAnOrphanedInstallDirectoryWhenNothingIsRegistered covers
+// a retried Destroy after an earlier one unregistered the distribution but
+// then failed to remove its install directory, for instance because Windows
+// still held ext4.vhdx open. Before this, the not-present branch returned
+// nil as soon as `wsl -l -q` no longer listed the distribution, without ever
+// touching the install directory, so the second Destroy reported success
+// while the 2 GB backing file stayed on disk forever.
+func TestDestroyRemovesAnOrphanedInstallDirectoryWhenNothingIsRegistered(t *testing.T) {
+	dataDir := t.TempDir()
+	setTestDataDirs(t, dataDir, t.TempDir())
+	resolvedDataDir, err := platform.DataDir()
+	if err != nil {
+		t.Fatalf("platform.DataDir: %v", err)
+	}
+
+	dir := installDirFor(resolvedDataDir, sandboxDistro)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "ext4.vhdx"), []byte("orphaned by an earlier failed Destroy"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	fake := &fakeRunner{results: []fakeResult{
+		{stdout: quietListFixture("Ubuntu", "Debian"), code: 0}, // enumerate: sandboxDistro already gone
+	}}
+	rt := &wslRuntime{distro: sandboxDistro, run: fake}
+
+	if err := rt.Destroy(context.Background()); err != nil {
+		t.Fatalf("Destroy with nothing registered but a leftover install directory = %v, want nil (finishing the earlier cleanup)", err)
+	}
+	if _, statErr := os.Stat(dir); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Errorf("orphaned install directory %s still exists after Destroy, want it gone", dir)
+	}
+	for _, call := range fake.calls {
+		if containsArg(call, "--unregister") || containsArg(call, "--terminate") {
+			t.Errorf("Destroy with nothing registered ran %v, want no terminate or unregister at all", call)
 		}
 	}
 }
@@ -268,6 +346,61 @@ func TestDestroyRefusesWhenMoreThanOneDistributionDisappears(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "Ubuntu") || !strings.Contains(err.Error(), "Debian") {
 		t.Errorf("Destroy error = %q, want it to name both distributions that disappeared", err.Error())
+	}
+}
+
+// TestDestroyRefusesWhenTheUnregisteredNameStillAppears covers the
+// len(gone) == 0 branch: `wsl --unregister` reported success, but
+// `wsl -l -q` still lists the distribution afterward. This is the case a
+// caller trusting the exit code alone, rather than diffing before and
+// after, would silently report as a successful Destroy.
+func TestDestroyRefusesWhenTheUnregisteredNameStillAppears(t *testing.T) {
+	tmp := t.TempDir()
+	setTestDataDirs(t, tmp, t.TempDir())
+
+	fake := &fakeRunner{results: []fakeResult{
+		{stdout: quietListFixture(sandboxDistro), code: 0}, // enumerate before
+		{stdout: []byte(markerContent), code: 0},           // marker read
+		{code: 0},                                          // terminate
+		{code: 0},                                          // unregister
+		{stdout: quietListFixture(sandboxDistro), code: 0}, // enumerate after: unchanged
+	}}
+	rt := &wslRuntime{distro: sandboxDistro, run: fake}
+
+	err := rt.Destroy(context.Background())
+	if err == nil {
+		t.Fatal("Destroy where the distribution still appears after unregister = nil error, want a refusal")
+	}
+	if !strings.Contains(err.Error(), sandboxDistro) {
+		t.Errorf("Destroy error = %q, want it to name the distribution that did not disappear", err.Error())
+	}
+}
+
+// TestDestroyRefusesWhenADifferentDistributionDisappears covers the
+// gone[0] != rt.distro branch: `wsl --unregister shellforge-sandbox`
+// reported success, exactly one distribution vanished from `wsl -l -q`, but
+// it was not the one this call asked to remove. This is the worst real
+// failure this package can produce, and is the one branch of the
+// enumerate-and-diff guard that had no test at all.
+func TestDestroyRefusesWhenADifferentDistributionDisappears(t *testing.T) {
+	tmp := t.TempDir()
+	setTestDataDirs(t, tmp, t.TempDir())
+
+	fake := &fakeRunner{results: []fakeResult{
+		{stdout: quietListFixture(sandboxDistro, "Debian"), code: 0}, // enumerate before
+		{stdout: []byte(markerContent), code: 0},                     // marker read
+		{code: 0},                                                    // terminate
+		{code: 0},                                                    // unregister
+		{stdout: quietListFixture(sandboxDistro), code: 0},           // enumerate after: Debian vanished instead
+	}}
+	rt := &wslRuntime{distro: sandboxDistro, run: fake}
+
+	err := rt.Destroy(context.Background())
+	if err == nil {
+		t.Fatal("Destroy where a different distribution disappeared = nil error, want a refusal")
+	}
+	if !strings.Contains(err.Error(), sandboxDistro) || !strings.Contains(err.Error(), "Debian") {
+		t.Errorf("Destroy error = %q, want it to name both the requested and the actually-removed distribution", err.Error())
 	}
 }
 
@@ -692,6 +825,56 @@ func TestProvisionIsIdempotentAgainstAnAlreadyMarkedDistribution(t *testing.T) {
 	}
 }
 
+// TestProvisionStartsAfterTerminatingAnAlreadyRunningDistribution covers the
+// state ensureRunning is handed across a terminate. Before this tracked
+// whether the terminate branch actually ran, an already-Running distribution
+// whose /etc/wsl.conf needed rewriting was terminated and then told
+// "running=true" from the stale row captured before the terminate, so
+// ensureRunning skipped starting it back up: Provision only appeared to
+// leave the sandbox running because verifyHardening's first probe boots it
+// as a side effect.
+func TestProvisionStartsAfterTerminatingAnAlreadyRunningDistribution(t *testing.T) {
+	fake := &fakeRunner{results: []fakeResult{
+		{stdout: verboseListFixture(verboseRow{name: sandboxDistro, state: "Running", version: 2}), code: 0}, // findRow
+		{stdout: []byte(markerContent), code: 0},                   // marker read
+		{stdout: []byte("[automount]\nenabled = true\n"), code: 0}, // readWslConf: differs
+		{code: 0},                          // write /etc/wsl.conf
+		{stdout: []byte(wslConf), code: 0}, // readback after write: matches
+		{code: 0},                          // terminate
+		{code: 0},                          // start (/bin/true): must actually run
+		{code: 1},                          // probe /mnt/c absent
+		{stdout: []byte("/usr/bin:/bin\n"), code: 0}, // probe clean PATH
+		{stdout: []byte("learner\n"), code: 0},       // probe default user
+	}}
+	rt := &wslRuntime{distro: sandboxDistro, run: fake, fetch: &fakeFetcher{}}
+
+	if err := rt.Provision(context.Background(), shellforgeruntime.ImageSpec{}); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+
+	var sawTerminate, sawStart bool
+	terminateIdx, startIdx := -1, -1
+	for i, call := range fake.calls {
+		if containsArg(call, "--terminate") {
+			sawTerminate = true
+			terminateIdx = i
+		}
+		if containsArg(call, "/bin/true") {
+			sawStart = true
+			startIdx = i
+		}
+	}
+	if !sawTerminate {
+		t.Fatalf("Provision with a differing config never ran --terminate: %v", fake.calls)
+	}
+	if !sawStart {
+		t.Errorf("Provision terminated an already-Running distribution but never started it again, want a /bin/true start after the terminate: %v", fake.calls)
+	}
+	if sawStart && terminateIdx > startIdx {
+		t.Errorf("start (index %d) ran before terminate (index %d), want terminate first", startIdx, terminateIdx)
+	}
+}
+
 func TestCapabilitiesMatchTheTicket(t *testing.T) {
 	rt := &wslRuntime{distro: sandboxDistro}
 	want := shellforgeruntime.Caps{Networking: true, MultiUser: true}
@@ -702,6 +885,96 @@ func TestCapabilitiesMatchTheTicket(t *testing.T) {
 	}
 	if got1 != got2 {
 		t.Errorf("Capabilities() is not stable across calls: %+v != %+v", got1, got2)
+	}
+}
+
+// noDistributionsFriendlyMessageFixture reproduces the shape a real
+// `wsl -l -v` prints when zero distributions are registered on the host at
+// all: a multi-line, human-readable sentence (localized, so never matched
+// by text) on stdout and a non-zero exit code, rather than empty output.
+// This is what broke Test (windows-latest) in CI: the first line was
+// dropped as the header the same way any table's header is, but the
+// remaining two lines each failed to parse as a distribution row, which
+// routed the whole call through classifyFailure's default branch and
+// surfaced "wsl -l -v exited <code>" as an opaque failure instead of the
+// honest "no distributions" answer.
+func noDistributionsFriendlyMessageFixture() []byte {
+	text := "Windows Subsystem for Linux has no installed distributions.\r\n" +
+		"Use 'wsl.exe --list --online' to list available distributions\r\n" +
+		"Install a distribution by running 'wsl.exe --install <Distro>'.\r\n"
+	return encodeUTF16LE(true, text)
+}
+
+func TestStatusTreatsNoDistributionsRegisteredAsNotProvisioned(t *testing.T) {
+	fake := &fakeRunner{results: []fakeResult{
+		{stdout: noDistributionsFriendlyMessageFixture(), code: 4294967295},
+	}}
+	rt := &wslRuntime{distro: sandboxDistro, run: fake}
+
+	status, err := rt.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status with zero distributions registered on the host = %v, want nil error", err)
+	}
+	if status.Provisioned {
+		t.Errorf("Status = %+v, want Provisioned false", status)
+	}
+}
+
+// TestFindRowTreatsNoDistributionsRegisteredAsAbsent covers the same defect
+// on Provision's own path: a learner's first-ever run, on a Windows host
+// that has WSL but has never registered any distribution, would otherwise
+// hit the identical failure Status did in CI, and Provision would never
+// even reach the import step that is supposed to handle exactly this case.
+func TestFindRowTreatsNoDistributionsRegisteredAsAbsent(t *testing.T) {
+	fake := &fakeRunner{results: []fakeResult{
+		{stdout: noDistributionsFriendlyMessageFixture(), code: 4294967295},
+	}}
+	rt := &wslRuntime{distro: sandboxDistro, run: fake}
+
+	_, exists, err := rt.findRow(context.Background())
+	if err != nil {
+		t.Fatalf("findRow with zero distributions registered on the host = %v, want nil error", err)
+	}
+	if exists {
+		t.Errorf("findRow reported the distribution exists, want false")
+	}
+}
+
+// TestStatusStillReportsAGenuineFailureRatherThanAssumingNoDistributions
+// pins the other half of the fix: treating an unparseable non-zero `wsl -l
+// -v` exit as "no distributions" only holds when nothing recognizable
+// explains the failure. A real, classifiable wsl.exe error must still be
+// reported as that error.
+func TestStatusStillReportsAGenuineFailureRatherThanAssumingNoDistributions(t *testing.T) {
+	fake := &fakeRunner{results: []fakeResult{
+		{stderr: []byte("Access is denied. Please update your antivirus exclusions"), code: 4294967295},
+	}}
+	rt := &wslRuntime{distro: sandboxDistro, run: fake}
+
+	_, err := rt.Status(context.Background())
+	if err == nil {
+		t.Fatal("Status with a recognizable wsl.exe failure = nil error, want a refusal")
+	}
+	if !hasDocAnchor(err, "wsl-import-blocked") {
+		t.Errorf("Status error = %v, want DocAnchor wsl-import-blocked", err)
+	}
+}
+
+// TestClassifyFailureDoesNotMisreadAnAntivirusPromptAsKernelOutdated pins
+// the narrowed kernel-outdated matcher: the bare words "kernel" and
+// "update" alone used to be enough, so "Access is denied. Please update
+// your antivirus exclusions" matched the kernel-outdated case first (it was
+// listed first in the switch) and told the learner to run `wsl --update`,
+// which does nothing for an antivirus block.
+func TestClassifyFailureDoesNotMisreadAnAntivirusPromptAsKernelOutdated(t *testing.T) {
+	rt := &wslRuntime{distro: sandboxDistro}
+	msg := "Access is denied. Please update your antivirus exclusions"
+	err := rt.classifyFailure(context.Background(), "import the Windows sandbox", errors.New("boom"), []byte(msg))
+	if hasDocAnchor(err, "wsl-kernel-outdated") {
+		t.Errorf("classifyFailure(%q) = %v, want no wsl-kernel-outdated anchor", msg, err)
+	}
+	if !hasDocAnchor(err, "wsl-import-blocked") {
+		t.Errorf("classifyFailure(%q) = %v, want DocAnchor wsl-import-blocked", msg, err)
 	}
 }
 

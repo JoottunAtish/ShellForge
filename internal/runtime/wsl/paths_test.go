@@ -39,13 +39,33 @@ func TestValidateInstallDirRefusesTheDataDirRootItself(t *testing.T) {
 	}
 }
 
+// TestValidateInstallDirRefusesTheUserProfile exercises the actual case the
+// safety review names: an install directory that resolves to the real
+// profile directory, not the literal, unexpanded string "%USERPROFILE%",
+// which is refused as merely not-absolute and would still be refused with
+// the DataDir prefix check deleted entirely.
 func TestValidateInstallDirRefusesTheUserProfile(t *testing.T) {
 	tmp := t.TempDir()
-	if err := validateInstallDirUnder(tmp, "%USERPROFILE%"); err == nil {
-		t.Fatal("validateInstallDirUnder(tmp, an unexpanded USERPROFILE variable) = nil error, want a refusal")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("no user home directory on this host to test against: %v", err)
+	}
+	if err := validateInstallDirUnder(tmp, home); err == nil {
+		t.Fatalf("validateInstallDirUnder(tmp, %q) (the real user profile directory) = nil error, want a refusal", home)
+	} else if !strings.Contains(err.Error(), tmp) {
+		t.Errorf("validateInstallDirUnder(tmp, %q) error = %q, want it to name the data directory %q", home, err.Error(), tmp)
 	}
 }
 
+// TestValidateInstallDirRefusesADotDotTraversal covers two cases that reach
+// validateInstallDirUnder's refusal by a route other than the pre-Clean ".."
+// loop: `\..\..\Windows` has no "/" on either CI leg once
+// filepath.ToSlash sees it as a single segment, so the not-absolute check
+// refuses it first, and filepath.Join(tmp, "..", "..", "Windows") is
+// cleaned by Join itself before validateInstallDirUnder ever sees a ".."
+// token, so the not-under-dataDir check refuses that one. Neither pins the
+// loop that is checked before any cleaning specifically because cleaning is
+// what would hide it, which is why a third, raw and unjoined case follows.
 func TestValidateInstallDirRefusesADotDotTraversal(t *testing.T) {
 	tmp := t.TempDir()
 	cases := []string{
@@ -56,6 +76,15 @@ func TestValidateInstallDirRefusesADotDotTraversal(t *testing.T) {
 		if err := validateInstallDirUnder(tmp, c); err == nil {
 			t.Errorf("validateInstallDirUnder(tmp, %q) = nil error, want a refusal", c)
 		}
+	}
+
+	raw := tmp + "/wsl/../../Windows"
+	err := validateInstallDirUnder(tmp, raw)
+	if err == nil {
+		t.Fatalf("validateInstallDirUnder(tmp, %q) = nil error, want a refusal", raw)
+	}
+	if !strings.Contains(err.Error(), "..") {
+		t.Errorf("validateInstallDirUnder(tmp, %q) error = %q, want it to name the .. segment", raw, err.Error())
 	}
 }
 
@@ -111,6 +140,48 @@ func TestInstallDirDerivesFromPlatformDataDir(t *testing.T) {
 	want := filepath.Join(dataDir, "wsl", sandboxDistro)
 	if got != want {
 		t.Errorf("installDir() = %q, want %q", got, want)
+	}
+}
+
+// TestDefaultRootfsFindsWhatDownloadDestWrote pins downloadDest and
+// defaultRootfs's cache fallback to the same path. Before this was factored
+// through cachedRootfsPath, downloadDest wrote to
+// <CacheDir>/rootfs/rootfs.tar.gz while defaultRootfs's cache check looked
+// at <CacheDir>/rootfs.tar.gz: a rootfs this package downloaded and
+// digest-verified was invisible to the next Provision with an empty
+// ImageSpec.Reference, which refused with rootfs-not-found while a verified
+// tarball sat on disk one directory level away.
+func TestDefaultRootfsFindsWhatDownloadDestWrote(t *testing.T) {
+	if repoPath, err := repoRootRelative(defaultRootfsRel); err == nil {
+		if _, statErr := os.Stat(repoPath); statErr == nil {
+			t.Skipf("skipping: %s exists on this checkout and would shadow the cache fallback this test exercises", repoPath)
+		}
+	}
+
+	tmp := t.TempDir()
+	if runtime.GOOS == "windows" {
+		t.Setenv("LOCALAPPDATA", tmp)
+	} else {
+		t.Setenv("XDG_CACHE_HOME", tmp)
+	}
+
+	dest, err := downloadDest()
+	if err != nil {
+		t.Fatalf("downloadDest: %v", err)
+	}
+	if err := platform.EnsureDir(filepath.Dir(dest)); err != nil {
+		t.Fatalf("EnsureDir(%s): %v", filepath.Dir(dest), err)
+	}
+	if err := os.WriteFile(dest, []byte("a downloaded rootfs"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", dest, err)
+	}
+
+	got, err := defaultRootfs()
+	if err != nil {
+		t.Fatalf("defaultRootfs did not find the file downloadDest wrote to %s: %v", dest, err)
+	}
+	if got.path != dest {
+		t.Errorf("defaultRootfs().path = %q, want %q (the same path downloadDest writes to)", got.path, dest)
 	}
 }
 

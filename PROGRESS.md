@@ -3534,6 +3534,38 @@ cannot prove.
   case where `ImageSpec.Reference` is empty and neither `images/out/rootfs.tar.gz`
   nor a cached download exists. Placed after `rootfs-checksum-mismatch` and before
   `command-not-found`, in the same house shape as its neighbors.
+- **Review pass on #134 fixed three defects, two of them blocking.** `Attach`
+  now recognizes `pty.ErrUnsupported` (the same unconditional Windows failure
+  `checkInteractiveShellSupported` in `cmd/shellforge` already refuses in front
+  of) and reports it through `ux.Fail` with the `windows-needs-wsl` anchor
+  instead of leaking `wsl.exe --exec: unsupported` as a bare Go error; this is
+  defense in depth; the CLI guard is what a learner actually sees today.
+  `Destroy` no longer reports success while orphaning the `.vhdx`: the
+  not-present branch now resolves the install directory and runs it through
+  `removeInstallDir` before returning nil, so a `Destroy` retried after a
+  directory removal that failed the first time (an open handle on `ext4.vhdx`,
+  say) finishes the job the second time instead of quietly forgetting the
+  leftover 2 GB file. `Status` no longer treats a non-zero `wsl -l -v` exit as
+  an error when the output does not carry a recognized failure signature: a
+  host with WSL present and zero distributions registered now answers
+  `Provisioned: false` rather than surfacing `wsl -l -v exited <code>` as an
+  opaque failure, which is what a GitHub `windows-latest` runner does and what
+  broke `Test (windows-latest)` on this PR's first CI run. `findRow`, which
+  `Provision` depends on for the exact same reason on a learner's first-ever
+  run, shares the fix through one `listRows` helper rather than repeating the
+  bug in a second place.
+- **`TestWslContract`'s factory now skips honestly on a host that cannot
+  actually run the suite, not just one where `wsl.exe` fails to answer.** The
+  `--version` probe now carries a timeout, so a wedged WSL service is a skip
+  rather than a hang. Beyond that, `wsl.exe --version` succeeding proves only
+  that the client binary runs, the same gap the docker sibling's factory closes
+  by asking its daemon which OS its containers run rather than merely whether
+  it answers: GitHub's hosted `windows-latest` runners answer `--version` with
+  no distributions and no usable WSL2 underneath. The suite needs a rootfs to
+  import, so the factory now also skips when `defaultRootfs()` cannot resolve
+  one, which is always true in a plain `go test` job that never ran `make
+  rootfs`, and is the same honest signal a developer's own Windows 11 machine
+  gives once a rootfs is actually built.
 - **What is honestly not verified here, because this run has no Windows, no
   `wsl.exe`, and no WSL2 on either CI leg.** `TestWslContract` (thirteen
   assertions, the same suite `internal/runtime/docker` runs) skips cleanly on this
@@ -3544,12 +3576,19 @@ cannot prove.
   hardened distribution rather than a scripted fake answer; `wsl --unregister`
   actually leaving a developer's own `Debian` or `Ubuntu` untouched; the install
   directory, `.vhdx` included, actually gone from disk after `Destroy`, confirmed
-  by eye in Explorer; `vim`, `less`, and `htop` running inside a real distribution;
-  or ConPTY resize, which `resize_windows.go` stubs as a documented no-op pending
-  #68. All of that needs a human on a real Windows 11 machine with WSL2 installed.
-  The Day 3 go/no-go gate in `docs/design/SEVEN-DAY-PLAN.md` names exactly this
-  risk, and this entry is the honest record that the gate is not yet cleared by
-  this run alone.
+  by eye in Explorer; or ConPTY resize, which `resize_windows.go` stubs as a
+  documented no-op pending a real tracking issue (the TODO used to point at #68,
+  which landed on main in 3a6ff31 without touching this). That is a gap in
+  manual verification, not the same thing as the interactive shell itself:
+  `vim`, `less`, and `htop` inside a real distribution are not merely
+  unverified, they are provably unreachable today on any Windows host,
+  because `creack/pty`'s Windows `Start` returns `ErrUnsupported`
+  unconditionally and both `Attach` and the CLI guard in front of it now say
+  so through `ux.Fail` rather than a bare error. All of the remaining,
+  genuinely hardware-gated items need a human on a real Windows 11 machine
+  with WSL2 installed. The Day 3 go/no-go gate in
+  `docs/design/SEVEN-DAY-PLAN.md` names exactly this risk, and this entry is
+  the honest record that the gate is not yet cleared by this run alone.
 - **Gates run on this host:** `gofmt -s -w .`, `go vet ./...`, `go build ./...`,
   `go test ./...`, `go test -race ./...`,
   `go test ./internal/archtest/...`, `./scripts/check-punctuation.sh`,

@@ -2,7 +2,9 @@ package wsl
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -57,22 +59,35 @@ type resolvedRootfs struct {
 	downloaded bool
 }
 
+// cachedRootfsPath is the one path both a download and the default lookup
+// use for a cached rootfs tarball, under the resolved cache directory.
+// downloadDest and defaultRootfs both call this rather than each holding
+// their own literal, because a rootfs this package downloaded and
+// digest-verified must be exactly where the next Provision with an empty
+// ImageSpec.Reference looks for it: two independently maintained literals
+// drifting apart is what made a verified download invisible to the next
+// run before this was factored out.
+func cachedRootfsPath(cacheDir string) string {
+	return filepath.Join(cacheDir, "rootfs", "rootfs.tar.gz")
+}
+
 // downloadDest is where an https Reference is downloaded to.
 func downloadDest() (string, error) {
 	cacheDir, err := platform.CacheDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(cacheDir, "rootfs", "rootfs.tar.gz"), nil
+	return cachedRootfsPath(cacheDir), nil
 }
 
 // defaultRootfs finds the backend's own default rootfs when
 // ImageSpec.Reference is empty: first the repository's own
 // images/out/rootfs.tar.gz, which is what a developer who ran `make
-// rootfs` has, then <CacheDir>/rootfs.tar.gz, which is where a future
-// installer places a downloaded artifact. Neither existing is a refusal
-// with the rootfs-not-found doc anchor, not a panic or a silent empty
-// import.
+// rootfs` has, then the same <CacheDir>/rootfs/rootfs.tar.gz path
+// downloadDest writes to, which is where a verified download from a
+// previous run, or a future installer, places one. Neither existing is a
+// refusal with the rootfs-not-found doc anchor, not a panic or a silent
+// empty import.
 func defaultRootfs() (resolvedRootfs, error) {
 	repoPath, repoErr := repoRootRelative(defaultRootfsRel)
 	if repoErr == nil {
@@ -85,7 +100,7 @@ func defaultRootfs() (resolvedRootfs, error) {
 	if err != nil {
 		return resolvedRootfs{}, err
 	}
-	cachedPath := filepath.Join(cacheDir, "rootfs.tar.gz")
+	cachedPath := cachedRootfsPath(cacheDir)
 	if _, err := os.Stat(cachedPath); err == nil {
 		return resolvedRootfs{path: cachedPath}, nil
 	}
@@ -242,9 +257,12 @@ func validateNoSymlinkEscape(clean, cleanDataDir string) error {
 
 	resolvedDataDir, err := filepath.EvalSymlinks(cleanDataDir)
 	if err != nil {
-		// The data directory itself does not exist yet: nothing to
-		// resolve, and the unresolved prefix check already passed.
-		return nil
+		if errors.Is(err, fs.ErrNotExist) {
+			// The data directory itself does not exist yet: nothing to
+			// resolve, and the unresolved prefix check already passed.
+			return nil
+		}
+		return fmt.Errorf("wsl: refusing to use install directory: resolving symlinks on the data directory %q: %w", cleanDataDir, err)
 	}
 	if resolvedFull != resolvedDataDir && !strings.HasPrefix(resolvedFull, resolvedDataDir+string(filepath.Separator)) {
 		return fmt.Errorf("wsl: refusing to use install directory: it resolves to %q, outside the data directory %q", resolvedFull, resolvedDataDir)
@@ -272,11 +290,21 @@ func refuseUnexpectedInstallDirContents(dir string) error {
 	return nil
 }
 
-// removeInstallDir removes dir after validating it. This is the only
-// os.RemoveAll in this package, per destructive-safety's "no os.RemoveAll
-// outside the validated helper".
+// removeInstallDir removes dir after validating it and refusing unexpected
+// contents. This is the only os.RemoveAll in this package, per
+// destructive-safety's "no os.RemoveAll outside the validated helper", and
+// the unexpected-contents guard lives here, immediately before the delete
+// it protects, rather than only in a caller: Destroy also calls
+// refuseUnexpectedInstallDirContents itself before it ever runs `wsl
+// --terminate` or `wsl --unregister`, so a distribution is never torn down
+// only to discover afterward that its backing directory cannot safely be
+// removed, but any other caller of removeInstallDir, present or future,
+// gets the same fail-closed guard even if it forgets to check first.
 func removeInstallDir(dir string) error {
 	if err := validateInstallDir(dir); err != nil {
+		return err
+	}
+	if err := refuseUnexpectedInstallDirContents(dir); err != nil {
 		return err
 	}
 	return os.RemoveAll(dir)

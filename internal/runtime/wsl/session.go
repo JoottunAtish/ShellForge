@@ -17,6 +17,7 @@ import (
 	"github.com/creack/pty"
 
 	"github.com/JoottunAtish/ShellForge/internal/platform"
+	"github.com/JoottunAtish/ShellForge/internal/platform/ux"
 	"github.com/JoottunAtish/ShellForge/internal/runtime"
 )
 
@@ -174,7 +175,7 @@ func (s *wslSession) Exec(ctx context.Context, argv []string, opts runtime.ExecO
 
 	if runErr != nil {
 		if pid != "" {
-			s.killSandboxProcess(pid)
+			s.killSandboxProcess(ctx, pid)
 		}
 		if ctx.Err() != nil {
 			return runtime.ExecResult{}, ctx.Err()
@@ -212,11 +213,27 @@ func parseExecPIDMarker(stderr []byte) (pid string, rest []byte) {
 	return string(digits), stderr[nl+1:]
 }
 
+// killSandboxProcessTimeout bounds killSandboxProcess's own wsl.exe
+// invocation, so a wedged WSL service cannot turn the one cleanup step that
+// exists specifically to honour Exec's cancellation into an unbounded wait
+// of its own.
+const killSandboxProcessTimeout = 5 * time.Second
+
 // killSandboxProcess best-effort kills pid inside the distribution. Its own
 // outcome is not reported: it only ever runs after Exec's own invocation
 // has already failed, so the caller already has the real error to act on.
-func (s *wslSession) killSandboxProcess(pid string) {
-	_, _, _, _ = s.rt.run.run(context.Background(), []string{"wsl.exe", "-d", s.rt.distro, "-u", "root", "--exec", "/bin/kill", "-9", pid}, nil)
+//
+// ctx is the caller's own context, which by the time this runs has usually
+// already been cancelled: that is exactly why Exec's invocation just
+// failed. Deriving from context.Background() unconditionally, as this used
+// to, meant a wedged WSL service left this kill running forever, so Exec
+// blocked on the one call whose entire purpose was to honour cancellation
+// promptly. context.WithoutCancel keeps ctx's values but not its
+// cancellation, and the timeout on top bounds the wait either way.
+func (s *wslSession) killSandboxProcess(ctx context.Context, pid string) {
+	killCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), killSandboxProcessTimeout)
+	defer cancel()
+	_, _, _, _ = s.rt.run.run(killCtx, []string{"wsl.exe", "-d", s.rt.distro, "-u", "root", "--exec", "/bin/kill", "-9", pid}, nil)
 }
 
 // defaultAttachCommand is the instrumented bash invocation, matching the rc
@@ -284,9 +301,29 @@ func (s *wslSession) Attach(ctx context.Context, opts runtime.AttachOpts) (runti
 	cmd := exec.CommandContext(ctx, real.bin, argv[1:]...)
 	f, err := pty.Start(cmd)
 	if err != nil {
-		return nil, fmt.Errorf("wsl.exe --exec: %w", err)
+		return nil, attachStartError(err)
 	}
 	return &wslPTY{file: f, cmd: cmd}, nil
+}
+
+// attachStartError turns a pty.Start failure into what the caller should
+// see. creack/pty returns ErrUnsupported unconditionally on every Windows
+// build, and Windows is the only host this backend runs on at all, so
+// without this a learner reaching a level on the WSL backend would see the
+// bare Go error "wsl.exe --exec: unsupported": no remediation, no doc
+// anchor, which non-negotiable rule 6 forbids. Split into its own function
+// so the mapping is testable without a real pty.Start call, which only
+// fails this way on a Windows host in the first place.
+func attachStartError(err error) error {
+	if errors.Is(err, pty.ErrUnsupported) {
+		return ux.Fail(
+			"open the sandbox shell",
+			err,
+			"Windows console support for the WSL backend is not built yet. Use Docker Desktop on Windows for now.",
+			"windows-needs-wsl",
+		)
+	}
+	return fmt.Errorf("wsl.exe --exec: %w", err)
 }
 
 // stripCR removes the carriage return from every CRLF pair, leaving a lone
