@@ -62,8 +62,11 @@ Violating any of these breaks the product, not just the code.
 6. **Every user-facing error says what failed, why, and the next command to run.**
    No bare Go errors reach the terminal. Use
    `internal/platform/ux.Fail(op, err, remediation, docAnchor)`.
-7. **`.gitattributes` enforces LF.** Strip `\r` from every file materialized into
-   the sandbox. CRLF in a `.sh` produces `bad interpreter: /bin/bash^M`.
+7. **`.gitattributes` enforces LF.** Strip the `\r` of a `\r\n` pair from every
+   file materialized into the sandbox, leaving a lone `\r` untouched: an
+   unconditional strip would corrupt a binary asset containing byte `0x0d`, and
+   v0.1 has no way for a pack to declare one. CRLF in a `.sh` produces
+   `bad interpreter: /bin/bash^M`.
 8. **Nothing destructive ever escapes the sandbox.** The README promises a beginner
    they cannot break their laptop. See the **`destructive-safety`** skill before
    writing anything that deletes.

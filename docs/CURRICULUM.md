@@ -16,11 +16,12 @@ no further, so a file written outside it survives the level that created it and
 leaks into the next one. Each level now owns a folder, usually `~/quest`, and both
 the setup and the learner's answers live in it.
 
-*A journal check may never gate passing.* `command_matched` and
-`command_not_matched` must be `optional: true` or `severity: warn`, and
-`shellforge author validate` rejects a level where one is neither. See
-[LEVEL-FORMAT.md](LEVEL-FORMAT.md) section 3 for why. Where a level below
-describes a required journal check, it is a bonus objective in the built level.
+*A journal check may never gate passing.* For `command_matched` and
+`command_not_matched`, its objective must be `optional: true`, or the check
+must set `severity: warn`, and `shellforge author validate` rejects a level
+where neither is true. See [LEVEL-FORMAT.md](LEVEL-FORMAT.md) section 3 for
+why. Where a level below describes a required journal check, it is a bonus
+objective in the built level.
 
 ---
 

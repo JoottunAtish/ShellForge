@@ -18,7 +18,7 @@ type Setup struct {
 	// Files are materialized into the sandbox relative to Root.
 	Files []FileSpec `yaml:"files"`
 
-	// Script runs as root, inside the sandbox, after Files, with the
+	// Script runs as the learner, inside the sandbox, after Files, with the
 	// working directory set to the resolved Root. It is passed as a single
 	// argv element to bash -c, never concatenated into a host command
 	// line, and never has set -e injected: docs/LEVEL-FORMAT.md's own
@@ -54,7 +54,9 @@ type FileSpec struct {
 	// creates a .gitkeep, which exists precisely to be empty. Deciding "did
 	// the author choose content" by testing Content != "" makes that level
 	// unwritable, because an empty body and an absent key look identical.
-	// The decoder below records the answer instead of inferring it.
+	// The decoder below records the answer instead of inferring it. Issue
+	// #93 is what required this field to be declared explicitly rather than
+	// left as a comment on the decoder.
 	//
 	// It carries yaml:"-" because it is set by the decoder, never by the
 	// pack's own YAML.

@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"path"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -29,8 +30,10 @@ const (
 	DefaultStateDir = "/home/learner/.shellforge"
 
 	// LevelRootPrefix is the only prefix a level root, or the state
-	// directory, may live under.
-	LevelRootPrefix = "/home/learner/"
+	// directory, may live under. It is platform.LearnerHomePrefix by another
+	// name, kept as its own constant because this package's own tests and
+	// doc comments already spell it this way.
+	LevelRootPrefix = platform.LearnerHomePrefix
 
 	// DefaultTimeout bounds setup.script and teardown.script when the level
 	// does not set its own timeout_seconds.
@@ -98,6 +101,20 @@ const (
 // vector as a positional operand.
 var ownerPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*(:[a-zA-Z0-9][a-zA-Z0-9_-]*)?$`)
 
+// normalizeOwner expands a bare user into user:user, the same expansion
+// chown itself applies to a single name. Without this, a declared owner of
+// "learner", which ownerPattern permits, compares unequal to DefaultOwner's
+// "learner:learner" and is treated as an exception: the restore step would
+// emit a redundant chown learner -- <path> for a file that already has its
+// default owner. An empty owner is left alone; it means "not declared" and
+// is handled by the caller.
+func normalizeOwner(owner string) string {
+	if owner == "" || strings.Contains(owner, ":") {
+		return owner
+	}
+	return owner + ":" + owner
+}
+
 // Runner materializes a level's world into a sandbox session and tears it
 // down again.
 //
@@ -140,30 +157,14 @@ func (r *Runner) StateDir() string {
 }
 
 // validateLevelRoot refuses, rather than adjusts, any path that is not safe
-// to hand to a recursive delete inside the sandbox. It mirrors
-// internal/sandbox/demo_level.go's validateLevelRoot exactly, which is the
-// already-reviewed prior art for this exact containment problem: empty,
-// then a .. segment (checked BEFORE cleaning, because cleaning is what
-// would hide it), then not absolute after cleaning, then "/" or ".", then
-// the strict /home/learner/ prefix.
+// to hand to a recursive delete inside the sandbox. The lexical rule itself
+// lives in platform.UnsafeLevelRoot, shared with internal/sandbox and
+// internal/content's validator; this wrapper keeps this package's own
+// sentinel error and message shape, both of which resolveLevelRoot's callers
+// and this package's tests depend on.
 func validateLevelRoot(root string) error {
-	if strings.TrimSpace(root) == "" {
-		return fmt.Errorf("refusing to use %q as a level root: it is empty: %w", root, ErrUnsafeLevelRoot)
-	}
-	for _, segment := range strings.Split(root, "/") {
-		if segment == ".." {
-			return fmt.Errorf("refusing to use %q as a level root: it contains a .. segment: %w", root, ErrUnsafeLevelRoot)
-		}
-	}
-	clean := path.Clean(root)
-	if !path.IsAbs(clean) {
-		return fmt.Errorf("refusing to use %q as a level root: it is not absolute: %w", root, ErrUnsafeLevelRoot)
-	}
-	if clean == "/" || clean == "." {
-		return fmt.Errorf("refusing to use %q as a level root: it resolves to %q: %w", root, clean, ErrUnsafeLevelRoot)
-	}
-	if !strings.HasPrefix(clean, LevelRootPrefix) {
-		return fmt.Errorf("refusing to use %q as a level root: level roots must live under %s: %w", root, LevelRootPrefix, ErrUnsafeLevelRoot)
+	if reason := platform.UnsafeLevelRoot(root); reason != nil {
+		return fmt.Errorf("refusing to use %q as a level root: %v: %w", root, reason, ErrUnsafeLevelRoot)
 	}
 	return nil
 }
@@ -383,6 +384,51 @@ func (r *Runner) Setup(ctx context.Context, lvl *content.Level) error {
 			remediationSandboxUnhealthy, "sandbox-unhealthy"))
 	}
 
+	// The blanket chown above just reverted any owner: a setup.files entry
+	// declared, because PushFiles applies a declared owner and this chown
+	// runs immediately afterward, unconditionally, on the same tree. Restore
+	// every declared exception now rather than narrowing the blanket chown
+	// itself: narrowing would need either a find inside the sandbox or a
+	// copy of PushFiles' own knowledge of which directories it creates,
+	// moved into this package. Leaving the blanket chown untouched and
+	// re-applying declared owners afterward is what keeps the invariant
+	// provable: only a regular file named by a setup.files entry is ever
+	// re-chowned, so no directory inside the level root can ever end up
+	// owned by anyone but the learner, which is what keeps teardown's
+	// rm -rf as the learner working: unlinking a file needs write and
+	// execute on the containing directory, not ownership of the file
+	// itself.
+	//
+	// TODO(v0.2): chown clears a regular file's set-user-ID and
+	// set-group-ID bits. Not a live issue: buildFileEntry already refuses a
+	// mode above 0o777, so neither bit is expressible in a level today. Note
+	// it so a future widening of the mode cap does not walk into it.
+	byOwner := map[string][]string{}
+	for _, spec := range lvl.Setup.Files {
+		owner := normalizeOwner(spec.Owner)
+		if owner == "" || owner == DefaultOwner {
+			continue
+		}
+		byOwner[owner] = append(byOwner[owner], fileAbsPath(root, spec.Path))
+	}
+	owners := make([]string, 0, len(byOwner))
+	for owner := range byOwner {
+		owners = append(owners, owner)
+	}
+	sort.Strings(owners)
+	for _, owner := range owners {
+		argv := append([]string{"chown", owner, "--"}, byOwner[owner]...)
+		res, err := r.sess.Exec(ctx, argv, runtime.ExecOpts{User: userRoot})
+		if err != nil {
+			return r.rollback(ctx, lvl, ux.Fail("materialise the level world", err, remediationSandboxUnhealthy, "sandbox-unhealthy"))
+		}
+		if res.ExitCode != 0 {
+			return r.rollback(ctx, lvl, ux.Fail("materialise the level world",
+				fmt.Errorf("chown %s exited %d: %s", owner, res.ExitCode, res.Stderr),
+				remediationSandboxUnhealthy, "sandbox-unhealthy"))
+		}
+	}
+
 	if lvl.Setup.Script != "" {
 		timeout := DefaultTimeout
 		if lvl.Setup.TimeoutSeconds > 0 {
@@ -429,6 +475,26 @@ func (r *Runner) buildManifest(lvl *content.Level, root string) ([]runtime.FileE
 		if err != nil {
 			return nil, err
 		}
+
+		// Refuse two entries whose resolved absolute paths are the same, or
+		// where one is an ancestor directory of the other. Without this, a
+		// level could declare both "sub" and "sub/deep.txt" with different
+		// owners, and whether "sub" lands as a file or a directory when the
+		// chown reaches it is decided by the runtime's own untar conflict
+		// resolution, not by anything in this package. Refusing the shape
+		// outright makes the doc's "a directory always belongs to the
+		// learner" invariant true by construction instead of true by
+		// inheriting the runtime's behaviour.
+		for j := range entries {
+			if !pathIsOrContains(entry.Path, entries[j].Path) {
+				continue
+			}
+			other := lvl.Setup.Files[j]
+			return nil, ux.Fail("read the level definition",
+				fmt.Errorf("setup.files entries %q and %q resolve to the same path, or one is a directory containing the other: %w", other.Path, spec.Path, ErrInvalidLevelPack),
+				remediationLevelPackInvalid, "level-pack-invalid")
+		}
+
 		total += len(entry.Content)
 		if total > maxManifestBytes {
 			return nil, ux.Fail("read the level assets",
@@ -438,6 +504,32 @@ func (r *Runner) buildManifest(lvl *content.Level, root string) ([]runtime.FileE
 		entries = append(entries, entry)
 	}
 	return entries, nil
+}
+
+// pathIsOrContains reports whether cleaned absolute paths a and b are equal,
+// or one is an ancestor directory of the other, compared segment by segment
+// rather than by string prefix. A string prefix test would wrongly treat
+// "/a/bc" as a descendant of "/a/b"; comparing whole path segments does not.
+func pathIsOrContains(a, b string) bool {
+	as := strings.Split(strings.Trim(a, "/"), "/")
+	bs := strings.Split(strings.Trim(b, "/"), "/")
+	short, long := as, bs
+	if len(long) < len(short) {
+		short, long = bs, as
+	}
+	for i, seg := range short {
+		if long[i] != seg {
+			return false
+		}
+	}
+	return true
+}
+
+// fileAbsPath is the one place a FileSpec's relative path becomes the
+// absolute path Setup materializes it at, shared by buildFileEntry and the
+// restore-owner step so the two can never drift apart.
+func fileAbsPath(root, specPath string) string {
+	return path.Join(root, path.Clean(specPath))
 }
 
 // buildFileEntry validates one FileSpec and produces the FileEntry Setup
@@ -477,7 +569,7 @@ func (r *Runner) buildFileEntry(spec content.FileSpec, root string) (runtime.Fil
 				remediationLevelPackInvalid, "level-pack-invalid")
 		}
 	}
-	abs := path.Join(root, path.Clean(spec.Path))
+	abs := fileAbsPath(root, spec.Path)
 	if abs == root || !strings.HasPrefix(abs, root+"/") {
 		return runtime.FileEntry{}, ux.Fail("read the level definition",
 			fmt.Errorf("file path %q escapes or is equal to setup.root: %w", spec.Path, ErrInvalidLevelPack),
@@ -547,9 +639,16 @@ func (r *Runner) buildFileEntry(spec content.FileSpec, root string) (runtime.Fil
 // 0x0a. Neither this nor Session.PushFiles's own strip is safe for a binary
 // asset containing the exact bytes 0d 0a; v0.1 has no binary asset concept.
 //
+// The replacement is a single non-overlapping pass, so an input whose line
+// ending is \r\r\n leaves a \r\n behind rather than being fully normalized:
+// bytes.ReplaceAll matches "\r\n" once starting at the second \r and does
+// not revisit the \r it left in place. A file shaped that way still fails
+// with "bad interpreter: /bin/bash^M" inside the sandbox.
+//
 // TODO(v0.2): a binary flag on FileSpec so a fixture that is not text is
 // pushed byte-for-byte. Fixing PushFiles itself is not this package's
-// business.
+// business. TODO(v0.2): decide whether the strip should instead loop until
+// no \r\n pair remains, which would close the \r\r\n gap above.
 func stripCRLF(b []byte) []byte {
 	return bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n"))
 }

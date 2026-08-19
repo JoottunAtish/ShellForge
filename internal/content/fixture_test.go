@@ -15,7 +15,7 @@ import (
 // asserts it, instead of a pair of files two directories away, and the shared
 // parts cannot drift between twenty copies. The two rules that genuinely need
 // a real filesystem, symlink containment for a pack directory and for an
-// asset, use t.TempDir instead and live in validate_symlink_test.go.
+// asset, use t.TempDir instead and live in validate_containment_test.go.
 
 // packYAML is a minimal, valid pack.yaml. acts is substituted in.
 const packYAML = `id: fixture-pack

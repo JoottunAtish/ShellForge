@@ -22,6 +22,10 @@ var schemaFS embed.FS
 // Nothing is written or deleted when this happens: see Migrate.
 var ErrSchemaTooNew = errors.New("progress database schema is newer than this build")
 
+// ErrForeignDatabase reports that path holds a SQLite database that
+// Shellforge did not create, so Open refused to migrate it.
+var ErrForeignDatabase = errors.New("store: not a Shellforge progress database")
+
 // migration is one embedded schema/NNN_name.sql file.
 type migration struct {
 	version int
@@ -142,6 +146,118 @@ func schemaVersion(ctx context.Context, db *sql.DB) (int, error) {
 	return version, nil
 }
 
+// userObjectCount returns the number of objects in db that SQLite does not own
+// itself, that is every entry in sqlite_master whose name does not begin with
+// the reserved sqlite_ prefix.
+//
+// It counts objects rather than only tables. An earlier version filtered on
+// type = 'table', which let a database whose only user objects are views be
+// adopted: Shellforge wrote its own tables into it and narrowed its mode,
+// which is exactly the harm the foreign gate exists to prevent. A view cannot
+// exist in a file this package created while that file is not yet provably
+// ours, so counting every object is both stricter and simpler than reasoning
+// about which types are possible.
+//
+// sqlite_% excludes SQLite's own bookkeeping, sqlite_sequence and
+// sqlite_stat1 among them, which is not evidence of another application:
+// events declares INTEGER PRIMARY KEY AUTOINCREMENT, so sqlite_sequence
+// appears in this package's own databases too. In SQL LIKE, _ is a single
+// character wildcard, so this also excludes a table named sqlitezzz. That
+// over-exclusion is deliberate: sqlite_ is reserved by SQLite's own rules so
+// no real application uses it, and detecting a database whose objects were
+// named to look like SQLite internals is not in this project's threat model.
+func userObjectCount(ctx context.Context, db *sql.DB) (int, error) {
+	var count int
+	if err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'",
+	).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count objects in sqlite_master: %w", err)
+	}
+	return count, nil
+}
+
+// ourObjectNames are the objects 001_init.sql creates. Both must be present
+// for a file to be provably a Shellforge progress database.
+//
+// events is the load bearing half. schema_version alone is not proof of
+// provenance, because schema_version is a common name: older Flyway and a
+// great deal of hand rolled migration code create a table called exactly
+// that. A file holding someone else's schema_version and nothing of ours
+// used to reach the version arithmetic below and be reported through
+// anchorMigrationFailed or anchorTooNew, both of which tell the learner to
+// rename the file. Telling a learner to rename another program's database is
+// the one thing this gate exists to make impossible.
+const (
+	ourVersionTable = "schema_version"
+	ourEventsTable  = "events"
+)
+
+// looksLikeOurs reports whether db holds both objects 001_init.sql creates.
+//
+// True means the file has been through the foreign gate before and is ours,
+// so a learner may legitimately have added their own tables to it and the
+// version arithmetic in Migrate can be trusted to describe it. False means
+// provenance is not established, which is not the same as "foreign": a fresh
+// or zero byte database is also not provably ours, and is legitimately
+// adopted because it holds nothing at all.
+func looksLikeOurs(ctx context.Context, db *sql.DB) (bool, error) {
+	var count int
+	if err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM sqlite_master WHERE name IN (?, ?)",
+		ourVersionTable, ourEventsTable,
+	).Scan(&count); err != nil {
+		return false, fmt.Errorf("look for this package's own tables in sqlite_master: %w", err)
+	}
+	return count == 2, nil
+}
+
+// refuseIfForeign returns the refusal for a database that is not provably a
+// Shellforge progress file and already holds objects Shellforge did not
+// create, and nil when the file is ours or is empty and so safe to adopt.
+//
+// It runs before any of Migrate's version arithmetic, not inside the
+// current == 0 branch, because two of the arms downstream of that arithmetic
+// (anchorMigrationFailed and anchorTooNew) tell the learner to rename the
+// file. Provenance therefore has to be settled before any of them can
+// report: a file holding another program's schema_version reached those arms
+// in an earlier version of this gate and was told to be renamed.
+//
+// It fails closed twice over. A sqlite_master read that did not complete is
+// not evidence that the file is ours, so an error from either query is
+// refused with the same anchor as a confirmed foreign database rather than
+// allowed through. The remediation is safe under either reading: it never
+// tells the learner to delete, rename, move, or overwrite anything, which is
+// the whole point when the file may belong to another program.
+func (s *Store) refuseIfForeign(ctx context.Context) error {
+	foreignFail := func(cause error) error {
+		return ux.Fail(
+			"open the file where Shellforge records your progress",
+			cause,
+			fmt.Sprintf("Shellforge did not create %s, so it has left that file alone. Shellforge cannot yet be pointed at a different progress file, so please run: shellforge doctor, and include its output if you report this", s.path),
+			anchorForeignDatabase,
+		)
+	}
+
+	ours, err := looksLikeOurs(ctx, s.db)
+	if err != nil {
+		return foreignFail(fmt.Errorf("%w: could not read the object list of %q to confirm it is ours: %w", ErrForeignDatabase, s.path, err))
+	}
+	if ours {
+		// Provably ours, so extra objects are the learner's own and are
+		// none of this gate's business.
+		return nil
+	}
+
+	count, err := userObjectCount(ctx, s.db)
+	if err != nil {
+		return foreignFail(fmt.Errorf("%w: could not read the object list of %q to confirm it is ours: %w", ErrForeignDatabase, s.path, err))
+	}
+	if count > 0 {
+		return foreignFail(fmt.Errorf("%w: %q already holds %d object(s) Shellforge did not create, and does not hold both of this package's own tables", ErrForeignDatabase, s.path, count))
+	}
+	return nil
+}
+
 // Migrate applies every embedded migration with a version greater than the
 // database's current schema version, in ascending order, each inside its
 // own transaction. Calling it again once the database is current is a
@@ -169,6 +285,16 @@ func (s *Store) Migrate(ctx context.Context) error {
 	latest := 0
 	if len(all) > 0 {
 		latest = all[len(all)-1].version
+	}
+
+	// Provenance first, before the version arithmetic and before either arm
+	// that would tell the learner to rename the file. refuseIfForeign is a
+	// no-op for a database that is provably ours and for an empty one, so
+	// running it unconditionally costs one catalogue read and removes the
+	// need to reason about which version-shaped arm a foreign file might
+	// reach.
+	if err := s.refuseIfForeign(ctx); err != nil {
+		return err
 	}
 
 	current, err := schemaVersion(ctx, s.db)
