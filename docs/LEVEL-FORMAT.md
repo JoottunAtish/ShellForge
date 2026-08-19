@@ -180,6 +180,18 @@ the learner. That is what lets teardown's `rm -rf` as the learner always
 remove it. `setup.script` cannot create root-owned state either way: it
 runs as the learner.
 
+**Owner and the WSL backend.** The Docker backend passes a declared `owner:`
+straight through as a symbolic name to a `chown` run inside the sandbox, so
+any owner the image actually creates works, such as `root:sudo`. The WSL
+backend (`internal/runtime/wsl`) resolves owner and group to numeric ids on
+the host side instead, to push a level's whole file manifest in one
+`wsl.exe` invocation rather than a tar plus a follow-up chown, and it only
+knows the two accounts `images/Containerfile` ships: `root` and `learner`.
+An owner naming anything else is refused outright rather than guessed at,
+which fails a level's setup on the WSL backend that would otherwise work on
+Docker. Until that gap closes, keep a declared `owner:` to `root` or
+`learner` if the level needs to run on Windows.
+
 This bit real levels. `files-03` and `files-04` both shipped with a
 `mkdir -p` in their setup script and both were silently missing that directory,
 because `setup.files` arrive through `docker cp` with daemon privilege and land
