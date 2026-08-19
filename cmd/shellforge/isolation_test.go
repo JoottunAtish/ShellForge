@@ -240,8 +240,18 @@ func TestSandboxIsolationLeavesTheHostUntouched(t *testing.T) {
 	if err != nil {
 		t.Fatalf("THE HOST WORKING DIRECTORY IS GONE: %v", err)
 	}
-	if len(after) < len(before) {
-		t.Errorf("the host working directory lost entries: had %d, now %d", len(before), len(after))
+	beforeNames := make(map[string]bool, len(before))
+	for _, entry := range before {
+		beforeNames[entry.Name()] = true
+	}
+	afterNames := make(map[string]bool, len(after))
+	for _, entry := range after {
+		afterNames[entry.Name()] = true
+	}
+	for name := range beforeNames {
+		if !afterNames[name] {
+			t.Errorf("the host working directory lost entries: %q was present before and is gone now", name)
+		}
 	}
 
 	// 3. The level world really was destroyed inside the sandbox. Without this

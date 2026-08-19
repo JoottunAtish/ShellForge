@@ -116,6 +116,10 @@ func (r *gameResponder) check(ctx context.Context) string {
 
 	res, err := r.session.Check(checkCtx)
 	if err != nil {
+		// Unreachable and untested today: game.Session.Check's own doc comment
+		// says it always returns a nil error. Keep this branch so a future
+		// Verifier.Run (or Session.Check) that can actually fail has somewhere
+		// to report it, but do not assume it is covered until it is reachable.
 		return renderCheckError(err, r.level.ID)
 	}
 	return renderCheckReply(res, r.color)
