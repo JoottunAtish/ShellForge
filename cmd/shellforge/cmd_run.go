@@ -17,7 +17,6 @@ import (
 	"github.com/JoottunAtish/ShellForge/internal/platform/ux"
 	"github.com/JoottunAtish/ShellForge/internal/pty"
 	"github.com/JoottunAtish/ShellForge/internal/runtime"
-	"github.com/JoottunAtish/ShellForge/internal/runtime/docker"
 	"github.com/JoottunAtish/ShellForge/internal/sandbox"
 	"github.com/JoottunAtish/ShellForge/internal/verify"
 	"github.com/JoottunAtish/ShellForge/packs"
@@ -31,18 +30,6 @@ import (
 // about, it says so.
 
 const (
-	// sandboxName is the container's identity and sandboxImage is the image
-	// built from images/Containerfile. Both match `make image` and the
-	// Makefile's IMAGE_NAME so that a locally built image is reused rather
-	// than rebuilt.
-	//
-	// These are compile-time constants on purpose. A destroy path must
-	// never take its target as a parameter, and although this command
-	// destroys no container, keeping the identity constant here is what
-	// makes that true by construction.
-	sandboxName  = "shellforge-sandbox"
-	sandboxImage = "shellforge-sandbox"
-
 	// sandboxHome is where the learner starts: the session's default working
 	// directory, the interactive shell's, and the golden harness's when it runs
 	// a level's own solution.
@@ -257,20 +244,25 @@ func unknownLevel(id string, order []string) error {
 // checkInteractiveShellSupported refuses, up front, on a host that cannot give
 // the learner an interactive shell at all.
 //
-// The Docker backend attaches by allocating a pseudo terminal on the HOST with
-// creack/pty, and that package's Windows implementation returns ErrUnsupported
-// unconditionally: there is no ConPTY path in it. So `run` on a Windows host
-// gets all the way through an image build and a level setup and then fails at
-// the last step with "docker exec -it: unsupported", which reads like a Docker
-// problem and is not one.
+// Attaching allocates a pseudo terminal on the HOST with creack/pty, and that
+// package's Windows implementation returns ErrUnsupported unconditionally:
+// there is no ConPTY path in it. This is true of the Docker backend, and it is
+// also true of the WSL backend's own interactive attach, even though the WSL
+// backend can already run one-shot commands and push files into the sandbox
+// by shelling out to wsl.exe directly (see internal/runtime/wsl/session.go's
+// Attach and resize_windows.go's Resize, both of which return the same
+// ErrUnsupported). So `run` on a Windows host, on either backend, gets all
+// the way through provisioning and a level setup and then fails at the last
+// step with an error that reads like a backend problem and is not one.
 //
 // The runtime contract suite does not catch this, because it has no Attach
 // assertion at all, which is why it passes on Windows.
 //
-// Refusing here rather than at Attach saves several minutes of image build
-// before an error the user cannot act on. Windows gets a real answer on Day 3
-// with WslRuntime; until then, running from inside WSL is the way, and Docker
-// Desktop's WSL integration puts the same daemon on both sides.
+// Refusing here rather than at Attach saves several minutes of provisioning
+// before an error the user cannot act on. Until Windows console support
+// (ConPTY) is built, which is issue #138 rather than this ticket, running
+// from inside WSL is the way: WSL is a real Linux host, and Docker Desktop's
+// WSL integration shares one daemon between the two sides.
 //
 // TODO(v0.2): this tests goruntime.GOOS rather than asking
 // Runtime.Capabilities(), which is issue #77. The refusal is correct today and
@@ -282,7 +274,7 @@ func checkInteractiveShellSupported(levelID string) error {
 	return ux.Fail(
 		"open an interactive sandbox shell on Windows",
 		nil,
-		fmt.Sprintf("Run this from inside WSL instead: open your WSL distribution, `cd` to this repository, then `go build -o bin/shellforge ./cmd/shellforge && ./bin/shellforge run %s`. Docker Desktop's WSL integration shares the same daemon, so the sandbox image is not rebuilt.", levelID),
+		fmt.Sprintf("Open your WSL distribution, change to this repository, then build and run there: `go build -o bin/shellforge ./cmd/shellforge && ./bin/shellforge run %s`. Neither backend can open an interactive shell from PowerShell or the command prompt yet; Docker Desktop's WSL integration shares one daemon, so the sandbox image is not rebuilt.", levelID),
 		"windows-needs-wsl",
 	)
 }
@@ -407,19 +399,23 @@ func packFilesystem() (fs.FS, error) {
 // openSandbox provisions the sandbox and opens a session on it.
 //
 // The returned function closes the session and is safe to defer immediately.
+//
+// Resolution goes through internal/sandbox.Resolve rather than constructing
+// docker.New directly, so `run` and `init` share one resolution path and
+// neither picks a backend silently: Choice.Reason is printed either way.
 func openSandbox(ctx context.Context, levelID string) (runtime.Runtime, runtime.Session, func(), error) {
-	rt, err := docker.New(sandboxName, sandboxImage)
+	rt, choice, err := sandbox.Resolve(ctx, sandbox.Options{Want: sandbox.Auto})
 	if err != nil {
-		// docker.New already returns a ux.Error for a missing binary.
 		return nil, nil, nil, err
 	}
 
+	fmt.Fprintln(os.Stdout, choice.Reason)
 	fmt.Fprintln(os.Stdout, "Preparing the sandbox. The first run builds the image, which takes a few minutes.")
-	if err := rt.Provision(ctx, runtime.ImageSpec{Name: sandboxImage}); err != nil {
+	if err := rt.Provision(ctx, sandbox.Spec()); err != nil {
 		return nil, nil, nil, ux.Fail(
 			"provision the sandbox",
 			err,
-			fmt.Sprintf("Run `docker info` to confirm the daemon is running, then run `shellforge run %s` again.", levelID),
+			fmt.Sprintf("Run `shellforge doctor` to check the backend this machine uses, fix anything it names, then run `shellforge run %s` again.", levelID),
 			"sandbox-unhealthy",
 		)
 	}
@@ -434,7 +430,7 @@ func openSandbox(ctx context.Context, levelID string) (runtime.Runtime, runtime.
 		return nil, nil, nil, ux.Fail(
 			"open a session on the sandbox",
 			err,
-			fmt.Sprintf("Run `docker ps` to see whether the sandbox container is running, then run `shellforge run %s` again.", levelID),
+			fmt.Sprintf("Run `shellforge sandbox status` to see whether the sandbox is running, then run `shellforge run %s` again.", levelID),
 			"sandbox-missing",
 		)
 	}

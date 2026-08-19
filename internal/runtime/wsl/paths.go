@@ -180,6 +180,25 @@ func (rt *wslRuntime) installDir() (string, error) {
 	return installDirFor(dataDir, rt.distro), nil
 }
 
+// InstallDir returns the absolute directory the production sandbox
+// distribution's WSL backing store lives in: installDirFor(platform.DataDir(),
+// sandboxDistro), and nothing else.
+//
+// It exists so a caller outside this package, the sandbox destroy
+// confirmation prompt, can print the exact path removing the sandbox will
+// delete, without holding a second copy of the formula this package already
+// uses for every distribution it provisions or removes. It is read-only: it
+// never creates, validates as removable, or deletes anything, and it never
+// takes a distribution name, so it can never be asked about anything other
+// than the one distribution Shellforge itself provisions.
+func InstallDir() (string, error) {
+	dataDir, err := platform.DataDir()
+	if err != nil {
+		return "", err
+	}
+	return installDirFor(dataDir, sandboxDistro), nil
+}
+
 // validateInstallDir resolves platform.DataDir() and delegates to
 // validateInstallDirUnder. It is the only form non-test code calls.
 func validateInstallDir(dir string) error {

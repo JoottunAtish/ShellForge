@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/JoottunAtish/ShellForge/internal/platform"
 	"github.com/JoottunAtish/ShellForge/internal/platform/ux"
 )
 
@@ -31,10 +32,32 @@ func main() {
 	defer stop()
 
 	root := NewRootCommand(VersionInfo{Version: version, Commit: commit, BuildDate: buildDate})
-	if err := root.ExecuteContext(ctx); err != nil {
+	err := withConsole(platform.EnableVirtualTerminal, func() error {
+		return root.ExecuteContext(ctx)
+	})
+	if err != nil {
 		ux.Render(os.Stderr, renderableError(err))
 		os.Exit(1)
 	}
+}
+
+// withConsole turns on ANSI processing for the duration of body, and always
+// restores the console's original mode afterward, on every exit path
+// including a panic unwinding through body.
+//
+// enable is platform.EnableVirtualTerminal, passed in rather than called
+// directly so a test can substitute a recording double with no global
+// variable and no build tag. When enable itself fails, body still runs: a
+// console that cannot take ENABLE_VIRTUAL_TERMINAL_PROCESSING should get
+// plain output, not a program that refuses to start. doctor's
+// terminal_vt_support probe already reports that machine to anyone who asks.
+func withConsole(enable func() (func(), error), body func() error) error {
+	restore, err := enable()
+	if err != nil {
+		restore = func() {}
+	}
+	defer restore()
+	return body()
 }
 
 // renderableError ensures every error reaching ux.Render is a *ux.Error.

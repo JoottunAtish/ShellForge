@@ -28,9 +28,16 @@ var documentedVerbs = []string{
 }
 
 // documentedSandboxSubcommands and documentedAuthorSubcommands match the
-// group interfaces named in the ticket: "sandbox build|rebuild|destroy|status"
-// and "author validate|scaffold|test|record".
-var documentedSandboxSubcommands = []string{"build", "rebuild", "destroy", "status"}
+// group interfaces this build actually offers.
+//
+// documentedSandboxSubcommands changed on issue #71: `build` is gone and
+// `shell` is real. Provision is documented idempotent and already builds
+// the image or distribution, so `sandbox build` had no behaviour distinct
+// from `init`, and a verb whose help text cannot explain how it differs
+// from another verb is a verb that lies to a beginner. This also makes the
+// CLI agree with docs/design/ARCHITECTURE.md line 121, which already
+// documented the group as `sandbox shell|status|rebuild|destroy`.
+var documentedSandboxSubcommands = []string{"destroy", "rebuild", "shell", "status"}
 var documentedAuthorSubcommands = []string{"validate", "scaffold", "test", "record"}
 
 func topLevelNames(t *testing.T, root *cobra.Command) []string {
@@ -154,18 +161,19 @@ func execCommand(t *testing.T, root *cobra.Command, args ...string) (string, err
 // #48's acceptance criteria.
 func TestUnimplementedVerbsExplainThemselves(t *testing.T) {
 	stubs := [][]string{
-		{"init"}, {"play"}, {"check"}, {"hint"}, {"reset"},
+		{"play"}, {"check"}, {"hint"}, {"reset"},
 		{"skip"}, {"map"}, {"stats"}, {"bug-report"},
-		{"sandbox", "build"}, {"sandbox", "rebuild"}, {"sandbox", "destroy"}, {"sandbox", "status"},
 		{"author", "scaffold"}, {"author", "record"},
 	}
 
 	// `author validate` was a stub when #48 wrote this list and is real as of
 	// #53. `author test` is real as of the golden harness. `doctor` is real as
-	// of #70. All three are deliberately absent above rather than deleted from
-	// the documented set: author_test.go covers validate, author_test_cmd_test.go
-	// covers test, and cmd_doctor_test.go covers doctor. A real verb still
-	// errors without arguments or on a broken machine, but it errors about that
+	// of #70. `init` and all four sandbox subcommands are real as of #71. All
+	// of these are deliberately absent above rather than deleted from the
+	// documented set: author_test.go covers validate, author_test_cmd_test.go
+	// covers test, cmd_doctor_test.go covers doctor, and cmd_init_test.go and
+	// cmd_sandbox_test.go cover init and sandbox. A real verb still errors
+	// without arguments or on a broken machine, but it errors about that
 	// rather than about not existing, so it does not belong in this list.
 
 	for _, args := range stubs {

@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/JoottunAtish/ShellForge/internal/platform/ux"
+	"github.com/JoottunAtish/ShellForge/internal/sandbox"
 )
 
 // Group ids for the grouped `shellforge help` output. The titles are the ones
@@ -30,6 +31,12 @@ const (
 // for an unexpected error already tells the learner to run
 // `shellforge bug-report`, so dropping either verb would leave that message
 // pointing at a command that does not exist.
+//
+// init and the sandbox group are real as of issue #71: init resolves and
+// provisions a backend through internal/sandbox instead of stubbing out,
+// sandbox gained a real status|shell|rebuild|destroy tree in place of its
+// four stubs, and doctor's sandbox_health probe is wired to a real
+// SandboxProber instead of nil.
 func NewRootCommand(v VersionInfo) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "shellforge",
@@ -73,14 +80,11 @@ func NewRootCommand(v VersionInfo) *cobra.Command {
 	)
 
 	root.AddCommand(
-		// nil is the SandboxProber: choosing and provisioning a runtime is
-		// the Day 3 CLI ticket (issue #71), so sandbox_health reports warn
-		// until that lands. newDoctorCommand takes the prober as a
-		// parameter for exactly that reason: wiring a real one there is a
-		// one-argument change.
-		newDoctorCommand(nil),
-		stubCommand("shellforge init", "init [--runtime=auto|wsl|docker]", groupSetup,
-			"Provision the sandbox. Run once, takes a few minutes", "Day 1"),
+		// sandbox.NewProber() wires a real SandboxProber as of issue #71:
+		// sandbox_health now resolves a backend and pings it, under a
+		// bounded timeout, instead of reporting warn unconditionally.
+		newDoctorCommand(sandbox.NewProber()),
+		newInitCommand(defaultResolver),
 		stubCommand("shellforge play", "play [level-id]", groupPlaying,
 			"Start, or resume at the next level", "Day 4"),
 		newRunCommand(),
@@ -96,7 +100,7 @@ func NewRootCommand(v VersionInfo) *cobra.Command {
 			"Show the campaign as a tree of passed, available, and locked levels", "Day 4"),
 		stubCommand("shellforge stats", "stats", groupProgress,
 			"Show XP, rank, streak, and achievements", "Day 4"),
-		newSandboxCommand(),
+		newSandboxCommand(defaultResolver),
 		stubCommand("shellforge bug-report", "bug-report", groupManage,
 			"Bundle diagnostics for a GitHub issue, with the journal redacted", "Day 6"),
 		newAuthorCommand(),
@@ -120,27 +124,6 @@ func newRunCommand() *cobra.Command {
 			return cmdRun(cmd.Context(), args)
 		},
 	}
-}
-
-// newSandboxCommand returns the `sandbox` group and its four stub
-// subcommands.
-func newSandboxCommand() *cobra.Command {
-	sandbox := &cobra.Command{
-		Use:     "sandbox",
-		GroupID: groupManage,
-		Short:   "Inspect, rebuild, or destroy the sandbox",
-	}
-	sandbox.AddCommand(
-		stubCommand("shellforge sandbox build", "build", "",
-			"Build the sandbox image", "Day 1"),
-		stubCommand("shellforge sandbox rebuild", "rebuild", "",
-			"Rebuild the sandbox image and container from scratch", "Day 1"),
-		stubCommand("shellforge sandbox destroy", "destroy", "",
-			"Remove the sandbox container and image", "Day 1"),
-		stubCommand("shellforge sandbox status", "status", "",
-			"Show whether the sandbox is provisioned and running", "Day 1"),
-	)
-	return sandbox
 }
 
 // newAuthorCommand returns the `author` group and its four stub
