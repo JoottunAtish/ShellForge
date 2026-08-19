@@ -2,6 +2,7 @@ package doctor
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -69,13 +70,18 @@ func (p wslVersion2Probe) Run(ctx context.Context) Result {
 	}
 
 	text := decodeWSLText(stdout)
-	switch classifyWSLList(text) {
+	outcome := classifyWSLList(text)
+	switch outcome.Level {
 	case OK:
 		return p.result(OK, "the Shellforge sandbox distribution is on WSL version 2", "No action needed.")
 	case Fail:
-		return p.result(Fail, "a WSL distribution is on WSL version 1",
+		return p.result(Fail, "the Shellforge sandbox distribution is on WSL version 1",
 			"Run `wsl --set-default-version 2`, then `shellforge sandbox rebuild`.")
 	default:
+		if outcome.OtherVersion1Name != "" {
+			return p.result(Warn, fmt.Sprintf("%s is on WSL version 1; this only matters if the Shellforge sandbox lands there", outcome.OtherVersion1Name),
+				"No action needed. If `shellforge init` has trouble provisioning the sandbox, run `wsl --set-default-version 2` first.")
+		}
 		return p.result(Warn, "WSL reports no distributions yet",
 			"Run `shellforge init`; this does not change any existing distribution.")
 	}
@@ -120,28 +126,39 @@ func (p wslKernelProbe) Run(ctx context.Context) Result {
 // decodeWSLText decodes wsl.exe output, which is UTF-16LE, with or without
 // a byte order mark. A UTF-8 byte slice, which is not what wsl.exe emits
 // but is what a test fixture or a future non-Windows caller might pass,
-// passes through unchanged. An empty slice or one with an odd length,
-// which cannot be valid UTF-16, decodes to the empty string rather than
-// producing garbage.
+// passes through unchanged, odd length included: "Kernel version:
+// 5.15.146.1\n" is 27 bytes and must come back exactly as written, not as
+// the empty string. Odd length only means invalid input when the data is
+// UTF-16 shaped in the first place, checked by the BOM and the
+// looks-like-UTF16LE heuristic below, since real UTF-16LE text can never
+// have an odd byte count.
 func decodeWSLText(data []byte) string {
 	if len(data) == 0 {
 		return ""
 	}
-	if len(data)%2 != 0 {
-		return ""
-	}
 
-	body := data
-	hasBOM := len(body) >= 2 && body[0] == 0xFF && body[1] == 0xFE
+	hasBOM := len(data) >= 2 && data[0] == 0xFF && data[1] == 0xFE
 	if hasBOM {
-		body = body[2:]
-	} else if !looksLikeUTF16LE(body) {
-		return string(data)
-	}
-	if len(body)%2 != 0 {
-		return ""
+		body := data[2:]
+		if len(body)%2 != 0 {
+			return ""
+		}
+		return decodeUTF16LEUnits(body)
 	}
 
+	if looksLikeUTF16LE(data) {
+		if len(data)%2 != 0 {
+			return ""
+		}
+		return decodeUTF16LEUnits(data)
+	}
+
+	return string(data)
+}
+
+// decodeUTF16LEUnits decodes body, an even-length byte slice with no byte
+// order mark, as a sequence of little-endian UTF-16 code units.
+func decodeUTF16LEUnits(body []byte) string {
 	units := make([]uint16, len(body)/2)
 	for i := range units {
 		units[i] = uint16(body[2*i]) | uint16(body[2*i+1])<<8
@@ -149,10 +166,12 @@ func decodeWSLText(data []byte) string {
 	return string(utf16.Decode(units))
 }
 
-// looksLikeUTF16LE reports whether data, an even-length byte slice with no
-// byte order mark, is plausibly UTF-16LE text in the ASCII range: at least
-// three quarters of its high bytes are zero. Real UTF-8 text does not have
-// that shape.
+// looksLikeUTF16LE reports whether data, a byte slice with no byte order
+// mark, is plausibly UTF-16LE text in the ASCII range: at least three
+// quarters of its high bytes are zero. Real UTF-8 text does not have that
+// shape. data may have an odd length; the trailing byte is simply excluded
+// from both the pair count and the scan, since it cannot be part of a
+// complete UTF-16 code unit either way.
 func looksLikeUTF16LE(data []byte) bool {
 	pairs := len(data) / 2
 	if pairs == 0 {
@@ -172,13 +191,26 @@ func looksLikeUTF16LE(data []byte) bool {
 // and a trailing version of 1 or 2.
 var wslListRowVersion = regexp.MustCompile(`^\*?\s*(\S+)\s+.*\s([12])$`)
 
+// wslListOutcome is what classifyWSLList determined from one `wsl -l -v`
+// listing: the overall Level, plus, only when Level is Warn because some
+// other distribution (not the Shellforge sandbox) is on WSL version 1, the
+// name of that distribution, so the caller can say which one and why it
+// only matters if the sandbox lands there.
+type wslListOutcome struct {
+	Level             Level
+	OtherVersion1Name string
+}
+
 // classifyWSLList reads the VERSION column of a decoded `wsl -l -v`
 // listing. If the Shellforge sandbox distribution is present, only its row
-// matters: OK at version 2, Fail at version 1. Otherwise every listed
-// distribution must be at version 2 for OK; any at version 1 is Fail. A
-// listing with no distribution rows at all is Warn: that is the normal
-// state before `shellforge init` has run, not a broken machine.
-func classifyWSLList(text string) Level {
+// matters: OK at version 2, Fail at version 1, because that is a real
+// blocker. If it is absent, a learner's own WSL 1 distribution existing
+// alongside it is not a blocker: Shellforge imports its own WSL 2
+// distribution regardless of what else is installed, so that case is Warn,
+// naming the distribution, not Fail. A listing with no distribution rows at
+// all is also Warn: that is the normal state before `shellforge init` has
+// run, not a broken machine.
+func classifyWSLList(text string) wslListOutcome {
 	type row struct {
 		name    string
 		version string
@@ -198,24 +230,24 @@ func classifyWSLList(text string) Level {
 	}
 
 	if len(rows) == 0 {
-		return Warn
+		return wslListOutcome{Level: Warn}
 	}
 
 	for _, r := range rows {
 		if strings.EqualFold(r.name, sandboxDistroName) {
 			if r.version == "2" {
-				return OK
+				return wslListOutcome{Level: OK}
 			}
-			return Fail
+			return wslListOutcome{Level: Fail}
 		}
 	}
 
 	for _, r := range rows {
 		if r.version != "2" {
-			return Fail
+			return wslListOutcome{Level: Warn, OtherVersion1Name: r.name}
 		}
 	}
-	return OK
+	return wslListOutcome{Level: OK}
 }
 
 // wslKernelVersionLine matches the "Kernel version: X.Y" line of

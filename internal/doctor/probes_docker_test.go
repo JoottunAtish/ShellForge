@@ -3,6 +3,7 @@ package doctor
 import (
 	"context"
 	"os/exec"
+	"strings"
 	"testing"
 )
 
@@ -62,7 +63,7 @@ func TestDockerDaemonProbeNamesSwitchingToLinuxContainers(t *testing.T) {
 	if res.Status != Warn {
 		t.Fatalf("Status = %v, want Warn for a Windows-container daemon", res.Status)
 	}
-	if !containsString(res.Remediation, "Linux containers") {
+	if !strings.Contains(res.Remediation, "Linux containers") {
 		t.Errorf("Remediation = %q, want it to name switching to Linux containers", res.Remediation)
 	}
 }

@@ -30,7 +30,8 @@ func TestDecodeWSLTextHandlesUTF16LE(t *testing.T) {
 		{"utf16le without bom", utf16leBytes("NAME  STATE  VERSION", false), "NAME  STATE  VERSION"},
 		{"utf8 passes through unchanged", []byte("healthy!"), "healthy!"},
 		{"empty", nil, ""},
-		{"odd length", []byte{0x41, 0x00, 0x42}, ""},
+		{"odd length utf16-shaped is invalid", []byte{0x41, 0x00, 0x42}, ""},
+		{"odd length utf8 passes through unchanged", []byte("Kernel version: 5.15.146.1\n"), "Kernel version: 5.15.146.1\n"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -43,35 +44,50 @@ func TestDecodeWSLTextHandlesUTF16LE(t *testing.T) {
 
 func TestClassifyWSLListReadsTheVersionColumn(t *testing.T) {
 	tests := []struct {
-		name string
-		text string
-		want Level
+		name      string
+		text      string
+		wantLevel Level
+		wantOther string
 	}{
 		{
 			"one distribution at version 2",
 			"  NAME      STATE     VERSION\n* Ubuntu     Running   2\n",
-			OK,
+			OK, "",
 		},
 		{
-			"one distribution at version 1",
-			"  NAME      STATE     VERSION\n* Ubuntu     Running   1\n",
-			Fail,
+			// The reviewer's own repro: the Shellforge sandbox distribution
+			// is absent and a foreign WSL 1 distribution exists alongside
+			// where it would go. That is not a blocker, since Shellforge
+			// imports its own WSL 2 distribution regardless of what else is
+			// installed, so this is Warn, naming the distribution, not Fail.
+			"shellforge absent, a foreign distribution at version 1",
+			"  NAME    STATE     VERSION\n* Ubuntu  Stopped   1\n",
+			Warn, "Ubuntu",
 		},
 		{
 			"shellforge at 2, another at 1",
 			"  NAME                  STATE     VERSION\n  Ubuntu                Stopped   1\n* shellforge-sandbox    Running   2\n",
-			OK,
+			OK, "",
+		},
+		{
+			"the shellforge sandbox distribution itself is at version 1",
+			"  NAME                  STATE     VERSION\n* shellforge-sandbox    Running   1\n",
+			Fail, "",
 		},
 		{
 			"header only, no distributions",
 			"  NAME      STATE     VERSION\n",
-			Warn,
+			Warn, "",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := classifyWSLList(tt.text); got != tt.want {
-				t.Errorf("classifyWSLList(%q) = %v, want %v", tt.text, got, tt.want)
+			got := classifyWSLList(tt.text)
+			if got.Level != tt.wantLevel {
+				t.Errorf("classifyWSLList(%q).Level = %v, want %v", tt.text, got.Level, tt.wantLevel)
+			}
+			if got.OtherVersion1Name != tt.wantOther {
+				t.Errorf("classifyWSLList(%q).OtherVersion1Name = %q, want %q", tt.text, got.OtherVersion1Name, tt.wantOther)
 			}
 		})
 	}

@@ -20,6 +20,18 @@ func (p terminalVTProbe) Run(ctx context.Context) Result {
 	if ok {
 		return p.result(OK, detail, "No action needed.")
 	}
+
+	// SupportsVirtualTerminal can answer false either because stdout is a
+	// real console that cannot do virtual terminal processing, or because
+	// stdout was redirected to a file or a pipe, in which case the question
+	// does not apply at all: `shellforge doctor --json > report.json` must
+	// not fail a healthy machine just because a file is not a console.
+	// StdoutIsRedirected is a second, independent signal for telling those
+	// apart, never a parse of this detail string.
+	if redirected, _ := platform.StdoutIsRedirected(); redirected {
+		return p.result(OK, "stdout is redirected to a file or pipe, so virtual terminal support does not apply", "No action needed.")
+	}
+
 	return p.result(Fail, detail,
 		"Install Windows Terminal from the Microsoft Store and run Shellforge in it. If you cannot, redirect output to a file or set NO_COLOR=1.")
 }

@@ -1,13 +1,10 @@
-// Package doctor implements the preflight diagnostics behind `shellforge doctor`.
-//
-// Layer L0. May import internal/platform. Must not import a runtime
-// implementation; probe for Docker and WSL through the platform layer.
-//
-// Every probe returns {Status, Detail, Remediation, DocAnchor}. The DocAnchor
-// must name a heading that exists in docs/05-troubleshooting.md, and CI fails
-// the build when one does not. This package is the single highest return on
-// investment in the project: it is the difference between a learner fixing
-// their own machine and a learner giving up at step three.
+// The package comment lives in doc.go, not here: a comment block directly
+// above "package doctor" with no blank line, in any file of the package, is
+// concatenated into the same godoc text, and two such comments disagreeing
+// about the import rule is a bug, not a feature. The blank line below this
+// comment keeps it an ordinary file comment rather than a second package
+// comment.
+
 package doctor
 
 import (
@@ -207,7 +204,7 @@ func (b baseProbe) result(status Level, detail, remediation string) Result {
 	return Result{ID: b.id, Status: status, Detail: detail, Remediation: remediation, DocAnchor: b.docAnchor}
 }
 
-// fixableResult is result plus Fixable true. Only diskFreeProbe calls it.
+// fixableResult is result plus Fixable true. Only sandboxHealthProbe calls it.
 func (b baseProbe) fixableResult(status Level, detail, remediation string) Result {
 	res := b.result(status, detail, remediation)
 	res.Fixable = true
@@ -235,13 +232,13 @@ type fixAction struct {
 // rather than a package-level var, because go-style forbids global mutable
 // state, and a map var is mutable from any test in the package.
 //
-// disk_free is the only entry. Every other remediation this package can
-// report needs elevation (installing WSL, enabling a Windows optional
+// sandbox_health is the only entry. Every other remediation this package
+// can report needs elevation (installing WSL, enabling a Windows optional
 // feature, updating the WSL kernel, starting the Docker daemon) and is
 // printed for the learner to run themselves, never executed.
 func fixActions() map[string]fixAction {
 	return map[string]fixAction{
-		"disk_free": {
+		"sandbox_health": {
 			describe: "created the Shellforge data directory",
 			apply: func(ctx context.Context) error {
 				dir, err := platform.DataDir()

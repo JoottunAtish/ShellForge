@@ -96,7 +96,7 @@ func TestDoctorWithoutFixLeavesTheDataDirectoryAlone(t *testing.T) {
 
 	info, err := os.Stat(dataDir)
 	if err != nil {
-		t.Skipf("after --fix, %s does not exist: %v (likely this host reports less than 5 GiB free, which makes disk_free non-Fixable; see the disk_free probe test for that case)", dataDir, err)
+		t.Skipf("after --fix, %s does not exist: %v (sandbox_health's Fixable claim does not depend on free space, so this would need a real filesystem error such as a permission problem creating it; see internal/doctor/probes_sandbox_test.go for the deterministic case)", dataDir, err)
 	}
 	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o700 {
 		t.Errorf("data directory mode = %v, want 0700", info.Mode().Perm())

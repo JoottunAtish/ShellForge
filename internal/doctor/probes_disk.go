@@ -21,6 +21,13 @@ type diskFreeProbe struct {
 	baseProbe
 }
 
+// diskFreeProbe.Run is about free space only, and nothing else. Whether the
+// Shellforge data directory exists yet is a provisioning question, not a
+// disk-space question: it is sandbox_health's row to report, since its
+// sandbox-unhealthy anchor already covers a not-yet-provisioned install,
+// and disk-space-low's own heading in docs/05-troubleshooting.md only ever
+// talks about free space. Ample space here is OK, never a Warn, regardless
+// of whether the data directory has been created yet.
 func (p diskFreeProbe) Run(ctx context.Context) Result {
 	if err := ctx.Err(); err != nil {
 		return p.interrupted(err)
@@ -31,9 +38,6 @@ func (p diskFreeProbe) Run(ctx context.Context) Result {
 		return p.result(Warn, "could not resolve the data directory: "+err.Error(), "Run `shellforge doctor` again.")
 	}
 
-	_, statErr := os.Stat(dir)
-	dataDirExists := statErr == nil
-
 	target := nearestExistingAncestor(dir)
 	free, err := freeBytesAt(target)
 	if err != nil {
@@ -42,15 +46,7 @@ func (p diskFreeProbe) Run(ctx context.Context) Result {
 
 	switch classifyDiskFree(free) {
 	case OK:
-		detail := fmt.Sprintf("%.1f GiB free at %s", gib(free), target)
-		if dataDirExists {
-			return p.result(OK, detail, "No action needed.")
-		}
-		// Warn, not OK: Fix only considers a result whose status is not
-		// OK, and the missing data directory before `shellforge init` has
-		// ever run is worth fixing, not a pass.
-		return p.fixableResult(Warn, detail+"; the Shellforge data directory does not exist yet",
-			"Run `shellforge doctor --fix` to create it, or run `shellforge init`.")
+		return p.result(OK, fmt.Sprintf("%.1f GiB free at %s", gib(free), target), "No action needed.")
 	default:
 		detail := fmt.Sprintf("only %.1f GiB free at %s, need %.0f GiB", gib(free), target, gib(minFreeBytes))
 		return p.result(Fail, detail, "Free up space on that drive, then run `shellforge doctor` again.")

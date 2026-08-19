@@ -65,17 +65,37 @@ func (p osVersionProbe) Run(ctx context.Context) Result {
 type cpuVirtualizationProbe struct {
 	baseProbe
 	r runner
+	// cpuInfoPath is the file the non-Windows branch reads. Empty means the
+	// real /proc/cpuinfo; a test sets it to a fixture path so the
+	// present-flag and absent-flag branches are both exercised without
+	// depending on this host's real hardware.
+	cpuInfoPath string
 }
 
 // cpuVirtWindowsArgv is a compile-time constant with no interpolation of
 // any kind, so this is not the build-a-string-and-hand-it-to-a-shell
 // pattern the security skill forbids: nothing variable ever enters it.
+//
+// The property is named explicitly with -Property rather than reading it
+// off a bare Get-ComputerInfo call. Get-ComputerInfo with no -Property
+// materializes the whole computer-info object across many CIM classes and
+// commonly takes well over the probe's five second budget on a cold WMI;
+// naming the one property it asks for keeps this the same question,
+// answered from a narrower, faster query, and stays a compile-time
+// constant.
 var cpuVirtWindowsArgv = []string{
 	"powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
-	"(Get-ComputerInfo).HyperVRequirementVirtualizationFirmwareEnabled",
+	"(Get-ComputerInfo -Property HyperVRequirementVirtualizationFirmwareEnabled).HyperVRequirementVirtualizationFirmwareEnabled",
 }
 
 const remediationEnableVirtualization = "Enable virtualization (Intel VT-x, AMD-V, or SVM Mode) in your firmware setup, then restart."
+
+// remediationVirtualizationNotDetected is the non-Windows remediation for a
+// missing vmx or svm flag. Unlike remediationEnableVirtualization, this is
+// not a required fix: Docker on Linux uses namespaces and cgroups and needs
+// no hardware virtualization at all, so the flag being absent is worth
+// knowing, not an instruction to act on.
+const remediationVirtualizationNotDetected = "No action needed for Docker on Linux, which does not use hardware virtualization. If you plan to run nested virtualization or WSL2 on this machine, enable virtualization (Intel VT-x, AMD-V, or SVM Mode) in your firmware setup."
 
 func (p cpuVirtualizationProbe) Run(ctx context.Context) Result {
 	if err := ctx.Err(); err != nil {
@@ -108,17 +128,32 @@ func (p cpuVirtualizationProbe) Run(ctx context.Context) Result {
 			"No action needed; virtualization support cannot be read from /proc/cpuinfo on this architecture.")
 	}
 
-	data, err := os.ReadFile("/proc/cpuinfo")
+	path := p.cpuInfoPath
+	if path == "" {
+		path = "/proc/cpuinfo"
+	}
+	// #nosec G304 -- path is the compile-time constant "/proc/cpuinfo" in
+	// every production caller; cpuInfoPath is a struct field only this
+	// package's own tests ever set, to inject a fixture body, never a value
+	// that reaches here from a level, a flag, or any other untrusted input.
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return p.result(Warn, "could not read /proc/cpuinfo: "+err.Error(),
 			"Check virtualization in your firmware setup if Docker fails to start.")
 	}
 
+	// An absent flag is Warn, not Fail: Docker on Linux uses namespaces and
+	// cgroups and needs no hardware virtualization at all, so a Linux VM,
+	// cloud instance, or dev container without nested virtualization
+	// exposed still works fine here. This is also why an absent flag must
+	// never be worse than an unreadable file, which is Warn above: "flag
+	// absent" is not stronger evidence of a problem than "unknown".
 	switch classifyCPUFlags(string(data)) {
 	case OK:
 		return p.result(OK, "virtualization flags (vmx or svm) are present in /proc/cpuinfo", "No action needed.")
 	default:
-		return p.result(Fail, "no vmx or svm flag found in /proc/cpuinfo", remediationEnableVirtualization)
+		return p.result(Warn, "hardware virtualization (vmx or svm) was not detected in /proc/cpuinfo; Docker on Linux does not require it",
+			remediationVirtualizationNotDetected)
 	}
 }
 
@@ -129,9 +164,17 @@ type vmPlatformProbe struct {
 	r runner
 }
 
+// vmPlatformArgv reads the Virtual Machine Platform optional feature's
+// install state through Win32_OptionalFeature over CIM rather than through
+// Get-WindowsOptionalFeature -Online, which is a DISM online query and
+// requires an elevated session: from an ordinary terminal it exits
+// non-zero, and the probe could never report anything but an uninformative
+// Warn. Get-CimInstance needs no elevation. InstallState 1 means the
+// feature is enabled; this is a compile-time constant with no
+// interpolation of any kind.
 var vmPlatformArgv = []string{
 	"powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
-	"(Get-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform).State",
+	"(Get-CimInstance -ClassName Win32_OptionalFeature -Filter \"Name='VirtualMachinePlatform'\").InstallState",
 }
 
 const remediationEnableVMPlatform = "Run `dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart` in an Administrator PowerShell, then reboot."
@@ -150,10 +193,15 @@ func (p vmPlatformProbe) Run(ctx context.Context) Result {
 	}
 
 	out := strings.TrimSpace(string(stdout))
-	if strings.EqualFold(out, "Enabled") {
+	switch out {
+	case "1":
 		return p.result(OK, "Virtual Machine Platform is enabled", "No action needed.")
+	case "":
+		return p.result(Warn, "Virtual Machine Platform state could not be read; the Win32_OptionalFeature class returned nothing for it",
+			remediationEnableVMPlatform)
+	default:
+		return p.result(Fail, fmt.Sprintf("Virtual Machine Platform install state is %q, want enabled", out), remediationEnableVMPlatform)
 	}
-	return p.result(Fail, fmt.Sprintf("Virtual Machine Platform state is %q", out), remediationEnableVMPlatform)
 }
 
 // parseMajorMinor parses the leading "major.minor" out of a kernel release

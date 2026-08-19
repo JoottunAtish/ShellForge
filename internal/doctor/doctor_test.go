@@ -3,6 +3,8 @@ package doctor
 import (
 	"context"
 	"os"
+	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -230,14 +232,14 @@ func TestRunBoundsEachProbeIndividually(t *testing.T) {
 func TestFixPerformsOnlyAllowlistedFixableActions(t *testing.T) {
 	var recorded []string
 	actions := map[string]fixAction{
-		"disk_free": {
+		"sandbox_health": {
 			describe: "created the data directory",
-			apply:    func(ctx context.Context) error { recorded = append(recorded, "disk_free"); return nil },
+			apply:    func(ctx context.Context) error { recorded = append(recorded, "sandbox_health"); return nil },
 		},
 	}
 
 	report := Report{Results: []Result{
-		{ID: "disk_free", Status: Warn, Remediation: "create it", Fixable: true},
+		{ID: "sandbox_health", Status: Warn, Remediation: "create it", Fixable: true},
 		{ID: "wsl_installed", Status: Fail, Remediation: "install wsl", Fixable: true},
 		{ID: "docker_daemon_running", Status: Fail, Remediation: "start docker", Fixable: false},
 		{ID: "terminal_vt_support", Status: OK, Remediation: "No action needed."},
@@ -247,42 +249,29 @@ func TestFixPerformsOnlyAllowlistedFixableActions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fix returned an error: %v", err)
 	}
-	if len(recorded) != 1 || recorded[0] != "disk_free" {
-		t.Fatalf("recorder saw %v, want exactly one call for disk_free", recorded)
+	if len(recorded) != 1 || recorded[0] != "sandbox_health" {
+		t.Fatalf("recorder saw %v, want exactly one call for sandbox_health", recorded)
 	}
 	if len(done) != 1 || done[0] == "" {
-		t.Fatalf("done = %v, want one entry for disk_free", done)
+		t.Fatalf("done = %v, want one entry for sandbox_health", done)
 	}
 	if len(refused) != 2 {
 		t.Fatalf("refused = %d entries, want 2 entries, one each for wsl_installed and docker_daemon_running: %v", len(refused), refused)
 	}
-	for _, id := range []string{"disk_free"} {
+	for _, id := range []string{"sandbox_health"} {
 		for _, r := range refused {
-			if containsString(r, id) {
+			if strings.Contains(r, id) {
 				t.Errorf("refused contains the fixed id %q: %v", id, refused)
 			}
 		}
 	}
 }
 
-func containsString(haystack, needle string) bool {
-	return len(haystack) >= len(needle) && (haystack == needle || (len(needle) > 0 && indexOf(haystack, needle) >= 0))
-}
-
-func indexOf(haystack, needle string) int {
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		if haystack[i:i+len(needle)] == needle {
-			return i
-		}
-	}
-	return -1
-}
-
 // TestFixExecutesNothingWhenNoFailureIsFixable is refusal test one.
 func TestFixExecutesNothingWhenNoFailureIsFixable(t *testing.T) {
 	var calls int
 	actions := map[string]fixAction{
-		"disk_free": {apply: func(ctx context.Context) error { calls++; return nil }},
+		"sandbox_health": {apply: func(ctx context.Context) error { calls++; return nil }},
 	}
 	report := Report{Results: []Result{
 		{ID: "wsl_installed", Status: Fail, Remediation: "install wsl", Fixable: false},
@@ -320,6 +309,47 @@ func TestFixRefusesAFixableClaimItDoesNotOwn(t *testing.T) {
 	}
 	if len(refused) != 1 {
 		t.Fatalf("refused = %d entries, want 1", len(refused))
+	}
+}
+
+// TestFixActionCreatesTheDataDirectoryAtMode0700 calls the real
+// fixActions()["sandbox_health"].apply directly, with the data directory
+// redirected to a temp directory, and is the test with teeth for the one
+// mutating action in this package: replacing apply's body with
+// `_, err := platform.DataDir(); return err` creates nothing and leaves
+// every refusal test and TestFixPerformsOnlyAllowlistedFixableActions fully
+// green, because none of them calls the real action at all. This is the
+// one test that must go red against exactly that mutation; see PROGRESS.md
+// for the confirmation record.
+func TestFixActionCreatesTheDataDirectoryAtMode0700(t *testing.T) {
+	root := t.TempDir()
+	setDataDirEnv(t, root)
+
+	dataDir, err := platform.DataDir()
+	if err != nil {
+		t.Fatalf("platform.DataDir(): %v", err)
+	}
+	if _, statErr := os.Stat(dataDir); statErr == nil {
+		t.Fatalf("data directory %s already exists before apply", dataDir)
+	}
+
+	action, ok := fixActions()["sandbox_health"]
+	if !ok {
+		t.Fatal(`fixActions() has no "sandbox_health" entry`)
+	}
+	if err := action.apply(context.Background()); err != nil {
+		t.Fatalf("apply(): %v", err)
+	}
+
+	info, err := os.Stat(dataDir)
+	if err != nil {
+		t.Fatalf("data directory %s does not exist after apply: %v", dataDir, err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("%s exists but is not a directory", dataDir)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o700 {
+		t.Errorf("data directory mode = %v, want 0700", info.Mode().Perm())
 	}
 }
 

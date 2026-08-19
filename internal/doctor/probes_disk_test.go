@@ -118,9 +118,12 @@ func TestDiskFreeProbeIsFullyPopulated(t *testing.T) {
 	}
 }
 
-// TestDiskFreeProbeIsFixableOnlyWhenTheDirectoryIsMissing pins the one case
-// in the whole package where Fixable is true.
-func TestDiskFreeProbeIsFixableOnlyWhenTheDirectoryIsMissing(t *testing.T) {
+// TestDiskFreeProbeIsNeverFixableRegardlessOfDataDirExistence pins the
+// finding-4 fix: disk_free is about free space only. Whether the data
+// directory exists yet is sandbox_health's row now (see
+// probes_sandbox_test.go for its Fixable test), so disk_free must report
+// OK, not Warn, and never Fixable, whether or not the directory exists.
+func TestDiskFreeProbeIsNeverFixableRegardlessOfDataDirExistence(t *testing.T) {
 	root := t.TempDir()
 	dataDir := filepath.Join(root, "shellforge")
 	setDataDirEnv(t, root)
@@ -130,16 +133,22 @@ func TestDiskFreeProbeIsFixableOnlyWhenTheDirectoryIsMissing(t *testing.T) {
 	if res.Status == Fail {
 		t.Skip("this host does not have enough free disk space for this assertion to be meaningful")
 	}
-	if !res.Fixable {
-		t.Errorf("Fixable = false with the data directory missing (%s) and enough free space, want true", dataDir)
+	if res.Status != OK {
+		t.Errorf("Status = %v with the data directory missing and enough free space, want OK", res.Status)
+	}
+	if res.Fixable {
+		t.Errorf("Fixable = true with the data directory missing, want false: disk_free never claims Fixable")
 	}
 
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		t.Fatalf("create the data directory: %v", err)
 	}
 	res2 := p.Run(context.Background())
+	if res2.Status != OK {
+		t.Errorf("Status = %v once the data directory exists, want OK", res2.Status)
+	}
 	if res2.Fixable {
-		t.Errorf("Fixable = true once the data directory already exists, want false")
+		t.Errorf("Fixable = true once the data directory exists, want false")
 	}
 }
 

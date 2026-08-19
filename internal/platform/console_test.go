@@ -45,6 +45,50 @@ func TestSupportsVirtualTerminal_NonWindowsAlwaysSupported(t *testing.T) {
 	}
 }
 
+// TestStdoutIsRedirected_PipeIsRedirected pins the one answer that must be
+// true on every platform: a pipe is not a console. GetFileType reports
+// FILE_TYPE_PIPE on Windows and os.ModeCharDevice is unset for a pipe
+// everywhere else, so this test needs no build tag and no skip.
+func TestStdoutIsRedirected_PipeIsRedirected(t *testing.T) {
+	orig := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe(): %v", err)
+	}
+	defer func() {
+		os.Stdout = orig
+		_ = r.Close()
+		_ = w.Close()
+	}()
+	os.Stdout = w
+
+	redirected, detail := StdoutIsRedirected()
+	if !redirected || detail == "" {
+		t.Errorf("StdoutIsRedirected() = (%v, %q), want (true, non-empty) for a piped stdout", redirected, detail)
+	}
+}
+
+// TestStdoutIsRedirected_FileIsRedirected covers the other redirection
+// shape, a plain file, which is FILE_TYPE_DISK on Windows and also not a
+// character device everywhere else.
+func TestStdoutIsRedirected_FileIsRedirected(t *testing.T) {
+	orig := os.Stdout
+	f, err := os.CreateTemp(t.TempDir(), "stdout-redirect-*")
+	if err != nil {
+		t.Fatalf("os.CreateTemp(): %v", err)
+	}
+	defer func() {
+		os.Stdout = orig
+		_ = f.Close()
+	}()
+	os.Stdout = f
+
+	redirected, detail := StdoutIsRedirected()
+	if !redirected || detail == "" {
+		t.Errorf("StdoutIsRedirected() = (%v, %q), want (true, non-empty) for a file", redirected, detail)
+	}
+}
+
 func TestEnableVirtualTerminal_NonWindowsIsANoOp(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows behaviour depends on a real console; covered separately")

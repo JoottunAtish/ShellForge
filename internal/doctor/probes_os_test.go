@@ -2,6 +2,9 @@ package doctor
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -94,7 +97,54 @@ func TestCPUVirtualizationProbeIsFullyPopulated(t *testing.T) {
 	}
 }
 
-func TestVMPlatformProbeClassifiesDismState(t *testing.T) {
+// TestCPUVirtualizationProbeLinuxClassifiesInjectedCPUInfo drives the
+// non-Windows branch of cpuVirtualizationProbe.Run against an injected
+// /proc/cpuinfo fixture, rather than this host's real one, so both the
+// present-flag and absent-flag paths are covered on any machine regardless
+// of whether it actually exposes vmx or svm. It also pins the fix for the
+// bug a healthy Linux host with no hardware virtualization flags exposed
+// (a cloud VM, a nested container) must report Warn, not Fail, since
+// Docker on Linux needs no hardware virtualization at all.
+func TestCPUVirtualizationProbeLinuxClassifiesInjectedCPUInfo(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("this probe body only reads /proc/cpuinfo on non-Windows")
+	}
+	if runtime.GOARCH != "amd64" && runtime.GOARCH != "386" {
+		t.Skip("the vmx/svm flag check applies to x86 only")
+	}
+
+	tests := []struct {
+		name string
+		body string
+		want Level
+	}{
+		{"vmx present", "flags\t\t: fpu vme de pse vmx tsc\n", OK},
+		{"svm present", "flags\t\t: fpu vme de pse svm tsc\n", OK},
+		{"neither present", "flags\t\t: fpu vme de pse tsc\n", Warn},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "cpuinfo")
+			if err := os.WriteFile(path, []byte(tt.body), 0o600); err != nil {
+				t.Fatalf("write cpuinfo fixture: %v", err)
+			}
+			p := cpuVirtualizationProbe{
+				baseProbe:   baseProbe{id: "cpu_virtualization", docAnchor: docAnchorVirtDisabled},
+				r:           newFakeRunner(),
+				cpuInfoPath: path,
+			}
+			res := p.Run(context.Background())
+			if res.Status != tt.want {
+				t.Errorf("Status = %v, want %v (detail: %s)", res.Status, tt.want, res.Detail)
+			}
+			if res.Status == Fail {
+				t.Error("cpu_virtualization must never report Fail on non-Windows: Docker on Linux needs no hardware virtualization")
+			}
+		})
+	}
+}
+
+func TestVMPlatformProbeClassifiesCimInstallState(t *testing.T) {
 	tests := []struct {
 		name   string
 		stdout string
@@ -102,9 +152,11 @@ func TestVMPlatformProbeClassifiesDismState(t *testing.T) {
 		err    error
 		want   Level
 	}{
-		{"enabled", "Enabled\n", 0, nil, OK},
-		{"disabled", "Disabled\n", 0, nil, Fail},
+		{"enabled", "1\n", 0, nil, OK},
+		{"disabled", "2\n", 0, nil, Fail},
+		{"absent", "3\n", 0, nil, Fail},
 		{"powershell failed", "", 1, nil, Warn},
+		{"empty stdout, exit 0", "", 0, nil, Warn},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
