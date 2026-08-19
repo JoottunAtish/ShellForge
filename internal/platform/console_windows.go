@@ -64,3 +64,22 @@ func SupportsVirtualTerminal() (ok bool, detail string) {
 	}
 	return true, "stdout is a console that supports virtual terminal processing"
 }
+
+// StdoutIsRedirected reports whether stdout is a file or a pipe rather than
+// a console, using GetFileType. That answers a different question than
+// SupportsVirtualTerminal's GetConsoleMode call: GetFileType asks what kind
+// of handle stdout is, rather than whether its console mode can be
+// changed, so terminal_vt_support can tell "the question does not apply,
+// stdout was redirected" apart from "stdout is a real console that cannot
+// do virtual terminal processing" as two genuinely different signals,
+// never by parsing SupportsVirtualTerminal's own detail string.
+func StdoutIsRedirected() (ok bool, detail string) {
+	fileType, err := windows.GetFileType(windows.Handle(os.Stdout.Fd()))
+	if err != nil {
+		return false, fmt.Sprintf("could not determine the stdout handle type: %v", err)
+	}
+	if fileType == windows.FILE_TYPE_CHAR {
+		return false, "stdout is a character device (a console)"
+	}
+	return true, "stdout is redirected to a file or pipe"
+}

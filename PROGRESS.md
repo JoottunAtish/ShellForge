@@ -19,7 +19,7 @@ formally cut.
 | `go test ./...` | Green |
 | Layer dependency enforcement | Done, and verified to fail on a deliberate violation |
 | Punctuation gate | Done, and verified to fail on a deliberate violation |
-| CLI dispatcher | `cmd/shellforge` runs on `spf13/cobra` as of #48, not the hand-rolled dispatcher. Fourteen verbs registered (`doctor` `init` `play` `run` `check` `hint` `reset` `skip` `map` `stats` `sandbox` `bug-report` `author` `version`), plus `sandbox` and `author` as command groups with four stub subcommands each. `version`, `help` and `run <level-id>` work; every other verb fails through `ux.Fail` with a remediation. **The whole `cmd/shellforge` package was untracked by git until #11**: `.gitignore`'s unanchored `shellforge` pattern matched the directory, so it was never committed and CI never compiled or tested it. |
+| CLI dispatcher | `cmd/shellforge` runs on `spf13/cobra` as of #48, not the hand-rolled dispatcher. Fourteen verbs registered (`doctor` `init` `play` `run` `check` `hint` `reset` `skip` `map` `stats` `sandbox` `bug-report` `author` `version`), plus `sandbox` and `author` as command groups with four stub subcommands each. `version`, `help`, `run <level-id>`, `author validate`, `author test`, and `doctor` (issue #70, see its own row below) work; every other verb fails through `ux.Fail` with a remediation. **The whole `cmd/shellforge` package was untracked by git until #11**: `.gitignore`'s unanchored `shellforge` pattern matched the directory, so it was never committed and CI never compiled or tested it. |
 | `shellforge run <level-id>` | Works on Linux for any level in the pack, with zero Go changes between levels. Loads from the embedded YAML, renders the briefing through glamour, prints the objective checklist, provisions, materializes the level, hands over a real instrumented bash, serves `check` over the existing FIFO control channel, and tears the level world down on every exit path through one cleanup function. An unknown id fails through `ux.Fail` naming the ids that exist. Refuses on a Windows host with the `windows-needs-wsl` anchor. **Never run against a real container from a developer machine**: no Docker socket here, so every end-to-end claim rests on unit tests plus CI's golden run. The learner's shell starts in `/home/learner`, not the level root, which is what a login shell does and what nav-01 teaches. |
 | `shellforge run demo` | Gone, as of #96. The Day 1 hardcoded level and its four files are deleted, and `demo` is now an unknown level id like any other: `run demo` reports that there is no such level and lists the ones there are. The safety coverage its tests carried moved to `cmd/shellforge/isolation_test.go`, against `pipe-05` from the real pack, and is named in the Sandbox image job's own `-run` pattern so it actually runs. |
 | `shellforge author test` | Done. Runs the `docs/LEVEL-FORMAT.md` section 7 golden contract per level and is what `make golden` calls, a target that had been calling a command that did not exist since Day 0. Refuses rather than skips without a Docker daemon, because a `make golden` reporting success having tested nothing is worse than no gate. |
@@ -47,6 +47,7 @@ formally cut.
 | `internal/platform` (paths) | Tested. Every function in `paths.go` has at least one test. `DataDir` rejects a relative `XDG_DATA_HOME` instead of silently returning a relative path. The Windows `CacheDir`/`DataDir` collision (#40) is fixed: `CacheDir` nests a `cache` element below `DataDir`, so a cache clear cannot delete progress or the WSL disk image. |
 | `internal/platform` (console mode, issue #68) | Done. `EnableVirtualTerminal`, `SupportsVirtualTerminal`, and `IsWindowsTerminal` in `console.go`, `console_windows.go` (`golang.org/x/sys/windows`), and `console_other.go`. On Windows, `EnableVirtualTerminal` sets `ENABLE_VIRTUAL_TERMINAL_PROCESSING`/`ENABLE_VIRTUAL_TERMINAL_INPUT` and its restore reverts both modes exactly, idempotently; on every other platform both are no-ops. Not yet wired into `main`: that is the CLI ticket's job, out of scope here. Manual confirmation on real Windows 11 hardware, that resizing mid-`vim` no longer corrupts the display, is still outstanding and belongs in the pull request per the ticket's own acceptance criteria; this environment has no Windows console to verify against, only the Linux and cross-compiled Windows builds and the automated suite. |
 | Rootfs release artifact | CI, `make rootfs`, and `.\make.ps1 rootfs` now all produce `rootfs.tar.gz` plus a `sha256sum`-format sidecar with reproducible `gzip -9 -n`, CI uploads both as a build artifact on every run and attaches them to the GitHub release on a tag push, and CI asserts the tarball contains `/etc/wsl.conf`, `/home/learner`, `/opt/shellforge/bin/check`, `/opt/shellforge/.sandbox-id`, and a man page. Not verified here: this environment has no Docker daemon, so the whole `image` job and the two scripts' actual output rest on CI, and the cross-platform digest match between a Linux runner's gzip and Git for Windows' gzip is expected but unproven pending a manual check on both platforms. |
+| `shellforge doctor` (issue #70) | Done, and revised by the pre-merge review round on PR #136 (see the Day 3 follow-up entry below for the full list). `internal/doctor` (L0) implements the twelve probes from the ticket's table (`os_version`, `cpu_virtualization`, `vm_platform_feature`, `wsl_installed`, `wsl_version_2`, `wsl_kernel_current`, `docker_present`, `docker_daemon_running`, `disk_free`, `terminal_vt_support`, `windows_terminal`, `sandbox_health`), a table and `--json` renderer, and `--fix`, wired in at `cmd/shellforge/cmd_doctor.go` in place of the old stub. Windows-only probes are omitted, not failed, on Linux and macOS. Every result carries a non-empty id, status, detail, remediation, and doc anchor, including passing rows. Exit status is 0 unless a probe is `Fail`; a `Warn`-only report exits 0. `--fix`'s entire allowlist is one call, `platform.EnsureDir(platform.DataDir())`, keyed on `sandbox_health` as of the follow-up below (it was `disk_free` in this branch's first commit): confirmed by hand on this host, it creates exactly one directory at mode 0700 and nothing else, and refuses the remediations it does not own. `cpu_virtualization` reports `Warn`, not `Fail`, when no `vmx` or `svm` flag is visible, since Docker on Linux needs no hardware virtualization; this container is exactly that case. `disk_free` is about free space only. `internal/doctor/no_removal_test.go` and `internal/doctor/purity_test.go` were each confirmed to go red against a deliberate one-line violation, then reverted, before being trusted; that confirmation is recorded below, and the follow-up entry records a second such confirmation for the `sandbox_health` fix action itself. `sandbox_health` is wired with a `nil` `SandboxProber`, so its prober-classification branches always report `Warn` today: choosing and provisioning a runtime is the Day 3 CLI ticket, and `newDoctorCommand` takes the prober as a parameter for exactly that reason. Not done: `Level.UnmarshalJSON`, result caching, a `--output` flag, and `--fix --dry-run`, because none of them is this ticket's job. Of those four, only `Level.UnmarshalJSON` carries a `// TODO(v0.2):` marker at its call site (next to `Level.MarshalJSON` in `doctor.go`); the glyph-probe TODO in `probes_terminal.go` is a separate, pre-existing marker for a different gap. Result caching, `--output`, and `--fix --dry-run` have no call site to attach a marker to, since none of that code exists yet; an earlier draft of this row claimed all four were marked, which was not true, and is corrected here rather than left standing. Never run against a real WSL host or a real Docker daemon in Windows-container mode: every WSL and Docker-daemon-state test goes through the fake `runner`, and the two `x/sys` syscall wrappers (`RtlGetVersion`, `GetDiskFreeSpaceEx`, `unix.Statfs`) are covered only by `GOOS=windows go build`/`go vet` cross-compilation, not by execution, on this Linux-only host. `govulncheck`, `gosec`, and `pytest` over `scripts/tests` are not installed here and are left to CI, as with every prior entry that says so; `gosec` was available for the follow-up round and is recorded there. |
 
 **There is no release and nothing to install.**
 
@@ -3597,6 +3598,364 @@ cannot prove.
   `pytest` over `scripts/tests` are not installed on this host and are left to CI,
   as they were for the Day 3 console mode entry above.
 
+### Day 3, 2026-08-19: doctor, twelve probes, the table, and --json
+
+Issue #70, Day 3 ticket C. `internal/doctor` moves from a `doc.go`-only stub to a
+full package, and `shellforge doctor` moves from a stub to the first fully
+diagnostic verb in the CLI.
+
+- **The package.** `doctor.go` carries `Level` (with a lowercase-word
+  `MarshalJSON`, never a number, so a shell script can compare against `"fail"`),
+  `Probe`, `Result`, `Report`, `Report.Failed`, the `SandboxProber` interface,
+  `Run`/`run`, `Fix`/`fix`, `fixAction`/`fixActions`, `baseProbe`, and the twelve
+  anchor constants. `runner.go` copies the shape of
+  `internal/runtime/docker/runner.go`, with one difference forced by this
+  package's own job: docker's `execRunner` binds to one fixed binary name at
+  construction, but doctor's probes shell out to `uname`, `docker`, `wsl.exe`,
+  and `powershell.exe`, so `execRunner` here resolves `argv[0]` with
+  `exec.LookPath` fresh on every call instead. The twelve probes live in
+  `probes_os.go` (`os_version`, `cpu_virtualization`, `vm_platform_feature`),
+  `probes_wsl.go` (`wsl_installed`, `wsl_version_2`, `wsl_kernel_current`),
+  `probes_docker.go` (`docker_present`, `docker_daemon_running`),
+  `probes_terminal.go` (`terminal_vt_support`, `windows_terminal`),
+  `probes_sandbox.go` (`sandbox_health`), and `probes_disk.go`
+  (`disk_free`), each embedding `baseProbe` and each guarded by its own
+  `ctx.Err()` check both before and after any subprocess call, so a hung
+  `docker version` costs exactly its own five-second `probeTimeout` and not the
+  rest of the report. Four files sit behind build tags because they touch a
+  real OS API: `probes_os_windows.go` (`RtlGetVersion`), `probes_os_other.go`
+  (`uname -r` through the runner), `probes_disk_windows.go`
+  (`GetDiskFreeSpaceEx`), and `probes_disk_unix.go` (`unix.Statfs`, reading
+  `Bavail * Bsize`, the available-to-unprivileged-users count). Every pure
+  classifier (`classifyKernelRelease`, `classifyWindowsBuild`,
+  `classifyCPUFlags`, `decodeWSLText`, `classifyWSLList`, `classifyWSLVersion`,
+  `classifyDockerOutput`, `classifyDiskFree`) lives in the untagged file next to
+  its probe, so the Windows classifier is unit tested on the ubuntu leg and the
+  Linux one on the windows leg, and only the two syscall wrappers actually need
+  the tag.
+- **No new dependency, no `go.mod`/`go.sum` edit.** `golang.org/x/sys` was
+  already a direct requirement at v0.34.0 as of #68; this adds imports of its
+  `unix` and `windows` subpackages, verified against the pinned version before
+  writing a line of the build-tagged files: `RtlGetVersion` and
+  `GetDiskFreeSpaceEx` exist with the signatures assumed, and `unix.Statfs_t`
+  has `Bavail` and `Bsize` on both `linux/amd64` and `darwin/arm64`, though
+  `Bsize` is `int64` on Linux and `uint32` on Darwin, which is why the
+  multiplication casts both operands to `uint64` explicitly rather than relying
+  on one side's type. `golang.org/x/sys` is not in `confinedImports` in
+  `internal/archtest/dependencies_test.go`, so a second importer needed no
+  table edit.
+- **The layer.** `internal/doctor` already carried `"internal/doctor": 0` in
+  `internal/archtest/layers_test.go`'s table before this ticket, so no archtest
+  edit was made or needed. `sandbox_health` reaches the sandbox through the
+  `SandboxProber` interface declared in this package and satisfied by the
+  caller at L5; `internal/doctor` imports nothing from this module except
+  `internal/platform` and `internal/platform/ux`, confirmed by reading every
+  import in the package rather than by inspection alone.
+- **`internal/platform/ux` gained `DocURL(anchor string) string`.** `Render`
+  now calls it instead of building the `docBaseURL + "#" + anchor` string
+  itself, so the two cannot drift. `TestDocURLOmitsTheFragmentForAnEmptyAnchor`
+  is new; every existing `ux` test still passes with no assertion changed.
+- **The exit status contract (AC3), the case a reviewer should check first.**
+  `cmd/shellforge/cmd_doctor.go`'s `doctorExitError` returns a `*ux.Error` when
+  and only when at least one `Result.Status` is `Fail`; a report with only
+  `Warn` rows returns `nil`, and `main.go`'s existing `os.Exit(1)` on a non-nil
+  `RunE` error is the only place doctor's exit status is decided. No
+  `os.Exit` call was added anywhere in this package or in `cmd_doctor.go`.
+- **`--fix`'s entire allowlist is one action.** `fixActions()` maps exactly
+  `"disk_free"` to `platform.EnsureDir(platform.DataDir())` at this entry's
+  original merge. **Superseded by the Day 3 follow-up below:** that key moved
+  to `"sandbox_health"`, and `disk_free` no longer reports `Fixable` at all,
+  because whether the data directory exists is a provisioning fact, not a
+  disk-space fact. The design point this paragraph originally made still
+  holds under the new key: the fixable row reports `Warn`, not `OK`, because
+  `Fix` only considers a result whose status is not `OK`, so an `OK`
+  "fixable" row would silently never be reached, which is the one place this
+  run's own first draft got the design wrong and a test caught it (see the
+  refusal-test note below). Every other remediation this package can report
+  needs elevation (`wsl --install`, `dism.exe /online /enable-feature`,
+  `wsl --update`, starting the Docker daemon) and is only ever printed, never
+  executed. Every remediation string that also appears in
+  `docs/01-install-windows.md` or `docs/05-troubleshooting.md` was checked
+  against those files by hand and matches verbatim; no doc was edited,
+  because none needed to be: all twelve anchors already existed as headings,
+  and the follow-up round below reused two of them rather than adding a
+  thirteenth.
+- **The two temporary-violation confirmations the plan required, both done
+  and both reverted before this entry was written.** `TestRunMutatesNothing`
+  and `TestProbesNeverInvokeAFixAction` were confirmed to fail with a one-line
+  `platform.EnsureDir(dir)` call inserted unconditionally into
+  `diskFreeProbe.Run`: both went red, one on the filesystem-hash comparison
+  and one on `platform.DataDir()` existing where it should not, then the line
+  was removed and both went green again. Separately,
+  `TestPackageMakesNoRemovalCall` was confirmed to fail with a temporary
+  `os.RemoveAll` call added to `probes_disk.go`, reporting the exact file,
+  line, and selector, then the call was removed and the test passed again.
+- **Manually exercised on this Linux host**, against the real, broken machine
+  RECON already described (no `vmx`/`svm` flag visible in `/proc/cpuinfo`
+  inside this container, Docker daemon down): `shellforge doctor` printed
+  three `ok`, two `warn`, two `fail` rows with a `Fix:` and `More detail:` line
+  under every non-`ok` row and exited 1; `shellforge doctor --json` produced
+  the same report as parseable JSON on stdout with the `*ux.Error` on stderr,
+  stdout untouched; `shellforge doctor --fix` created exactly
+  `~/.local/share/shellforge` at mode `0700`, printed one `Fixed:` line and
+  three `Not fixed, run it yourself:` lines naming the remediations it does
+  not own, and created nothing else. `shellforge help` and `shellforge
+  version` still work unchanged. **Superseded by the Day 3 follow-up below:**
+  the missing-`vmx`/`svm` row is `warn` now, not `fail`, so a re-run on this
+  same host is four `ok`, two `warn`, one `fail` (the Docker daemon is still
+  down here), and the fixable row's own text moved from `disk_free` to
+  `sandbox_health`.
+- **What is honestly not verified here.** No WSL probe has ever seen a real
+  `wsl.exe`: `wsl_installed`, `wsl_version_2`, and `wsl_kernel_current` are
+  covered only through the fake `runner`, including the UTF-16LE decoding and
+  the localized-`wsl --status`-body table the ticket's test plan named. No
+  Docker probe has seen a real daemon in Windows-container mode; that state is
+  covered the same way, through `classifyDockerOutput`'s table test. The two
+  Windows-only syscall wrappers, `RtlGetVersion` and `GetDiskFreeSpaceEx`, are
+  covered by `GOOS=windows go build ./...` and `GOOS=windows go vet ./...`
+  compiling clean on this host, and by the pure classifiers they feed being
+  unit tested on Linux, but neither wrapper has executed on a real Windows
+  machine in this run. `GOOS=darwin GOARCH=arm64 go build ./...` also compiles
+  clean, unexercised beyond that. `sandbox_health` has only ever seen a `nil`
+  prober and a scripted fake one; no real runtime has ever answered its
+  `Ping`. The one remaining acceptance criterion this entry cannot close by
+  itself is a human on real Windows 11 confirming the same table renders
+  sensibly in the legacy console and in Windows Terminal, which needs the
+  hardware `docs/01-install-windows.md` keeps asking for.
+- **Deviations from the plan, recorded rather than hidden.** (1) The plan
+  described the `--json`/`--fix` output seam as an unexported `renderJSON`
+  call made directly by "the CLI"; that cannot compile, since `cmd/shellforge`
+  and `internal/doctor` are different packages, so `render.go` gained one
+  exported wrapper, `RenderJSONWithFixOutcome(w, r, fixed, refused)`, that
+  `RenderJSON` itself now calls with `nil, nil`. (2) `cmd_doctor.go` reads the
+  build version from this package's own `version` package-level variable
+  (already set by the linker for every other verb) rather than threading a
+  `VersionInfo` parameter through `newDoctorCommand`, so that the call site
+  the plan specifies literally, `newDoctorCommand(nil)`, compiles exactly as
+  written. (3) `disk_free`'s "fixable, space is fine, directory missing" case
+  reports `Warn`, not `OK`: seven paragraphs earlier in the plan's own design
+  notes it says `Fix` only ever considers a non-`OK` result, so an `OK`
+  "fixable" row cannot exist without contradicting that sentence, and Warn is
+  also the more honest word for "not yet initialized" than "passing".
+- **Gates run on this host:** `gofmt -s -w .`, `go vet ./...`, `go build ./...`,
+  `go test ./...`, `go test -race ./...`, `go test ./internal/archtest/...`,
+  `./scripts/check-punctuation.sh`, `./scripts/check-allowlist-regexp.sh`,
+  `./scripts/check-links.sh`, `./scripts/check-cli-package.sh`,
+  `python3 scripts/check-ci-gates.py`, `GOOS=windows GOARCH=amd64 go build
+  ./...`, `GOOS=windows GOARCH=amd64 go vet ./...`, and `GOOS=darwin
+  GOARCH=arm64 go build ./...`, all green. `govulncheck`, `gosec`, and
+  `pytest` over `scripts/tests` are not installed on this host and are left to
+  CI; the Docker daemon is down on this host, which #70 needs for none of its
+  tests, all of which go through the fake runner.
+
+### Day 3 follow-up, 2026-08-19: review fixes on PR #136
+
+An independent review of #70's diff raised two blocking findings, eight
+suggestions, two nits and three notes of praise. Seven suggestions and both
+nits were accepted; one suggestion was explicitly declined. This entry
+records what changed, file by file, and the confirmation the ticket asked
+for on the one mutating action.
+
+- **Blocking 1: `cpu_virtualization` no longer fails a healthy Linux
+  machine.** `probes_os.go`'s non-Windows branch reported `Fail` whenever no
+  `vmx` or `svm` flag was visible in `/proc/cpuinfo`, which is every Linux VM,
+  cloud instance, or dev container without nested virtualization exposed,
+  this container included: Docker on Linux uses namespaces and cgroups and
+  needs no hardware virtualization at all. That branch now reports `Warn`,
+  naming that Docker on Linux does not need it, and pointing at firmware
+  setup only for a learner who plans to run nested virtualization or WSL2 on
+  the same machine. `Fail` stays on the Windows branch, where WSL2 genuinely
+  requires it. `cpuVirtualizationProbe` gained a `cpuInfoPath` field, empty
+  in production and set only by
+  `TestCPUVirtualizationProbeLinuxClassifiesInjectedCPUInfo` in
+  `probes_os_test.go`, which feeds a fixture body through both the
+  present-flag and absent-flag paths without depending on this host's real
+  hardware, and asserts the absent-flag path is never `Fail`. Reading a path
+  from a struct field rather than the `"/proc/cpuinfo"` literal made `gosec`
+  flag G304; the field is a test-only seam that a production caller can never
+  set to anything else, so it carries a `#nosec G304` comment saying so,
+  matching the existing comment style in `runner.go`.
+- **Blocking 2: `terminal_vt_support` no longer fails a redirected stdout on
+  Windows.** `internal/platform.SupportsVirtualTerminal` on Windows calls
+  `GetConsoleMode` on the stdout handle, which fails whenever stdout is a
+  file or a pipe, not only when it is a real console that cannot do virtual
+  terminal processing; the probe treated both as `Fail`, so
+  `shellforge doctor --json > report.json` failed a healthy Windows Terminal
+  machine and told the learner to install the terminal they were already
+  running. `internal/platform` gained `StdoutIsRedirected() (bool, string)`,
+  in the same two-file shape as `SupportsVirtualTerminal`
+  (`console_windows.go`, `console_other.go`), so callers need no build tag.
+  The Windows implementation uses `windows.GetFileType`, a genuinely
+  different Win32 call from `GetConsoleMode`, comparing against
+  `FILE_TYPE_CHAR`, so the two questions stay independent signals rather than
+  one parsing the other's prose; the non-Windows implementation is the
+  standard `os.ModeCharDevice` check on `os.Stdout.Stat()`. `probes_terminal.go`
+  now checks `StdoutIsRedirected` before reporting `Fail`, and reports `OK`
+  when it says stdout was redirected. New tests in `console_test.go` swap
+  `os.Stdout` for a pipe and for a temp file and assert `true` on every
+  platform, since a pipe is `FILE_TYPE_PIPE` on Windows and not a character
+  device anywhere else; `console_realconsole_windows_test.go` gained one more
+  assertion, that a real console reports `false`, alongside its existing
+  round-trip check. The end-to-end claim, that a real Windows machine piping
+  `doctor --json` to a file now reports `OK` and exits 0, is not verified
+  from this Linux host; see the closing paragraph below.
+- **3: the fix action now has a test with teeth.** Added
+  `TestFixActionCreatesTheDataDirectoryAtMode0700` in `doctor_test.go`, which
+  calls the real `fixActions()["sandbox_health"].apply` directly, with the
+  data directory redirected to a temp directory via the existing
+  `setDataDirEnv` helper, and asserts the directory exists at mode `0700`
+  afterward. Confirmed with the exact mutation the review made: replacing the
+  action's body with `_, err := platform.DataDir(); return err` in a scratch
+  copy of `doctor.go`. `go test ./internal/doctor/... -run
+  'TestFixActionCreatesTheDataDirectoryAtMode0700|TestFixPerformsOnlyAllowlistedFixableActions|TestFixExecutesNothingWhenNoFailureIsFixable|TestFixRefusesAFixableClaimItDoesNotOwn|TestProbesNeverInvokeAFixAction'`
+  against the mutated file showed exactly what the review predicted: the new
+  test failed with "data directory ... does not exist after apply", while
+  all three refusal tests and `TestFixPerformsOnlyAllowlistedFixableActions`
+  stayed green, because none of them calls the real action. The file was then
+  restored from the pre-mutation copy and the same run went green again.
+- **4: `disk_free` is about space only; the missing-data-directory
+  observation and the `Fixable` claim both moved to `sandbox_health`.**
+  `probes_disk.go`'s `diskFreeProbe.Run` no longer stats the data directory
+  at all: ample space is `OK`, never `Warn`, regardless of whether
+  `shellforge init` has run yet, and the `disk-space-low` anchor now only
+  ever describes a space problem, matching its own heading in
+  `docs/05-troubleshooting.md`. `probes_sandbox.go`'s `sandboxHealthProbe.Run`
+  now checks `platform.DataDir()` first, before consulting the
+  `SandboxProber`, and reports a `Fixable` `Warn` naming the missing
+  directory when it does not exist yet, reusing its own existing
+  `sandbox-unhealthy` anchor rather than a new one: that heading already
+  covers a not-yet-provisioned install. `fixActions()` in `doctor.go` is now
+  keyed on `"sandbox_health"`, not `"disk_free"`; the invariant that exactly
+  one action is ever fixable is unchanged, just re-pointed.
+  `TestDiskFreeProbeIsFixableOnlyWhenTheDirectoryIsMissing` in
+  `probes_disk_test.go` became
+  `TestDiskFreeProbeIsNeverFixableRegardlessOfDataDirExistence`, asserting
+  `OK` and never `Fixable` either way; the Fixable behaviour it used to pin
+  moved to a new `TestSandboxHealthProbeIsFixableOnlyWhenDataDirMissing` in
+  `probes_sandbox_test.go`. The other `sandbox_health` tests, which
+  previously never touched `platform.DataDir()`, now call a small
+  `createDataDir` test helper first so they keep exercising the
+  prober-classification branches rather than the new missing-directory
+  branch.
+- **5: `decodeWSLText` no longer loses odd-length UTF-8 input.**
+  `probes_wsl.go`'s decoder rejected any odd-length input outright, so
+  `decodeWSLText([]byte("Kernel version: 5.15.146.1\n"))`, 27 bytes, came
+  back empty, contradicting its own documented UTF-8 pass-through. It now
+  checks the BOM and the `looksLikeUTF16LE` heuristic first and only treats
+  odd length as invalid when the input is UTF-16 shaped in the first place;
+  a genuine UTF-8 string of any length, odd included, passes through
+  unchanged. `looksLikeUTF16LE`'s own doc comment was corrected to say it
+  tolerates an odd-length slice, which it always could, since it only reads
+  whole pairs. `probes_wsl_test.go` gained the odd-length UTF-8 case next to
+  the existing `{0x41, 0x00, 0x42}` one.
+- **6: a foreign WSL1 distribution no longer fails a machine that would
+  work.** `classifyWSLList` required every listed distribution to be on WSL
+  version 2 when the Shellforge sandbox distribution was absent, so the
+  review's own repro, `"  NAME    STATE     VERSION\n* Ubuntu  Stopped
+  1\n"`, reported `Fail` and a `wsl --set-default-version 2` remediation, a
+  machine-global change, for a learner's unrelated legacy WSL1 distribution.
+  `classifyWSLList` now returns a small `wslListOutcome{Level,
+  OtherVersion1Name}`: absence of the sandbox distribution alongside a
+  foreign WSL1 one is `Warn`, naming that distribution and that it only
+  matters if the sandbox lands there; the sandbox distribution itself being
+  on WSL1 is still `Fail`, since that is a real blocker.
+  `TestClassifyWSLListReadsTheVersionColumn` in `probes_wsl_test.go` was
+  restructured to check both fields and gained the review's own repro string
+  as a table case, plus a case for the sandbox distribution itself being on
+  WSL1.
+- **7: the `cpu_virtualization` Windows query is narrower.**
+  `cpuVirtWindowsArgv` in `probes_os.go` now asks
+  `(Get-ComputerInfo -Property HyperVRequirementVirtualizationFirmwareEnabled).HyperVRequirementVirtualizationFirmwareEnabled`
+  instead of materializing the whole `Get-ComputerInfo` object, which
+  commonly takes well over the probe's five second budget on a cold WMI.
+  This stays the same question, not `Win32_ComputerSystem.HypervisorPresent`,
+  which answers "a hypervisor is running" rather than "virtualization is
+  enabled in firmware"; the payload is still a compile-time constant with no
+  interpolation, and `-NoProfile`/`-NonInteractive` are unchanged.
+- **8: `vm_platform_feature` can now return `ok` without elevation.**
+  `Get-WindowsOptionalFeature -Online` is a DISM online query that needs an
+  Administrator terminal, so from an ordinary one it always exited non-zero
+  and the row could never be anything but an uninformative `Warn`.
+  `vmPlatformArgv` now reads
+  `(Get-CimInstance -ClassName Win32_OptionalFeature -Filter "Name='VirtualMachinePlatform'").InstallState`,
+  which needs no elevation; `InstallState` `1` maps to enabled, anything else
+  to `Fail`, and an empty result stays `Warn`.
+  `TestVMPlatformProbeClassifiesDismState` became
+  `TestVMPlatformProbeClassifiesCimInstallState`, with numeric `InstallState`
+  fixtures in place of the old `"Enabled"`/`"Disabled"` strings.
+- **9 in the original numbering does not exist in the accepted list**; the
+  ticket's suggestions are numbered 3 through 12 with no 9, and this entry
+  follows that numbering rather than renumbering.
+- **10: `PROGRESS.md`'s TODO-marker claim now matches the tree.** The `#70`
+  summary row claimed four things were "each marked `// TODO(v0.2):` at its
+  call site"; `grep -rn TODO internal/doctor/*.go cmd/shellforge/cmd_doctor.go`
+  finds only two markers, `Level.UnmarshalJSON` and the glyph probe, and the
+  glyph probe was never one of the four things the row named. The row above
+  is corrected to say only `Level.UnmarshalJSON` carries a marker, and that
+  the other three, result caching, a `--output` flag, and `--fix --dry-run`,
+  have no call site to attach one to, since none of that code exists. The
+  code was not changed to manufacture markers for features that do not
+  exist; the claim was changed to match the code, which was the more honest
+  of the two fixes available. The `#70` row and this Day 3 entry's own
+  "Manually exercised" and "`--fix`'s entire allowlist" paragraphs were also
+  reread and marked superseded where this round changed the behaviour they
+  described, rather than silently left to disagree with the code.
+- **11: one package comment, not two.** `doctor.go` and `doc.go` both opened
+  with `// Package doctor ...`, disagreeing about which packages this one may
+  import; godoc concatenates the two in unspecified order. `doctor.go`'s
+  version is now an ordinary file comment, kept for context but detached from
+  the package clause by a blank line so godoc does not fold it in; `doc.go`
+  keeps the fuller, accurate statement.
+- **12: no more hand-rolled substring search.** `containsString` and
+  `indexOf` in `doctor_test.go` are gone; every call site, in
+  `doctor_test.go` and `probes_docker_test.go`, now calls `strings.Contains`
+  directly.
+- **Declined, per the ticket's own instruction: moving `osVersionProbe.Run`
+  and `cpuVirtualizationProbe.Run`'s per-platform classification behind a
+  build tag.** Both probes genuinely apply on both platforms and need
+  per-platform classification, not gating, which `AppliesTo` already
+  provides; moving the classifiers behind build tags would mean each is only
+  ever compiled and tested on one CI leg instead of both, a net loss in
+  coverage. This round's edits to both functions kept them in their existing
+  untagged files.
+- **Gates run on this host, all green:** `gofmt -s -w .`, `go vet ./...`,
+  `go test ./...`, `./scripts/check-punctuation.sh`,
+  `go test -race ./internal/doctor/... ./cmd/shellforge/...
+  ./internal/platform/...`, `go test ./internal/archtest/...`,
+  `gosec -exclude-dir=docs ./...` (Issues: 0, `/root/go/bin/gosec` was
+  available for this round), `GOOS=windows GOARCH=amd64 go build ./...` and
+  `go vet ./...`, `GOOS=linux GOARCH=386 go build ./...`,
+  `GOOS=darwin GOARCH=arm64 go build ./...`, `./scripts/check-links.sh`,
+  `./scripts/check-cli-package.sh`, `./scripts/check-allowlist-regexp.sh`,
+  `python3 scripts/check-ci-gates.py`, and
+  `go test ./internal/doctor/... -run Anchor -v` (both anchor tests pass).
+  `govulncheck` and `pytest` over `scripts/tests` remain not installed on
+  this host and are left to CI, as with every prior entry that says so.
+  `shellforge doctor` on this host, after this round, reports `ok`
+  `os_version`, `warn` `cpu_virtualization` (still no `vmx`/`svm` flag
+  visible, now correctly a `warn`), `ok` `docker_present`, `fail`
+  `docker_daemon_running` (the daemon is genuinely down in this container),
+  `ok` `disk_free` (now `ok` rather than `warn`, since the missing data
+  directory is no longer its concern), `ok` `terminal_vt_support`, and
+  `warn` `sandbox_health` (`Fixable`, naming the missing data directory);
+  four `ok`, two `warn`, one `fail`, exit status 1. `shellforge doctor --fix`
+  created `~/.local/share/shellforge` at mode `0700` and nothing else, exactly
+  as `TestFixActionCreatesTheDataDirectoryAtMode0700` now pins directly.
+- **What this round could not verify from Linux.** Blocking 2's actual
+  end-to-end claim, that `shellforge doctor --json > report.json` on real
+  Windows now exits 0 for a healthy machine instead of failing, needs a real
+  Windows console and a real redirected handle to observe together; this
+  host can only unit test `StdoutIsRedirected` against a pipe and a file, and
+  cross-compile the Windows build, which it did. The narrowed
+  `Get-ComputerInfo -Property` query (7) and the `Get-CimInstance` query for
+  Virtual Machine Platform (8) are new PowerShell payloads that have never
+  executed against a real `powershell.exe`; both compile-clean under
+  `GOOS=windows go build`/`go vet` and are covered on the classifier side by
+  the fake runner, same as every other Windows-only probe in this package,
+  but neither has run on real Windows in this round any more than it had in
+  the original entry above.
+
+
 ### Day 3 follow-up, 2026-08-19: the demo level is gone, and its safety tests are on a real one
 
 Issue #96. `internal/sandbox/demo_level.go` was the Day 1 hardcoded level,
@@ -3681,6 +4040,7 @@ replacement was built first.
   `./scripts/check-punctuation.sh`, `./scripts/check-allowlist-regexp.sh`,
   `./scripts/check-links.sh`, `./scripts/check-cli-package.sh`,
   `python3 scripts/check-ci-gates.py`, all green.
+
 
 ## Day 6: hardening, CI, packaging
 

@@ -154,18 +154,19 @@ func execCommand(t *testing.T, root *cobra.Command, args ...string) (string, err
 // #48's acceptance criteria.
 func TestUnimplementedVerbsExplainThemselves(t *testing.T) {
 	stubs := [][]string{
-		{"doctor"}, {"init"}, {"play"}, {"check"}, {"hint"}, {"reset"},
+		{"init"}, {"play"}, {"check"}, {"hint"}, {"reset"},
 		{"skip"}, {"map"}, {"stats"}, {"bug-report"},
 		{"sandbox", "build"}, {"sandbox", "rebuild"}, {"sandbox", "destroy"}, {"sandbox", "status"},
 		{"author", "scaffold"}, {"author", "record"},
 	}
 
 	// `author validate` was a stub when #48 wrote this list and is real as of
-	// #53. `author test` is real as of the golden harness. Both are deliberately
-	// absent above rather than deleted from the documented set: author_test.go
-	// covers validate, and author_test_cmd_test.go covers test. A real verb still
-	// errors without arguments, but it errors about its arguments rather than
-	// about not existing, so it does not belong in this list.
+	// #53. `author test` is real as of the golden harness. `doctor` is real as
+	// of #70. All three are deliberately absent above rather than deleted from
+	// the documented set: author_test.go covers validate, author_test_cmd_test.go
+	// covers test, and cmd_doctor_test.go covers doctor. A real verb still
+	// errors without arguments or on a broken machine, but it errors about that
+	// rather than about not existing, so it does not belong in this list.
 
 	for _, args := range stubs {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
