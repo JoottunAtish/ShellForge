@@ -315,6 +315,24 @@ open an issue with the output of `shellforge doctor --json`.
 
 ---
 
+## rootfs-not-found
+
+**You'll see:** `init` reports that it cannot find the Linux system image to import.
+
+**What it means:** The Windows sandbox is built from a rootfs tarball. Shellforge
+looks for one you built yourself first, then for one it downloaded earlier. Neither
+was there.
+
+**Fix:** Build one from the repository:
+
+```bash
+make rootfs
+```
+
+That writes `images/out/rootfs.tar.gz`. Then run `shellforge init` again.
+
+---
+
 ## command-not-found
 
 **You'll see:** `shellforge: command not found`, or on Windows, "The term

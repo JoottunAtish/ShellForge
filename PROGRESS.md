@@ -30,7 +30,7 @@ formally cut.
 | `internal/game` | A thin `Session`: load, setup, brief, check, teardown, and nothing else. It declares its own `Verifier` interface so it is testable with a two-method fake, borrows the `runtime.Session` it is given and never closes it, and holds the only `content.CheckSpec` to `verify.Spec` conversion, which has to sit above both peers. No event bus, no scoring, no unlock state, no store writes: all Day 4. |
 | Pack loading and validation | Done in `internal/content` (issue #53). `LoadPack`, `Embedded`, `Pack.Level`, `Pack.Order`, and `Validate` with a `TypeChecker` the caller supplies, so `internal/content` and `internal/verify` stay peers rather than one importing the other. `shellforge author validate <pack>` reports every problem one per line and supports `--json`. A legal `command_matched` or `command_not_matched` check now gets a warning naming issue #88: no runtime session wires a real journal yet, so the check verifies nothing until then, and the validator says so rather than staying quiet. |
 | Level setup and teardown runner | Done in `internal/content/setup` (issue #50). `Runner.Setup`, `Teardown`, and `IsSetUp` materialize and remove a level's world inside the sandbox: teardown-first idempotency, a `loglines` content generator behind a registered kind, CRLF stripping on the host side before a `runtime.FileEntry` is built, rollback on any failure via `context.WithoutCancel`, and a `SETUP_OK` sentinel written under the state directory rather than the level root. Not wired into the game orchestrator or the CLI: no caller constructs a `Runner` yet outside its own tests. That wiring, plus the pack loader and validator that produce a real `content.Level`, is #52, #53, and #54. |
-| Runtimes | `Runtime` and `Session` interfaces plus their value types and sentinel errors are defined in `internal/runtime`, the reusable contract suite is in `internal/runtime/runtimetest`, and `internal/runtime/docker` implements both by shelling out to the `docker` CLI. The contract suite is green against it on Windows with Docker Desktop's Linux engine, except one subtest documented below. `WslRuntime` is not started. |
+| Runtimes | `Runtime` and `Session` interfaces plus their value types and sentinel errors are defined in `internal/runtime`, the reusable contract suite is in `internal/runtime/runtimetest`, and `internal/runtime/docker` implements both by shelling out to the `docker` CLI. The contract suite is green against it on Windows with Docker Desktop's Linux engine, except one subtest documented below. `internal/runtime/wsl` (issue #69) now implements both by shelling out to `wsl.exe`: `New`, `Provision`, `Destroy`, `Status`, `StartSession`, `Capabilities`, and a `Session` with `Exec`, `Attach`, `PushFiles`, `PullFile`. The UTF-16LE decoder, the seven install directory refusals, both Destroy name refusals, the marker check, the enumerate-and-diff guard, the digest and name-collision refusals, and every argv construction are asserted and green on Linux CI. The contract suite wired against it (`TestWslContract`) skips everywhere this run and CI can reach: no `wsl.exe`, no Windows, and no WSL2 on either CI leg. A human on real Windows 11 with WSL2 still owes the thirteen contract assertions passing for real, the hardening probes seeing a genuinely imported distribution, and the install directory (`.vhdx` included) actually gone after `Destroy`, confirmed in Explorer. See the Day 3 entry below for the full list of what is asserted in code versus what still needs that human. |
 | PTY multiplexer and OSC parser | Both done. Parser: streaming OSC 133 and OSC 7 state machine, fuzzed, with a recorded vim session passing through byte-identical. Multiplexer (`internal/pty/mux.go`): host stdin forwarded to the sandbox verbatim including Ctrl-C, host terminal raw mode restored across every exit path including a panic, initial resize plus SIGWINCH on unix, and CommandEvent assembly from the marker stream. `CommandEvent.Raw` is always empty pending #51. Windows resize watching (issue #68) polls `GetConsoleScreenBufferInfo` through the same injectable `getSize`/`resize` fields the unix watcher uses, every 250ms by default, and forwards a change the same way SIGWINCH does on unix. |
 | Verification engine | Done in `internal/verify` (issue #52). `Engine`, `NewEngine`, `WithCheckTimeout`, `WithLevelTimeout`, `Build` and `Run`, the `any_of`/`all_of`/`not` composition nodes, and `LevelResult` matching `docs/LEVEL-FORMAT.md` section 5 field for field. Checks are built once at level load and run on every `check`. 262 tests and subtests. The hermetic half of the purity guarantee is `internal/verify/purity_test.go`, which asserts every check type runs only read-only commands; the filesystem-hash half is in the golden harness and needs Docker. |
 | Progress database | `internal/store` (schema, migrations) and `internal/journal` (the command journal) are both built and unit tested, per #51. Nothing calls `store.Open` outside their own tests: not wired into `cmd/shellforge`, `internal/game`, or `internal/pty`. `CommandEvent.Raw` on the host-side event stream is still always empty. Issues #92 and #90 closed two `Open` classification bugs: a missing progress database file, or one whose parent directory does not exist yet, no longer reads as corrupt, and a SQLite database Shellforge did not create is refused rather than silently adopted. See the Day 3 follow-up entry below for the byte-identity measurement this forced and the fixture change it required. |
@@ -3458,6 +3458,105 @@ mode handling the doctor ticket and the CLI ticket both consume next.
   deliberately leaves to the CLI ticket, so no console mode is being changed
   for a restore to get wrong. Both stay open for a hand check on an
   interactive Windows terminal.
+
+### Day 3, 2026-08-19: the WSL runtime, argv by argv
+
+Issue #69. `internal/runtime/wsl` now implements `runtime.Runtime` and
+`runtime.Session` by shelling out to `wsl.exe`, the way `internal/runtime/docker`
+already implements them by shelling out to `docker`. This entry is deliberately
+plain about what a Linux run with no Windows and no `wsl.exe` on PATH can and
+cannot prove.
+
+- **New package, ten files.** `doc.go` names the layer and the import list.
+  `wsl.go` carries `New`, `wslRuntime`, `Provision`, `Destroy`, `Status`,
+  `StartSession`, `Capabilities`, the two closed distribution-name constants, the
+  marker check, and `classifyFailure`. `session.go` carries `wslSession`, `Exec`,
+  `Attach`, `PushFiles`, `PullFile`, the sandbox-path validator, `stripCR`, and the
+  tar builder. `runner.go` carries the `runner` and `fetcher` injection points,
+  `execRunner`, `httpFetcher`, and `verifyDigest`. `list.go` carries the hand
+  written UTF-16LE decoder and `parseList`/`parseQuietList`. `paths.go` carries
+  `installDir`, `validateInstallDir`, `validateInstallDirUnder`, and
+  `resolveRootfs`. `resize_windows.go` and `resize_other.go` are three lines each,
+  carrying only `wslPTY.Resize`; every other symbol in the package, including
+  every refusal test, compiles and runs on Linux.
+- **The destroy target is a closed set of two compile-time constants.**
+  `sandboxDistro = "shellforge-sandbox"` and
+  `contractDistro = "shellforge-contracttest"`, the latter pinned equal to
+  `runtimetest.SandboxName` by `TestContractDistroMatchesRuntimetestSandboxName` so
+  a rename of the suite constant is a test failure rather than a contract run that
+  silently cannot destroy what it created. `New` refuses any other name before it
+  ever resolves `wsl.exe`; `Destroy` re-checks against the same set immediately
+  before acting and is asserted to make zero `wsl.exe` invocations when refused.
+  `internal/runtime/runtimetest/contract.go` was not touched.
+- **UTF-16LE has its own decoder and eleven tests**, because `wsl.exe` writes
+  every list command in it and a naive UTF-8 read produces NUL-interleaved text
+  that almost parses. `decodeUTF16LE` strips the little-endian BOM, refuses a
+  big-endian one outright, refuses an odd-length body, and decodes through
+  `encoding/binary` plus `unicode/utf16`, so a surrogate pair round trips. A
+  parsed distribution name is only ever compared, counted, and displayed: every
+  argv element naming a distribution is one of the two package constants, never a
+  value read back from `wsl -l -v` or `wsl -l -q`.
+- **The install directory has seven refusal tests plus the derivation test.**
+  `validateInstallDirUnder(dataDir, dir)` is the pure form the table drives
+  against a `t.TempDir()`, refusing in order: empty, a `..` segment checked before
+  cleaning, not absolute, the data directory root itself, not strictly under that
+  root, then a symlink whose resolved target escapes it. `installDirFor` gives the
+  production and contract-test distributions distinct directories under
+  `platform.DataDir()/wsl/<distro>`, so a contract run can never reach the
+  production `.vhdx`.
+- **Provision, in order: resolve and digest-verify the rootfs only when a fresh
+  import is needed, import, write `/etc/wsl.conf`, read it back to confirm,
+  terminate, start, then verify by observation.** The digest is checked before
+  `wsl --import` touches anything, never after; an empty `SHA256` against an https
+  `Reference` is a refusal, not a skipped check. A digest mismatch on a file this
+  package downloaded deletes the download and refuses; a mismatch on a
+  caller-supplied local path refuses and leaves the file alone, because deleting a
+  developer's own `make rootfs` output is itself a destructive act on a file
+  Shellforge did not create. An existing, marked, WSL2 distribution is reused with
+  no `--import`: `/etc/wsl.conf` is rewritten and the distribution terminated only
+  when the readback differs from what Shellforge expects, and the three hardening
+  probes (`/mnt/c` absent, `$PATH` free of `/mnt/`, `id -un` is `learner`) run
+  either way. This is a deliberate deviation from the Phase 1 plan's literal
+  step order, which read as resolving and digest-checking the rootfs
+  unconditionally before the collision check: doing that unconditionally would
+  make every idempotent `Provision` call on an already-healthy sandbox depend on a
+  rootfs tarball being present on disk, which defeats the point of idempotency and
+  is not what `TestProvisionIsIdempotentAgainstAnAlreadyMarkedDistribution` (which
+  supplies no rootfs at all) is asserting. The safety property the plan actually
+  cares about, that an unverified artifact never reaches `wsl --import`, holds
+  either way and is what the tests assert.
+- **`TestWslConfConstantMatchesImagesWslConf`** reads `images/wsl.conf` from the
+  repository and compares it byte for byte, after CRLF normalisation, against the
+  `wslConf` package constant, so the two cannot drift silently. `go:embed` cannot
+  reach outside a package's own directory, which is why this is a constant and a
+  test rather than an embed.
+- **`rootfs-not-found`** is a new heading in `docs/05-troubleshooting.md`, for the
+  case where `ImageSpec.Reference` is empty and neither `images/out/rootfs.tar.gz`
+  nor a cached download exists. Placed after `rootfs-checksum-mismatch` and before
+  `command-not-found`, in the same house shape as its neighbors.
+- **What is honestly not verified here, because this run has no Windows, no
+  `wsl.exe`, and no WSL2 on either CI leg.** `TestWslContract` (thirteen
+  assertions, the same suite `internal/runtime/docker` runs) skips cleanly on this
+  host and skips cleanly by design on both `ubuntu-latest` and `windows-latest`
+  CI runners, the latter because GitHub's hosted Windows runners have no WSL2
+  installed. Nothing here has proven: a real `wsl --import` actually completing
+  against a real rootfs tarball; the three hardening probes observing a genuinely
+  hardened distribution rather than a scripted fake answer; `wsl --unregister`
+  actually leaving a developer's own `Debian` or `Ubuntu` untouched; the install
+  directory, `.vhdx` included, actually gone from disk after `Destroy`, confirmed
+  by eye in Explorer; `vim`, `less`, and `htop` running inside a real distribution;
+  or ConPTY resize, which `resize_windows.go` stubs as a documented no-op pending
+  #68. All of that needs a human on a real Windows 11 machine with WSL2 installed.
+  The Day 3 go/no-go gate in `docs/design/SEVEN-DAY-PLAN.md` names exactly this
+  risk, and this entry is the honest record that the gate is not yet cleared by
+  this run alone.
+- **Gates run on this host:** `gofmt -s -w .`, `go vet ./...`, `go build ./...`,
+  `go test ./...`, `go test -race ./...`,
+  `go test ./internal/archtest/...`, `./scripts/check-punctuation.sh`,
+  `./scripts/check-allowlist-regexp.sh`, `./scripts/check-links.sh`,
+  `python3 scripts/check-ci-gates.py`, all green. `govulncheck`, `gosec`, and
+  `pytest` over `scripts/tests` are not installed on this host and are left to CI,
+  as they were for the Day 3 console mode entry above.
 
 ## Day 6: hardening, CI, packaging
 
