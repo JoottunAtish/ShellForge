@@ -314,12 +314,21 @@ func (s *wslSession) Attach(ctx context.Context, opts runtime.AttachOpts) (runti
 // anchor, which non-negotiable rule 6 forbids. Split into its own function
 // so the mapping is testable without a real pty.Start call, which only
 // fails this way on a Windows host in the first place.
+//
+// The remediation does not point at Docker Desktop: creack/pty's
+// ErrUnsupported comes back on every backend on a Windows console, not just
+// this one (see cmd_run.go's checkInteractiveShellSupported and
+// cmd_sandbox.go's checkSandboxShellSupported, which refuse for the same
+// reason before either backend is even resolved), so Docker Desktop cannot
+// attach from a Windows console either. Running from inside WSL is the
+// real fix until Windows console support (ConPTY) lands, which is issue
+// #138.
 func attachStartError(err error) error {
 	if errors.Is(err, pty.ErrUnsupported) {
 		return ux.Fail(
 			"open the sandbox shell",
 			err,
-			"Windows console support for the WSL backend is not built yet. Use Docker Desktop on Windows for now.",
+			"Windows console support for an interactive attach is not built yet (issue #138), on either backend. Open your WSL distribution, change to this repository, and build and run Shellforge from inside it instead.",
 			"windows-needs-wsl",
 		)
 	}

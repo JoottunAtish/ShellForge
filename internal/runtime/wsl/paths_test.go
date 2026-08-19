@@ -149,6 +149,41 @@ func TestInstallDirDerivesFromPlatformDataDir(t *testing.T) {
 	}
 }
 
+// TestInstallDirMatchesTheRuntimesOwnInstallDir pins the exported accessor
+// to the exact same formula and constant the runtime itself uses, so the
+// destroy confirmation prompt can never print a path that drifts from the
+// one Provision and Destroy actually act on.
+func TestInstallDirMatchesTheRuntimesOwnInstallDir(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", tmp)
+
+	got, err := InstallDir()
+	if err != nil {
+		t.Fatalf("InstallDir: %v", err)
+	}
+
+	rt := &wslRuntime{distro: sandboxDistro}
+	want, err := rt.installDir()
+	if err != nil {
+		t.Fatalf("(*wslRuntime).installDir: %v", err)
+	}
+	if got != want {
+		t.Errorf("InstallDir() = %q, want %q (the runtime's own installDir())", got, want)
+	}
+
+	if !filepath.IsAbs(got) {
+		t.Errorf("InstallDir() = %q, want an absolute path", got)
+	}
+
+	dataDir, err := platform.DataDir()
+	if err != nil {
+		t.Fatalf("platform.DataDir: %v", err)
+	}
+	if !strings.HasPrefix(got, dataDir+string(filepath.Separator)) {
+		t.Errorf("InstallDir() = %q, want it strictly under DataDir() %q", got, dataDir)
+	}
+}
+
 // TestDefaultRootfsFindsWhatDownloadDestWrote pins downloadDest and
 // defaultRootfs's cache fallback to the same path. Before this was factored
 // through cachedRootfsPath, downloadDest wrote to
