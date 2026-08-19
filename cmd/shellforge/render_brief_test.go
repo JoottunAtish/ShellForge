@@ -269,6 +269,71 @@ func TestBossLevelShowsNoNumberedSteps(t *testing.T) {
 	}
 }
 
+// TestBriefingDoesNotLeakTheAnswer asserts a briefing poses the problem rather
+// than solving it.
+//
+// It ran against the Day 1 demo until #96 deleted that level, and it moved here
+// rather than being dropped: the assertion is about authored content reaching a
+// learner, and this file is where a briefing's rendered output is tested.
+//
+// The forbidden strings come out of the level's own file_content checks rather
+// than being written down here, so regenerating the assets and updating the
+// checks cannot leave this test asserting a number nothing uses any more.
+//
+// One level, pipe-05, rather than a sweep over the pack. That mirrors the scope
+// of the test this replaces, and a sweep would not be the same assertion: a
+// level whose expected content is a word or a path can have that string in its
+// briefing for an honest reason, so a generic version would report leaks that
+// are not leaks. pipe-05's answers are compact tokens a briefing has no reason
+// to contain, which is what makes the assertion meaningful here.
+func TestBriefingDoesNotLeakTheAnswer(t *testing.T) {
+	pack, err := content.Embedded()
+	if err != nil {
+		t.Fatalf("load the embedded pack: %v", err)
+	}
+	level, ok := pack.Level("pipe-05")
+	if !ok {
+		t.Fatal("pipe-05 is not in the embedded pack")
+	}
+
+	answers := expectedFileContents(level)
+	if len(answers) == 0 {
+		t.Fatal("pipe-05 declares no file_content check, so this test asserts nothing")
+	}
+
+	var buf bytes.Buffer
+	printBriefing(&buf, level, 80, false)
+	out := buf.String()
+
+	for _, answer := range answers {
+		if strings.Contains(out, answer) {
+			t.Errorf("the briefing contains %q, which is what a check asserts the learner must produce:\n%s",
+				answer, out)
+		}
+	}
+}
+
+// expectedFileContents returns every value a level's file_content checks expect,
+// one line per entry.
+func expectedFileContents(level *content.Level) []string {
+	var out []string
+	for _, check := range level.Checks {
+		if check.Type != "file_content" {
+			continue
+		}
+		value, ok := check.Params["value"].(string)
+		if !ok {
+			continue
+		}
+		for _, line := range strings.Split(value, "\n") {
+			if line = strings.TrimSpace(line); line != "" {
+				out = append(out, line)
+			}
+		}
+	}
+	return out
+}
+
 // TestBriefingWithNoObjectivesPrintsNoChecklist keeps a level with no objectives
 // from printing an empty heading. The validator requires at least one, so this
 // is defensive rather than expected.

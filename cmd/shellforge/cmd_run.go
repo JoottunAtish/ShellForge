@@ -18,7 +18,6 @@ import (
 	"github.com/JoottunAtish/ShellForge/internal/pty"
 	"github.com/JoottunAtish/ShellForge/internal/runtime"
 	"github.com/JoottunAtish/ShellForge/internal/runtime/docker"
-	"github.com/JoottunAtish/ShellForge/internal/sandbox"
 	"github.com/JoottunAtish/ShellForge/internal/verify"
 	"github.com/JoottunAtish/ShellForge/packs"
 )
@@ -60,18 +59,6 @@ const (
 	// sandboxUser is the unprivileged user a learner plays as. It matches the
 	// Containerfile's USER and setup.DefaultOwner.
 	sandboxUser = "learner"
-
-	// demoLevelID is the Day 1 hardcoded level, kept reachable alongside the
-	// pack.
-	//
-	// TODO(v0.2): delete this, internal/sandbox/demo_level.go, and the demo
-	// adapter below, once the golden harness and a YAML isolation test have
-	// been green in CI. demo_golden_test.go currently holds the repository's
-	// only live filesystem purity check and its only host-isolation test, and
-	// removing them in the same change that introduces a generic level runner
-	// would drop safety coverage while enlarging the surface. Tracked as a
-	// follow-up: issue #96, which lists the two tests that must be green first.
-	demoLevelID = "demo"
 
 	// controlReplyTimeout bounds a write to the response FIFO.
 	//
@@ -131,9 +118,9 @@ type runOptions struct {
 
 // controlResponder answers one control request from inside the sandbox.
 //
-// The interface exists so the control loop is level-agnostic: the same loop
-// serves a YAML level and the Day 1 demo, and will serve whatever replaces the
-// demo, without a second copy of the FIFO plumbing to keep in step.
+// The interface exists so the control loop is level-agnostic: one loop serves
+// every level in the pack, and will serve whatever `run` learns to play next,
+// without a second copy of the FIFO plumbing to keep in step.
 //
 // The reply is written verbatim to the learner's terminal by the shim, so an
 // implementation returns text that is already CRLF terminated.
@@ -141,12 +128,11 @@ type controlResponder interface {
 	Reply(ctx context.Context, verb, args string) string
 }
 
-// playable is what the run flow needs of a level, whether it came from YAML or
-// from the Day 1 hardcoded demo.
+// playable is what the run flow needs of a level.
 //
 // Setup and Teardown take no session: an implementation closes over the one it
-// was built with, which keeps the flow below from having to know that the two
-// kinds of level get at the sandbox differently.
+// was built with, which keeps the flow below from having to know how a level
+// gets at the sandbox.
 type playable interface {
 	LevelID() string
 	Root() string
@@ -187,13 +173,6 @@ func cmdRun(ctx context.Context, args []string) error {
 		return err
 	}
 
-	if opts.levelID == demoLevelID {
-		if err := checkInteractiveShellSupported(opts.levelID); err != nil {
-			return err
-		}
-		return runDemo(ctx, opts)
-	}
-
 	level, ok := pack.Level(opts.levelID)
 	if !ok {
 		return unknownLevel(opts.levelID, order)
@@ -226,9 +205,10 @@ func levelOrder(pack *content.Pack) []string {
 // unknownLevel reports a level id that is not in the pack, naming the ids that
 // are.
 //
-// The demo is never listed. It is not a campaign level, and offering it to
-// somebody who mistyped a real one would send them somewhere that teaches them
-// nothing about what they were trying to do.
+// It names campaign order and nothing else. An id that is not in the pack is
+// never offered back as a suggestion, however plausible it looks: sending
+// somebody who mistyped a real level to an id that teaches them nothing about
+// what they were trying to do is worse than telling them the truth.
 //
 // order may be empty: a pack can have a valid pack.yaml and no levels/
 // directory at all (content.LoadPack allows it), and `shellforge author test
@@ -369,18 +349,6 @@ func runLevel(ctx context.Context, opts runOptions, level *content.Level) error 
 	}
 
 	return play(ctx, opts, sess, &gameLevel{session: session, level: level})
-}
-
-// runDemo plays the Day 1 hardcoded level. See demoLevelID for why it is still
-// here.
-func runDemo(ctx context.Context, opts runOptions) error {
-	_, sess, cleanupSession, err := openSandbox(ctx, opts.levelID)
-	if err != nil {
-		return err
-	}
-	defer cleanupSession()
-
-	return play(ctx, opts, sess, &demoLevel{level: sandbox.Demo(), sess: sess})
 }
 
 // packFilesystem returns the embedded pack, rooted AT the pack directory.
