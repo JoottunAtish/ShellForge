@@ -73,8 +73,12 @@ func NewRootCommand(v VersionInfo) *cobra.Command {
 	)
 
 	root.AddCommand(
-		stubCommand("shellforge doctor", "doctor [--fix] [--json]", groupSetup,
-			"Check this machine and explain how to fix anything missing", "Day 3"),
+		// nil is the SandboxProber: choosing and provisioning a runtime is
+		// the Day 3 CLI ticket (issue #71), so sandbox_health reports warn
+		// until that lands. newDoctorCommand takes the prober as a
+		// parameter for exactly that reason: wiring a real one there is a
+		// one-argument change.
+		newDoctorCommand(nil),
 		stubCommand("shellforge init", "init [--runtime=auto|wsl|docker]", groupSetup,
 			"Provision the sandbox. Run once, takes a few minutes", "Day 1"),
 		stubCommand("shellforge play", "play [level-id]", groupPlaying,
