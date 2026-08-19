@@ -225,10 +225,10 @@ docker version
 That must print both a Client and a Server section. If it prints only a Client,
 the integration is still off for this distribution.
 
-**Still stuck?** Check that you enabled it for the right distribution: `wsl -l
--v` in PowerShell lists them, and the one you want is the one marked with `*`.
-This is not the same problem as `windows-needs-wsl`, which is about running
-Shellforge from Windows itself rather than from inside WSL.
+**Still stuck?** Check that you enabled it for the right distribution:
+`wsl -l -v` in PowerShell lists them, and the one you want is the one marked
+with `*`. This is not the same problem as `windows-needs-wsl`, which is about
+running Shellforge from Windows itself rather than from inside WSL.
 
 ---
 

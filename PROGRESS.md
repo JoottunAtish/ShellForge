@@ -3016,6 +3016,44 @@ Desktop, and this environment has neither Docker nor Windows. Every unit test
 here runs without a daemon, but the end-to-end proof is outstanding and someone
 with the setup should run it before this is trusted.
 
+#### Review round, 2026-08-19
+
+One real question, answered by fixing rather than by argument. `classifyFailure`
+only ever looked at stderr, and `summarizeFailure`'s own doc comment already
+established that docker does not pick a stream by convention: BuildKit writes
+its fatal error to stdout, the classic builder to stderr. The WSL wrapper
+message has no daemon behind it to pick one either, and the #74 reproduction
+never established which stream actually carried it. If it was stdout, the WSL
+branch never fired in production and the fix shipped doing nothing on the one
+platform it was written for, with nothing in CI able to notice, since the
+existing tests called `classifyFailure` directly with hand-built bytes rather
+than through a real caller.
+
+Fixed by not needing the answer: every `classifyFailure` call site now passes
+`combinedOutput(stdout, stderr)` instead of `stderr` alone, at all nine call
+sites across `docker build`, `docker run`, `docker start`, `docker inspect`,
+and `docker rm`, not only the one the review comment named. Two new tests
+drive the failure through `Provision`, the real caller, rather than calling
+`classifyFailure` directly: the WSL message and the permission-denied message
+are each planted on stdout only, with empty stderr, which the pre-fix code
+could not have classified. Both fail on the pre-fix code and pass on the fix,
+confirmed by reverting the call site back to stderr-alone and watching them
+go red before restoring it.
+
+Two smaller items. `docs/05-troubleshooting.md`'s `wsl -l -v` reference was
+wrapped mid code-span across a line break; harmless in rendered Markdown,
+wrong for someone grepping the raw file. Rewrapped. And the possible buildx
+"View build details:" trailer line, which could make `summarizeFailure` hand
+a learner a link instead of the real error, is filed as #133 rather than
+guessed at: this environment has no Docker daemon, so nothing about it could
+be confirmed against a real failing build, and the review comment that raised
+it was explicit that it should not be acted on blind.
+
+Rebased onto `main` past #108, #109, #111, and #131. Only `PROGRESS.md`
+conflicted; `docs/05-troubleshooting.md` and `internal/runtime/docker/`
+picked up unrelated changes from #109 and #131 respectively and merged
+clean.
+
 ### Day 3, 2026-08-17: the rootfs tarball, made to agree with itself
 
 Issue #67, Day 3 ticket A. CI, no Go layer. Fixes the three-different-tarballs

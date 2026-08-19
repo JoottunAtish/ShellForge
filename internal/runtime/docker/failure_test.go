@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/JoottunAtish/ShellForge/internal/platform/ux"
+	"github.com/JoottunAtish/ShellForge/internal/runtime"
 )
 
 // wslWrapperMessage is what Docker Desktop's shim prints inside a WSL
@@ -270,4 +271,87 @@ func TestClassifyFailureRegressionPins(t *testing.T) {
 			t.Errorf("classifyFailure invented a classification for a healthy daemon: anchor %q", uxErr.DocAnchor)
 		}
 	})
+}
+
+// TestCombinedOutput pins the concatenation order and that neither input is
+// mutated: append on a zero-length slice literal is the pattern that stays
+// safe here, but the equivalent append(stdout, stderr...) would silently
+// corrupt a caller's stdout slice if it happened to have spare capacity.
+func TestCombinedOutput(t *testing.T) {
+	stdout := []byte("out\n")
+	stderr := []byte("err\n")
+
+	got := combinedOutput(stdout, stderr)
+	if string(got) != "out\nerr\n" {
+		t.Errorf("combinedOutput = %q, want %q", got, "out\nerr\n")
+	}
+	if string(stdout) != "out\n" || string(stderr) != "err\n" {
+		t.Errorf("combinedOutput mutated an input: stdout=%q stderr=%q", stdout, stderr)
+	}
+}
+
+// TestProvisionClassifiesAWSLMessageOnStdout is the review finding on #103:
+// classifyFailure only ever saw stderr, but summarizeFailure's own doc
+// comment already establishes that docker does not pick a stream by
+// convention (BuildKit writes to stdout, the classic builder to stderr),
+// and the WSL stub message has no daemon behind it to pick one either. The
+// reproduction that opened #74 did not establish which stream carried it.
+//
+// This drives the failure through Provision, the real caller, rather than
+// calling classifyFailure directly: classifyFailure's own logic was always
+// stream-agnostic once handed the right bytes, so a unit test that hands it
+// the bytes directly cannot tell the difference between "the call site
+// combines both streams" and "the call site still passes stderr alone and
+// happens to work when the fixture puts the message on stderr." The fake's
+// build result below puts the message on stdout ONLY, with empty stderr,
+// which the pre-fix code (stderr only) could not have classified.
+func TestProvisionClassifiesAWSLMessageOnStdout(t *testing.T) {
+	fake := &fakeRunner{results: []fakeResult{
+		{code: 1}, // docker image inspect: miss
+		{stdout: []byte(wslWrapperMessage), code: 1}, // docker build: fails, message on stdout only
+	}}
+	rt := &dockerRuntime{name: "shellforge-sandbox", image: "shellforge-sandbox", run: fake}
+
+	err := rt.Provision(context.Background(), runtime.ImageSpec{Name: "shellforge-sandbox"})
+
+	var uxErr *ux.Error
+	if !errors.As(err, &uxErr) {
+		t.Fatalf("Provision returned a bare error, so a learner sees no remediation: %v", err)
+	}
+	if uxErr.DocAnchor != "docker-wsl-integration-off" {
+		t.Errorf("DocAnchor = %q, want docker-wsl-integration-off: the message was on stdout and must still be found", uxErr.DocAnchor)
+	}
+	// Exactly two docker invocations: the image inspect miss and the failed
+	// build. If this is more than two, classifyFailure's `docker version`
+	// probe ran, meaning the stdout-only message was NOT recognised and the
+	// code fell through past the branch under test.
+	if len(fake.calls) != 2 {
+		t.Errorf("docker was invoked %d time(s), want exactly 2 (image inspect, build): %v\n"+
+			"A third call means the WSL branch was missed and the `docker version` probe ran instead.",
+			len(fake.calls), fake.calls)
+	}
+}
+
+// TestProvisionClassifiesAPermissionDeniedMessageOnStdout is the same
+// finding applied to the other stream-sensitive branch this function has:
+// isPermissionDenied must also see stdout, not only stderr.
+func TestProvisionClassifiesAPermissionDeniedMessageOnStdout(t *testing.T) {
+	fake := &fakeRunner{results: []fakeResult{
+		{code: 1}, // docker image inspect: miss
+		{stdout: []byte("Got permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock"), code: 1},
+	}}
+	rt := &dockerRuntime{name: "shellforge-sandbox", image: "shellforge-sandbox", run: fake}
+
+	err := rt.Provision(context.Background(), runtime.ImageSpec{Name: "shellforge-sandbox"})
+
+	var uxErr *ux.Error
+	if !errors.As(err, &uxErr) {
+		t.Fatalf("Provision returned a bare error, so a learner sees no remediation: %v", err)
+	}
+	if uxErr.DocAnchor != "docker-permission-denied" {
+		t.Errorf("DocAnchor = %q, want docker-permission-denied: the message was on stdout and must still be found", uxErr.DocAnchor)
+	}
+	if len(fake.calls) != 2 {
+		t.Errorf("docker was invoked %d time(s), want exactly 2: %v", len(fake.calls), fake.calls)
+	}
 }

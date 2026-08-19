@@ -180,10 +180,10 @@ func (rt *dockerRuntime) ensureImage(ctx context.Context, image string) error {
 
 	stdout, stderr, code, runErr := rt.run.run(ctx, []string{"docker", "build", "-f", containerfile, "-t", image, "--", buildContext}, nil)
 	if runErr != nil {
-		return rt.classifyFailure(ctx, "build the sandbox image", runErr, stderr)
+		return rt.classifyFailure(ctx, "build the sandbox image", runErr, combinedOutput(stdout, stderr))
 	}
 	if code != 0 {
-		return rt.classifyFailure(ctx, "build the sandbox image", fmt.Errorf("docker build exited %d: %s", code, summarizeFailure(stdout, stderr)), stderr)
+		return rt.classifyFailure(ctx, "build the sandbox image", fmt.Errorf("docker build exited %d: %s", code, summarizeFailure(stdout, stderr)), combinedOutput(stdout, stderr))
 	}
 	return nil
 }
@@ -196,7 +196,7 @@ func (rt *dockerRuntime) ensureContainerRunning(ctx context.Context, image strin
 
 	switch {
 	case !exists:
-		_, stderr, code, err := rt.run.run(ctx, []string{
+		stdout, stderr, code, err := rt.run.run(ctx, []string{
 			"docker", "run", "-d",
 			"--name", rt.name,
 			"--label", sandboxLabel + "=1",
@@ -223,10 +223,10 @@ func (rt *dockerRuntime) ensureContainerRunning(ctx context.Context, image strin
 			"--", image, "sleep", "infinity",
 		}, nil)
 		if err != nil {
-			return rt.classifyFailure(ctx, "start the sandbox container", err, stderr)
+			return rt.classifyFailure(ctx, "start the sandbox container", err, combinedOutput(stdout, stderr))
 		}
 		if code != 0 {
-			return rt.classifyFailure(ctx, "start the sandbox container", fmt.Errorf("docker run exited %d: %s", code, stderr), stderr)
+			return rt.classifyFailure(ctx, "start the sandbox container", fmt.Errorf("docker run exited %d: %s", code, stderr), combinedOutput(stdout, stderr))
 		}
 		return nil
 	case !hasLabel:
@@ -234,12 +234,12 @@ func (rt *dockerRuntime) ensureContainerRunning(ctx context.Context, image strin
 	case running:
 		return nil
 	default:
-		_, stderr, code, err := rt.run.run(ctx, []string{"docker", "start", "--", rt.name}, nil)
+		stdout, stderr, code, err := rt.run.run(ctx, []string{"docker", "start", "--", rt.name}, nil)
 		if err != nil {
-			return rt.classifyFailure(ctx, "start the sandbox container", err, stderr)
+			return rt.classifyFailure(ctx, "start the sandbox container", err, combinedOutput(stdout, stderr))
 		}
 		if code != 0 {
-			return rt.classifyFailure(ctx, "start the sandbox container", fmt.Errorf("docker start exited %d: %s", code, stderr), stderr)
+			return rt.classifyFailure(ctx, "start the sandbox container", fmt.Errorf("docker start exited %d: %s", code, stderr), combinedOutput(stdout, stderr))
 		}
 		return nil
 	}
@@ -257,7 +257,7 @@ func (rt *dockerRuntime) inspectContainer(ctx context.Context) (exists, running,
 		"--", rt.name,
 	}, nil)
 	if runErr != nil {
-		return false, false, false, rt.classifyFailure(ctx, "inspect the sandbox container", runErr, stderr)
+		return false, false, false, rt.classifyFailure(ctx, "inspect the sandbox container", runErr, combinedOutput(stdout, stderr))
 	}
 	if code != 0 {
 		// docker inspect exits 1 with "No such object" when the target does
@@ -295,12 +295,12 @@ func (rt *dockerRuntime) Destroy(ctx context.Context) error {
 		return fmt.Errorf("docker: refusing to remove container %q: it does not carry the %s label, so it was not created by Shellforge", rt.name, sandboxLabel)
 	}
 
-	_, stderr, code, err := rt.run.run(ctx, []string{"docker", "rm", "-f", "--", rt.name}, nil)
+	stdout, stderr, code, err := rt.run.run(ctx, []string{"docker", "rm", "-f", "--", rt.name}, nil)
 	if err != nil {
-		return rt.classifyFailure(ctx, "remove the sandbox container", err, stderr)
+		return rt.classifyFailure(ctx, "remove the sandbox container", err, combinedOutput(stdout, stderr))
 	}
 	if code != 0 {
-		return rt.classifyFailure(ctx, "remove the sandbox container", fmt.Errorf("docker rm exited %d: %s", code, stderr), stderr)
+		return rt.classifyFailure(ctx, "remove the sandbox container", fmt.Errorf("docker rm exited %d: %s", code, stderr), combinedOutput(stdout, stderr))
 	}
 	return nil
 }
@@ -348,6 +348,17 @@ func (rt *dockerRuntime) Capabilities() runtime.Caps {
 	}
 }
 
+// combinedOutput concatenates stdout and stderr for classifyFailure, which
+// must not assume which stream carries docker's diagnostic message.
+// summarizeFailure documents the same split for BuildKit, which writes to
+// stdout, against the classic builder, which writes to stderr; the WSL
+// stub message this function keys on has no established stream of its own
+// either, only a reproduction that did not distinguish the two, so
+// classification reads both rather than guess.
+func combinedOutput(stdout, stderr []byte) []byte {
+	return append(append([]byte{}, stdout...), stderr...)
+}
+
 // classifyFailure turns a raw docker failure into a ux.Fail carrying a
 // remediation and a doc anchor, distinguishing "docker missing" (caught
 // earlier, in New), "permission denied", and "daemon not running". The
@@ -357,8 +368,14 @@ func (rt *dockerRuntime) Capabilities() runtime.Caps {
 // independent `docker version` probe of the daemon's own health, rather
 // than string-matching the original command's message, per the ticket's
 // approach.
-func (rt *dockerRuntime) classifyFailure(ctx context.Context, op string, err error, stderr []byte) error {
-	if isPermissionDenied(stderr) {
+//
+// output is the failed command's stdout and stderr concatenated by the
+// caller via combinedOutput, not stderr alone: a stub docker binary inside
+// a WSL distribution without Docker Desktop integration writes its "could
+// not be found" message with no daemon involved to pick a stream by
+// convention, so the branch below cannot assume it landed on stderr.
+func (rt *dockerRuntime) classifyFailure(ctx context.Context, op string, err error, output []byte) error {
+	if isPermissionDenied(output) {
 		return ux.Fail(op, err, `sudo usermod -aG docker "$USER", then log out and back in`, "docker-permission-denied")
 	}
 
@@ -369,7 +386,7 @@ func (rt *dockerRuntime) classifyFailure(ctx context.Context, op string, err err
 	// send someone whose Docker is running and healthy to "start Docker".
 	// Keyed on Docker's own stable wording rather than on the URL that
 	// follows it, matching the permission-denied branch above.
-	if bytes.Contains(stderr, []byte("could not be found in this WSL 2 distro")) {
+	if bytes.Contains(output, []byte("could not be found in this WSL 2 distro")) {
 		return ux.Fail(op, err,
 			"Open Docker Desktop, go to Settings, Resources, WSL integration, and turn the integration on for this distribution. Then run `docker version` inside WSL to confirm it is reachable.",
 			"docker-wsl-integration-off")
