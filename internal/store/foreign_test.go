@@ -317,11 +317,8 @@ func TestOpenLeavesAForeignDatabaseUntouched(t *testing.T) {
 	if len(before) != len(after) {
 		t.Errorf("file length changed: before %d, after %d", len(before), len(after))
 	}
-	if len(before) < 100 || len(after) < 100 {
-		t.Fatalf("fixture is smaller than SQLite's 100 byte file header (before %d, after %d): cannot assert the region this test cares about", len(before), len(after))
-	}
-	if got, want := hashRegion(t, after[100:]), hashRegion(t, before[100:]); got != want {
-		t.Errorf("bytes from offset 100 onward changed: before %s, after %s", want, got)
+	if got, want := hashRegion(t, after), hashRegion(t, before); got != want {
+		t.Errorf("file bytes changed: before %s, after %s", want, got)
 	}
 
 	if afterSchema != beforeSchema {
@@ -333,6 +330,18 @@ func TestOpenLeavesAForeignDatabaseUntouched(t *testing.T) {
 	for i := range beforeRows {
 		if beforeRows[i] != afterRows[i] {
 			t.Errorf("notes row %d changed: before %v, after %v", i, beforeRows[i], afterRows[i])
+		}
+	}
+
+	// A refused Open must never reach the WAL pragma, so it must never
+	// create the sidecars that pragma creates. This is the other half of
+	// issue #110's fix: the provenance check now runs before that pragma,
+	// not after it as part of Migrate.
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if _, err := os.Stat(dbPath + suffix); err == nil {
+			t.Errorf("%s exists after a refused Open; the WAL pragma ran against a database that was not ours", dbPath+suffix)
+		} else if !os.IsNotExist(err) {
+			t.Errorf("stat %s: %v", dbPath+suffix, err)
 		}
 	}
 }

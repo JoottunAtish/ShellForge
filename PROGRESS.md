@@ -4396,6 +4396,85 @@ Both are now deleted, because there is nothing left to drift.
   not installed here and are left to CI. No container is involved anywhere in
   this change, so nothing was skipped for want of a Docker daemon.
 
+### Day 3 follow-up, 2026-08-19: ARCHITECTURE 4.7 and 4.11 no longer disagree
+
+Issue #87. Sections 4.7 and 4.11 described the command journal table two
+incompatible ways: 4.7 as a flat, typed `events` table, 4.11 as a singular
+`event` table keyed by `attempt_id` with an opaque `payload_json`. #51
+shipped 4.7's shape in `internal/store/schema/001_init.sql`, because only a
+flat typed table can satisfy an appended `Entry` reading back with every
+field intact, so the drift was inside the design record rather than between
+the record and the code.
+
+- **4.11's SQL block now matches the shipped schema column for column**,
+  with a paragraph explaining that `attempt_id` and `kind`, the pair that
+  would turn it into a heterogeneous log spanning commands, checks, hints,
+  achievements and resets, arrive with the Day 4 attempt model in a
+  forward-only `002_*.sql`, once `profile`, `level_state` and `attempt`
+  exist to give them something to reference and disambiguate.
+- **4.7 gains one sentence** naming the two shipped renames (`level_id` for
+  `level`, `exit_code` for `exit`) and stating that `output_sha256`,
+  `output_head` and `output_bytes` are not persisted today. Command output
+  capture is at least as sensitive as the command text and needs its own
+  privacy review before it is designed; no ticket exists for it yet, so
+  none is named.
+- **`internal/journal/doc.go`'s own paragraph on this drift** is corrected
+  from "tracked in issue #87" to say it is resolved.
+- **No schema change.** `internal/store/schema/001_init.sql` is untouched
+  and no `002_*.sql` was added. This is documentation only.
+- **Gates run on this host:** `gofmt -s -w .`, `go vet ./...`,
+  `go build ./...`, `./scripts/check-punctuation.sh`,
+  `./scripts/check-links.sh`, all green. No Go logic changed, so the full
+  test suite was also run as a sanity check rather than because this ticket
+  needed it to pass: it did.
+
+### Day 3 follow-up, 2026-08-19: the WAL pragma no longer runs on an unidentified database
+
+Issue #110. `store.Open` used to run `PRAGMA journal_mode=WAL` before
+`Migrate` ever looked at the file, so a database `Migrate` went on to refuse
+under #90 had already had its 100 byte header rewritten (the format
+read/write version bytes at offset 18 and 19, the low byte of the change
+counter at offset 24, and the low byte of the version-valid-for number at
+offset 92) and, for a database not already in WAL mode, had already grown
+`-wal` and `-shm` sidecars. Neither is a write to a table, but both are
+irreversible side effects on a file this process may not own.
+
+- **`refuseIfForeign` now runs before the pragma loop**, inside `Open`
+  rather than only inside `Migrate`. `Migrate` still calls it again as its
+  own first step, a second cheap `sqlite_master` read that keeps `Migrate`
+  a safe entry point for a caller that does not go through `Open`.
+- **A real interaction the ticket did not name, found by testing rather
+  than assumed away.** Moving the identity check first meant it was also
+  the *first* thing to touch a corrupt file, and `refuseIfForeign` fails
+  closed on any read error by returning `anchorForeignDatabase` (rule 8 in
+  the `destructive-safety` skill, pinned by
+  `TestRefuseIfForeignFailsClosedWhenItCannotRead`, which is correct and
+  untouched). That turned `TestOpenOnACorruptFileFails` red: a garbage file
+  was reported as foreign rather than corrupt, telling the learner to run
+  `shellforge doctor` instead of the far more useful "rename it and
+  Shellforge will start a new progress file." Fixed by proving the file is
+  at least readable SQLite, via `looksLikeOurs` and `classifyOpenError`,
+  before asking whether it is ours at all: a read failure there is
+  corruption, a permission problem, or contention, none of which is "not
+  ours," and `classifyOpenError` already tells them apart. `looksLikeOurs`
+  succeeds with `false, nil` on a fresh or empty file, so the adopted-as-
+  fresh path is undisturbed, and the extra read only costs anything on a
+  database that was never going to open successfully anyway.
+- **`TestOpenLeavesAForeignDatabaseUntouched`'s assertion tightened** from
+  `after[100:]` against `before[100:]` to the whole file, and a new
+  assertion in the same test confirms no `-wal` or `-shm` sidecar exists
+  next to a foreign database after a refused `Open`.
+- **`TestOpenOnAContendedConversionReportsInUseAndRetries` and
+  `TestOpenLeavesAForeignDatabaseModeUnchanged`** both still pass, unedited,
+  including under `-race`.
+- **Gates run on this host:** `gofmt -s -w .`, `go vet ./...`,
+  `go build ./...`, `go test ./...`, `go test -race ./internal/store/...`,
+  `go test ./internal/archtest/...`, `./scripts/check-punctuation.sh`,
+  `./scripts/check-allowlist-regexp.sh`, `./scripts/check-links.sh`,
+  `python3 scripts/check-ci-gates.py`, all green. `govulncheck` and `gosec`
+  are not installed here and are left to CI. No container is involved, so
+  nothing was skipped for want of a Docker daemon.
+
 
 ## Day 6: hardening, CI, packaging
 
