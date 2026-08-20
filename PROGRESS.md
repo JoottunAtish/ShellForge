@@ -4301,6 +4301,197 @@ near-identical doc-anchor gate implementations into one shared helper,
 because issue #132 already owns exactly that refactor and it does not belong
 folded into this fix round.
 
+### Day 3 follow-up, 2026-08-19: Scope moves below both packages, and the journal adapter is gone
+
+Issue #88. `internal/journal` used to declare its own `ScopeKind` and `Scope`,
+mirroring `verify.ScopeKind` and `verify.Scope` field for field and value for
+value, because layer 2 may not import layer 3 and `internal/verify` declines to
+import `internal/journal` in the other direction. The mirror worked, but it cost
+a three line translating adapter in `verifycontract_test.go` and a reflect-based
+drift test whose only job was to notice when the two copies stopped matching.
+Both are now deleted, because there is nothing left to drift.
+
+- **`internal/scope` is new, at layer 0, and imports nothing at all.** It holds
+  `ScopeKind`, `Scope`, and the constants `Level`, `LastN`, and `Last`. It exists
+  for one reason: two packages that may never import each other need to name the
+  same type, so that type has to sit underneath both. `internal/archtest`'s
+  layers table gets exactly one new entry for it and nothing else in that file
+  changed.
+- **`internal/verify.Scope` and `.ScopeKind` are now type ALIASES, not new named
+  types**, and `ScopeLevel`, `ScopeLastN`, and `ScopeLast` are the lower
+  package's constants under the old names. The distinction is the whole ticket:
+  an alias makes `verify.Scope` and `scope.Scope` one type, so
+  `*journal.Journal` satisfies `verify.JournalReader` outright. A named type
+  would compile here and silently reinstate the adapter. Every existing caller
+  of `verify.Scope`, including `internal/game`'s `noJournal` and every test that
+  builds one, compiles unchanged; that is what an alias is for.
+- **`journal.Commands` and `journal.commands` now take `scope.Scope`.** The
+  parameter is named `sc`, not `scope`, so it does not shadow the package
+  identifier the switch arms need. Nothing about the query logic moved: the three
+  arms, the ordering rationale, the non-positive `N` guard, and the `Err()`
+  behaviour are byte for byte what they were.
+- **`verifycontract_test.go` lost its adapter and its drift test, but the file
+  itself did not shrink.** It was 143 lines on main and is 156 lines on this
+  branch: slightly longer, not a fifth of its former size. The adapter type
+  and the mirror drift test are gone. What replaces them is
+  `var _ verify.JournalReader = (*journal.Journal)(nil)` with no wrapper,
+  a `var aliasProof scope.Scope = verify.Scope{...}` that fails to compile if the
+  aliases ever become named types (Go assignability needs one side unnamed, so
+  two separate named structs cannot satisfy it however identical their fields),
+  a reflect check that reports which package and name each side actually has when
+  it does break, a table pinning the three kind strings `"level"`, `"last_n"`,
+  and `"last"` because those are the level YAML surface, and one behavioural test
+  driving a real journal through the `verify.JournalReader` interface for all
+  three kinds.
+- **Both guards were confirmed to fire.** Reverting `internal/verify/check.go` to
+  self-consistent named types, so that `internal/verify` itself still builds,
+  breaks `internal/journal`'s test build in three places, not six. Two of the
+  three carry the exact message the ticket is about, at the
+  `var _ verify.JournalReader = (*journal.Journal)(nil)` line and the
+  `var reader verify.JournalReader = j` line: `*journal.Journal does not
+  implement verify.JournalReader (wrong type for method Commands)`. The third
+  is a different, equally valid guard: the `aliasProof` line fails with
+  `cannot use verify.Scope{...} as scope.Scope value in variable declaration`,
+  because Go assignability needs one side unnamed and a named `Scope` no
+  longer qualifies. A test that passes before and after a change tests
+  nothing, so this was worth checking rather than assuming.
+- **The `JournalReader` doc comment in `internal/verify/check.go` was checked
+  against #88's acceptance criteria, as asked, and found accurate.** It says
+  `internal/journal` satisfies this interface from outside the package. That
+  is literally true today because of the `Scope`/`ScopeKind` aliases, so no
+  wording change was required.
+- **One acceptance criterion in #88 cannot be met as literally worded, and was
+  not.** The ticket asks for
+  `var _ verify.JournalReader = (*journal.Journal)(nil)` in a NON-test file in
+  `internal/journal`, with no import of `internal/verify` anywhere in the
+  package. Those two halves contradict each other: naming `verify.JournalReader`
+  requires importing `internal/verify` from the file that names it, so such a
+  non-test file would itself be the upward edge the same ticket exists to remove.
+  The assertion therefore stays in the external `journal_test` package, which is
+  legal because `archtest`'s `collectImports` skips `_test.go` files. What
+  actually changed, and what "literally satisfies" was reaching for, is that the
+  assertion no longer needs a wrapper struct.
+- **Two files outside the ticket's own list were touched, both mechanically.**
+  `internal/journal/journal_test.go` is an in-package test that named the removed
+  `Scope`, `ScopeKind`, and the three constants; it now names them through
+  `scope`. `internal/journal/doc.go`'s earlier section on the level boundary
+  referred to `ScopeLevel`, `ScopeLastN`, and `ScopeLast`, identifiers this
+  package no longer has, so those names were updated in place. No sentence in
+  that section changed meaning.
+- **Left alone deliberately, with one comment correction in review.**
+  `internal/game/session.go`'s `Config.Journal` doc comment used to say a real
+  journal is not wired in because `journal.Journal` does not satisfy
+  `verify.JournalReader`. That second clause went false the moment this
+  ticket landed, so a Phase 4 review pass corrected the comment to say the
+  interface is now satisfied and that wiring a real journal into
+  `internal/game` remains separate, unstarted work. Wiring one in is still
+  not this ticket. Issue #87, the `events` table drift against
+  ARCHITECTURE.md section 4.11, is a separate ticket in the same cluster and
+  was not touched.
+- **Gates run on this host:** `gofmt -s -w .`, `go vet ./...`, `go build ./...`,
+  `go test ./...`, `go test -race ./...`, `go test ./internal/archtest/...`,
+  `./scripts/check-punctuation.sh`, `./scripts/check-allowlist-regexp.sh`,
+  `./scripts/check-links.sh`, `./scripts/check-cli-package.sh`,
+  `python3 scripts/check-ci-gates.py`, all green. `govulncheck` and `gosec` are
+  not installed here and are left to CI. No container is involved anywhere in
+  this change, so nothing was skipped for want of a Docker daemon.
+
+### Day 3 follow-up, 2026-08-19: ARCHITECTURE 4.7 and 4.11 no longer disagree
+
+Issue #87. Sections 4.7 and 4.11 described the command journal table two
+incompatible ways: 4.7 as a flat, typed `events` table, 4.11 as a singular
+`event` table keyed by `attempt_id` with an opaque `payload_json`. #51
+shipped 4.7's shape in `internal/store/schema/001_init.sql`, because only a
+flat typed table can satisfy an appended `Entry` reading back with every
+field intact, so the drift was inside the design record rather than between
+the record and the code.
+
+- **4.11's SQL block now matches the shipped schema column for column**,
+  with a paragraph explaining that `attempt_id` and `kind`, the pair that
+  would turn it into a heterogeneous log spanning commands, checks, hints,
+  achievements and resets, arrive with the Day 4 attempt model in a
+  forward-only `002_*.sql`, once `profile`, `level_state` and `attempt`
+  exist to give them something to reference and disambiguate.
+- **4.7 gains one sentence** naming the two shipped renames (`level_id` for
+  `level`, `exit_code` for `exit`) and stating that `output_sha256`,
+  `output_head` and `output_bytes` are not persisted today. Command output
+  capture is at least as sensitive as the command text and needs its own
+  privacy review before it is designed; no ticket exists for it yet, so
+  none is named.
+- **`internal/journal/doc.go`'s own paragraph on this drift** is corrected
+  from "tracked in issue #87" to say it is resolved.
+- **No schema change.** `internal/store/schema/001_init.sql` is untouched
+  and no `002_*.sql` was added. This is documentation only.
+- **Gates run on this host:** `gofmt -s -w .`, `go vet ./...`,
+  `go build ./...`, `./scripts/check-punctuation.sh`,
+  `./scripts/check-links.sh`, all green. No Go logic changed, so the full
+  test suite was also run as a sanity check rather than because this ticket
+  needed it to pass: it did.
+
+### Day 3 follow-up, 2026-08-19: the WAL pragma no longer runs on an unidentified database
+
+Issue #110. `store.Open` used to run `PRAGMA journal_mode=WAL` before
+`Migrate` ever looked at the file, so a database `Migrate` went on to refuse
+under #90 had already had its 100 byte header rewritten (the format
+read/write version bytes at offset 18 and 19, the low byte of the 4 byte
+change counter at offset 27, and the low byte of the 4 byte version-valid-for
+number at offset 95) and, for a database not already in WAL mode, had already
+grown `-wal` and `-shm` sidecars. Neither is a write to a table, but both are
+irreversible side effects on a file this process may not own.
+
+- **`refuseIfForeign` now runs before the pragma loop**, inside `Open`
+  rather than only inside `Migrate`. `Migrate` still calls it again as its
+  own first step, a second cheap `sqlite_master` read that keeps `Migrate`
+  a safe entry point for a caller that does not go through `Open`.
+- **A real interaction the ticket did not name, found by testing rather
+  than assumed away.** Moving the identity check first meant it was also
+  the *first* thing to touch a corrupt file, and `refuseIfForeign` fails
+  closed on any read error by returning `anchorForeignDatabase` (rule 8 in
+  the `destructive-safety` skill, pinned by
+  `TestRefuseIfForeignFailsClosedWhenItCannotRead`, which is correct and
+  untouched). That turned `TestOpenOnACorruptFileFails` red: a garbage file
+  was reported as foreign rather than corrupt, telling the learner to run
+  `shellforge doctor` instead of the far more useful "rename it and
+  Shellforge will start a new progress file." Fixed by proving the file is
+  at least readable SQLite, via `looksLikeOurs` and `classifyOpenError`,
+  before asking whether it is ours at all: a read failure there is
+  corruption, a permission problem, or contention, none of which is "not
+  ours," and `classifyOpenError` already tells them apart. `looksLikeOurs`
+  succeeds with `false, nil` on a fresh or empty file, so the adopted-as-
+  fresh path is undisturbed, and the extra read only costs anything on a
+  database that was never going to open successfully anyway.
+- **`TestOpenLeavesAForeignDatabaseUntouched`'s assertion tightened** from
+  `after[100:]` against `before[100:]` to the whole file, and a new
+  assertion in the same test confirms no `-wal` or `-shm` sidecar exists
+  next to a foreign database after a refused `Open`.
+- **`TestOpenOnAContendedConversionReportsInUseAndRetries` and
+  `TestOpenLeavesAForeignDatabaseModeUnchanged`** both still pass, unedited,
+  including under `-race`.
+- **A second interaction, caught by review rather than by a failing test.**
+  `busy_timeout` used to be set before `refuseIfForeign` ever ran, back when
+  all three pragmas preceded the identity check, so every read inside it
+  benefited from SQLite's busy handler. Moving the identity check first meant
+  those reads ran with no busy handler set at all: a genuine contention
+  window, though narrower than the one `execPragmaWithRetry` exists for,
+  since an ordinary `SELECT` only needs a shared lock while the WAL
+  conversion needs an exclusive one. `Open` now applies `busy_timeout` and
+  `synchronous` ahead of every read, and leaves `journal_mode=WAL` as the
+  sole pragma that waits for provenance, since it is the only one that
+  touches the file. No existing test exercised this gap; none was added
+  either, since constructing a fixture that holds the specific PENDING or
+  EXCLUSIVE lock a shared-lock read contends against, rather than the
+  RESERVED lock `TestOpenOnAContendedConversionReportsInUseAndRetries`
+  already holds, is a fragile timing-dependent test for a narrow window the
+  ordering fix removes outright.
+- **Gates run on this host:** `gofmt -s -w .`, `go vet ./...`,
+  `go build ./...`, `go test ./...`, `go test -race ./internal/store/...`,
+  `go test ./internal/archtest/...`, `./scripts/check-punctuation.sh`,
+  `./scripts/check-allowlist-regexp.sh`, `./scripts/check-links.sh`,
+  `python3 scripts/check-ci-gates.py`, all green. `govulncheck` and `gosec`
+  are not installed here and are left to CI. No container is involved, so
+  nothing was skipped for want of a Docker daemon.
+
+
 ## Day 6: hardening, CI, packaging
 
 - [ ] CI green on both platforms

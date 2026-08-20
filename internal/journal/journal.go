@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/JoottunAtish/ShellForge/internal/scope"
 	"github.com/JoottunAtish/ShellForge/internal/store"
 )
 
@@ -84,51 +85,15 @@ func (e Entry) GoString() string {
 	return e.String()
 }
 
-// ScopeKind selects which slice of journal history Commands reads.
-//
-// This mirrors verify.ScopeKind field for field and value for value; it is
-// not that type. internal/journal is layer 2 and internal/verify is layer
-// 3, so this package's production code cannot name a type from
-// internal/verify. See verifycontract_test.go for the adapter that bridges
-// the two, and for the drift test that keeps this mirror honest.
-type ScopeKind string
-
-const (
-	// ScopeLevel is every command recorded for the level and attempt
-	// SetLevel most recently named: every events row whose level_id equals
-	// the stored level and whose id is strictly greater than the stored
-	// boundary, ordered oldest first. Before SetLevel has ever been
-	// called, Commands answers with no commands rather than guessing a
-	// level from the newest row, and Err explains why.
-	ScopeLevel ScopeKind = "level"
-
-	// ScopeLastN is the most recent N commands, globally, regardless of
-	// which level SetLevel names. It does not stop at a level boundary:
-	// see this package's doc.go for why that is a deliberate decision and
-	// not an oversight left over from ScopeLevel's fix.
-	ScopeLastN ScopeKind = "last_n"
-
-	// ScopeLast is only the most recent command, globally, with the same
-	// deliberate lack of a level boundary as ScopeLastN.
-	ScopeLast ScopeKind = "last"
-)
-
-// Scope selects which commands Commands reads. N is meaningful only when
-// Kind is ScopeLastN.
-type Scope struct {
-	Kind ScopeKind
-	N    int
-}
-
 // commandsTimeout bounds the query Commands issues internally. Commands has
 // no ctx parameter because verify.JournalReader fixes that signature, so
 // Commands creates its own bounded context instead, keeping a wedged read
 // from stalling verification indefinitely.
 const commandsTimeout = 2 * time.Second
 
-// errNoLevelSet is what ScopeLevel answers through Err when Commands is
-// asked for ScopeLevel before SetLevel has ever been called. It is
-// deliberately not a guess: see SetLevel and the ScopeLevel doc comment.
+// errNoLevelSet is what scope.Level answers through Err when Commands is
+// asked for scope.Level before SetLevel has ever been called. It is
+// deliberately not a guess: see SetLevel and the Commands doc comment.
 var errNoLevelSet = errors.New("journal: no level set; call SetLevel before verifying")
 
 // Journal records and replays the learner's commands, backed by a
@@ -139,7 +104,7 @@ type Journal struct {
 	mu       sync.Mutex
 	err      error  // last error swallowed by Commands
 	levelID  string // set by SetLevel; meaningless unless levelSet
-	sinceID  int64  // set by SetLevel; the events.id boundary for ScopeLevel
+	sinceID  int64  // set by SetLevel; the events.id boundary for scope.Level
 	levelSet bool   // whether SetLevel has ever been called
 }
 
@@ -150,15 +115,15 @@ func New(s *store.Store) *Journal {
 
 // SetLevel tells the Journal which level is under verification and where
 // its attempt begins. Layer 4 calls this when a level starts or resets,
-// before any check runs: levelID is the level whose commands ScopeLevel
+// before any check runs: levelID is the level whose commands scope.Level
 // should answer with, and sinceID is the events.id boundary, exclusive, so
 // a command recorded before this attempt started (an earlier attempt at
 // the same level, or a different level entirely) never appears in
-// ScopeLevel's answer. Passing the highest events.id recorded at the
+// scope.Level's answer. Passing the highest events.id recorded at the
 // moment the level starts is what gives a fresh attempt a clean boundary;
 // passing 0 includes every row ever recorded for levelID.
 //
-// SetLevel is the only way ScopeLevel learns which level it is answering
+// SetLevel is the only way scope.Level learns which level it is answering
 // for: Journal never infers it from the newest row in the table, because
 // the newest row can belong to a different level than the one currently
 // being verified.
@@ -246,19 +211,38 @@ func scanEvent(rows *sql.Rows) (Entry, error) {
 	return e, nil
 }
 
-// Commands returns the commands in scope, oldest first, satisfying the
-// method set verify.JournalReader requires: see verifycontract_test.go.
+// Commands returns the commands sc selects, oldest first. The parameter type
+// comes from internal/scope, layer 0, which internal/verify aliases as
+// verify.Scope, so this method is exactly the method set
+// verify.JournalReader requires without this package naming internal/verify
+// at all: see doc.go, and verifycontract_test.go for the compile-time proof.
+//
+// The three kinds answer as follows.
+//
+// scope.Level is every command recorded for the level and attempt SetLevel
+// most recently named: every events row whose level_id equals the stored
+// level and whose id is strictly greater than the stored boundary, oldest
+// first. Before SetLevel has ever been called it answers with no commands
+// rather than guessing a level from the newest row, and Err says why.
+//
+// scope.LastN is the most recent N commands, globally, regardless of which
+// level SetLevel names. It does not stop at a level boundary: doc.go
+// explains why that is a decision rather than an oversight. A non-positive
+// N selects nothing.
+//
+// scope.Last is only the most recent command, globally, with the same
+// deliberate lack of a level boundary as scope.LastN.
 //
 // A query failure never panics and is never printed. It is recorded and
 // retrievable through Err, and Commands returns an empty slice.
 // Verification never uses the journal to decide pass or fail (see doc.go),
 // so a degraded command log costs only the efficiency bonus, never
 // correctness.
-func (j *Journal) Commands(scope Scope) []string {
+func (j *Journal) Commands(sc scope.Scope) []string {
 	ctx, cancel := context.WithTimeout(context.Background(), commandsTimeout)
 	defer cancel()
 
-	cmds, err := j.commands(ctx, scope)
+	cmds, err := j.commands(ctx, sc)
 
 	j.mu.Lock()
 	j.err = err
@@ -277,9 +261,9 @@ func (j *Journal) Err() error {
 	return j.err
 }
 
-func (j *Journal) commands(ctx context.Context, scope Scope) ([]string, error) {
-	switch scope.Kind {
-	case ScopeLevel:
+func (j *Journal) commands(ctx context.Context, sc scope.Scope) ([]string, error) {
+	switch sc.Kind {
+	case scope.Level:
 		levelID, sinceID, ok := j.currentLevel()
 		if !ok {
 			return nil, errNoLevelSet
@@ -292,8 +276,8 @@ func (j *Journal) commands(ctx context.Context, scope Scope) ([]string, error) {
 		}
 		return scanCommands(rows)
 
-	case ScopeLastN:
-		if scope.N <= 0 {
+	case scope.LastN:
+		if sc.N <= 0 {
 			return []string{}, nil
 		}
 		// Ordered by id, the auto-increment row identity, not by seq: seq
@@ -305,14 +289,14 @@ func (j *Journal) commands(ctx context.Context, scope Scope) ([]string, error) {
 			`SELECT raw FROM (
 			   SELECT raw, id FROM events ORDER BY id DESC LIMIT ?
 			 ) ORDER BY id ASC`,
-			scope.N,
+			sc.N,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("query scope last_n: %w", err)
 		}
 		return scanCommands(rows)
 
-	case ScopeLast:
+	case scope.Last:
 		var raw string
 		err := j.s.DB().QueryRowContext(ctx,
 			"SELECT raw FROM events ORDER BY id DESC LIMIT 1").Scan(&raw)
@@ -325,7 +309,7 @@ func (j *Journal) commands(ctx context.Context, scope Scope) ([]string, error) {
 		return []string{raw}, nil
 
 	default:
-		return nil, fmt.Errorf("unknown scope kind %q", scope.Kind)
+		return nil, fmt.Errorf("unknown scope kind %q", sc.Kind)
 	}
 }
 
