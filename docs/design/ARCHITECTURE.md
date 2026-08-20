@@ -382,6 +382,8 @@ Tapping raw stdin (before the PTY) lets you detect `Tab` (completion), `↑` (hi
 
 Stored in SQLite (`events` table) **and** appended to `journal.tsv` inside the sandbox. The journal is the substrate for: command-pattern checks, hint targeting, replay/"watch your solution", speedrun scoring, and analytics.
 
+The shipped `events` table (`internal/store/schema/001_init.sql`) matches this record with two renames, `level_id` for `level` and `exit_code` for `exit`, needed because `exit` reads as a verb next to SQL keywords and `level` alone is ambiguous next to a future foreign key. `output_sha256`, `output_head` and `output_bytes` are not persisted today: command output capture is at least as sensitive as the command text and needs its own privacy review before it is designed, not implemented as a side effect of a schema reconciliation. Section 4.11 used to describe this same table a second, incompatible way; issue #87 reconciled the two, and 4.11's copy below is now the shipped shape.
+
 **Env/CWD snapshot** solves a subtle problem: verification probes run in a *separate* `exec`, so they cannot see the interactive shell's `export FOO=bar`. `env -0` dumped each prompt makes env-var checks possible. Same trick for `alias` (`alias -p`), functions (`declare -F`), and shell options (`shopt -p`).
 
 ---
@@ -587,10 +589,16 @@ CREATE TABLE attempt (
   score INTEGER, hints_used INTEGER, commands_used INTEGER
 );
 
-CREATE TABLE event (                      -- the command journal + game events
-  id INTEGER PRIMARY KEY, attempt_id INTEGER, seq INTEGER, ts REAL,
-  kind TEXT,                              -- command | check | hint | achievement | reset
-  payload_json TEXT
+-- events is the command journal, shipped in 001_init.sql and owned by
+-- section 4.7. Flat and typed: see the note below for why, not the
+-- payload_json shape this section used to show.
+CREATE TABLE events (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  seq          INTEGER NOT NULL, ts REAL NOT NULL,
+  level_id     TEXT NOT NULL, cwd TEXT NOT NULL, raw TEXT NOT NULL,
+  exit_code    INTEGER NOT NULL, duration_ms INTEGER NOT NULL,
+  used_tab     INTEGER NOT NULL DEFAULT 0,
+  used_history INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE concept_mastery (
@@ -605,9 +613,21 @@ CREATE TABLE achievement (
   PRIMARY KEY (profile_id, key)
 );
 
-CREATE INDEX idx_event_attempt ON event(attempt_id, seq);
+CREATE INDEX idx_events_level_seq ON events(level_id, seq);
 CREATE INDEX idx_mastery_due ON concept_mastery(profile_id, due_at);
 ```
+
+This table used to appear here a second, incompatible way: singular `event`,
+keyed by `attempt_id`, carrying a `kind` and an opaque `payload_json` rather
+than the flat typed columns above. Issue #87 reconciled the two in favour of
+what #51 actually shipped in `internal/store/schema/001_init.sql`, which this
+block now matches column for column. `attempt_id` and `kind`, the pair that
+would turn this into a heterogeneous log spanning commands, checks, hints,
+achievements and resets, arrive with the Day 4 attempt model in a
+forward-only `002_*.sql`, once `profile`, `level_state` and `attempt` exist
+to give `attempt_id` something to reference and `kind` something to
+disambiguate. Until then this table is command-only, which is what
+`internal/journal` actually implements and tests.
 
 WAL mode on; migrations versioned and forward-only.
 

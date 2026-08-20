@@ -53,16 +53,15 @@
 // deferred along with output capture rather than implemented against an
 // encoding issue #51 never specified.
 //
-// What is genuinely drift is inside docs/design/ARCHITECTURE.md itself:
-// section 4.11, "Progression, Scoring, Persistence", separately describes a
-// singular event table with attempt_id, kind, and an opaque payload_json,
-// for a later-stage persistence layer this ticket does not build. An opaque
-// JSON payload could not satisfy "an appended Entry reads back with every
-// field intact" without inventing that encoding, so it is not what ships
-// here, and it should not be read as this package failing to match the
-// design record: it matches the section the ticket names. Reconciling 4.7
-// against 4.11 is tracked in issue #87, as a change to the design record,
-// not to this package.
+// docs/design/ARCHITECTURE.md section 4.11, "Progression, Scoring,
+// Persistence", used to separately describe this same table a second,
+// incompatible way: a singular event table with attempt_id, kind, and an
+// opaque payload_json. An opaque JSON payload could not satisfy "an
+// appended Entry reads back with every field intact" without inventing
+// that encoding, so it was never what shipped here, and the mismatch was
+// not this package failing to match the design record: it matched the
+// section the ticket named. Issue #87 reconciled 4.7 and 4.11 in the
+// design record; both sections now describe the table above.
 //
 // # scope.Level, SetLevel, and the level boundary
 //
