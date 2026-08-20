@@ -113,6 +113,22 @@ func Open(ctx context.Context, path string) (*Store, error) {
 
 	s := &Store{db: db, path: path}
 
+	// busy_timeout and synchronous first, ahead of every read below. Neither
+	// touches the file on disk: they are connection-level settings, not a
+	// format conversion, so applying them early is free and irreversible to
+	// nothing. Doing so before the reads below matters: without a busy
+	// handler set, a plain SELECT that meets contention gets an immediate
+	// SQLITE_BUSY with no wait at all, where the old ordering (all three
+	// pragmas, then the identity check) had busy_timeout active by the time
+	// any read ran. journal_mode=WAL is deliberately not in this loop; see
+	// below for why it waits.
+	for _, pragma := range []string{pragmaBusyTimeout, pragmaSynchronousNormal} {
+		if err := execPragmaWithRetry(ctx, db, pragma); err != nil {
+			_ = db.Close() // best effort: the pragma failure is what the caller needs to see
+			return nil, classifyOpenError(path, fmt.Errorf("apply %s: %w", pragma, err))
+		}
+	}
+
 	// Prove the file is at least a readable SQLite database before asking
 	// whether it is ours. A read failure here is corruption, a permission
 	// problem, or contention, all of which classifyOpenError already tells
@@ -134,30 +150,33 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		return nil, classifyOpenError(path, err)
 	}
 
-	// Provenance before any pragma touches the file. journal_mode=WAL
+	// Provenance before the one pragma that touches the file. journal_mode=WAL
 	// rewrites SQLite's own 100 byte file header (the format read and write
-	// version bytes at offset 18 and 19, the low byte of the change counter
-	// at 24, and the low byte of the version-valid-for number at offset 92)
-	// and, for a database not already in WAL mode, creates -wal and -shm
-	// sidecars next to it. Both are irreversible side effects on a file this
-	// process may not own, so refuseIfForeign has to run before the pragma
-	// loop below, not after it as part of Migrate: Migrate still calls it
-	// again as its own first step, which is a second, cheap sqlite_master
-	// read on the path this check already took (now against a file already
-	// proven readable, above), and is what keeps Migrate a safe entry point
-	// on its own for a caller that does not go through Open. See issue
-	// #110 for the byte-level measurement this ordering fixes and #90 for
-	// the refusal itself.
+	// version bytes at offset 18 and 19, the low byte of the 4 byte change
+	// counter at offset 27, and the low byte of the 4 byte version-valid-for
+	// number at offset 95) and, for a database not already in WAL mode,
+	// creates -wal and -shm sidecars next to it. Both are irreversible side
+	// effects on a file this process may not own, so refuseIfForeign has to
+	// run before that pragma, not after it as part of Migrate: Migrate still
+	// calls it again as its own first step, which is a second, cheap
+	// sqlite_master read on the path this check already took (now against a
+	// file already proven readable, above), and is what keeps Migrate a safe
+	// entry point on its own for a caller that does not go through Open. See
+	// issue #110 for the byte-level measurement this ordering fixes and #90
+	// for the refusal itself.
 	if err := s.refuseIfForeign(ctx); err != nil {
 		_ = db.Close() // best effort: the refusal is what the caller needs to see
 		return nil, err
 	}
 
-	for _, pragma := range []string{pragmaJournalModeWAL, pragmaBusyTimeout, pragmaSynchronousNormal} {
-		if err := execPragmaWithRetry(ctx, db, pragma); err != nil {
-			_ = db.Close() // best effort: the pragma failure is what the caller needs to see
-			return nil, classifyOpenError(path, fmt.Errorf("apply %s: %w", pragma, err))
-		}
+	// journal_mode=WAL runs alone and last among the pragmas, once both
+	// provenance and readability are settled: it is the one pragma that
+	// converts the file, and execPragmaWithRetry's own retry loop is its
+	// backstop against the exclusive lock the conversion needs, which
+	// busy_timeout's ordinary wait does not fully cover. See pragmaRetries.
+	if err := execPragmaWithRetry(ctx, db, pragmaJournalModeWAL); err != nil {
+		_ = db.Close() // best effort: the pragma failure is what the caller needs to see
+		return nil, classifyOpenError(path, fmt.Errorf("apply %s: %w", pragmaJournalModeWAL, err))
 	}
 
 	if err := s.Migrate(ctx); err != nil {

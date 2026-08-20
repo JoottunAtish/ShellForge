@@ -4433,10 +4433,10 @@ the record and the code.
 Issue #110. `store.Open` used to run `PRAGMA journal_mode=WAL` before
 `Migrate` ever looked at the file, so a database `Migrate` went on to refuse
 under #90 had already had its 100 byte header rewritten (the format
-read/write version bytes at offset 18 and 19, the low byte of the change
-counter at offset 24, and the low byte of the version-valid-for number at
-offset 92) and, for a database not already in WAL mode, had already grown
-`-wal` and `-shm` sidecars. Neither is a write to a table, but both are
+read/write version bytes at offset 18 and 19, the low byte of the 4 byte
+change counter at offset 27, and the low byte of the 4 byte version-valid-for
+number at offset 95) and, for a database not already in WAL mode, had already
+grown `-wal` and `-shm` sidecars. Neither is a write to a table, but both are
 irreversible side effects on a file this process may not own.
 
 - **`refuseIfForeign` now runs before the pragma loop**, inside `Open`
@@ -4467,6 +4467,22 @@ irreversible side effects on a file this process may not own.
 - **`TestOpenOnAContendedConversionReportsInUseAndRetries` and
   `TestOpenLeavesAForeignDatabaseModeUnchanged`** both still pass, unedited,
   including under `-race`.
+- **A second interaction, caught by review rather than by a failing test.**
+  `busy_timeout` used to be set before `refuseIfForeign` ever ran, back when
+  all three pragmas preceded the identity check, so every read inside it
+  benefited from SQLite's busy handler. Moving the identity check first meant
+  those reads ran with no busy handler set at all: a genuine contention
+  window, though narrower than the one `execPragmaWithRetry` exists for,
+  since an ordinary `SELECT` only needs a shared lock while the WAL
+  conversion needs an exclusive one. `Open` now applies `busy_timeout` and
+  `synchronous` ahead of every read, and leaves `journal_mode=WAL` as the
+  sole pragma that waits for provenance, since it is the only one that
+  touches the file. No existing test exercised this gap; none was added
+  either, since constructing a fixture that holds the specific PENDING or
+  EXCLUSIVE lock a shared-lock read contends against, rather than the
+  RESERVED lock `TestOpenOnAContendedConversionReportsInUseAndRetries`
+  already holds, is a fragile timing-dependent test for a narrow window the
+  ordering fix removes outright.
 - **Gates run on this host:** `gofmt -s -w .`, `go vet ./...`,
   `go build ./...`, `go test ./...`, `go test -race ./internal/store/...`,
   `go test ./internal/archtest/...`, `./scripts/check-punctuation.sh`,
