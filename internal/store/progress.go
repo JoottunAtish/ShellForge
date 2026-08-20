@@ -134,10 +134,12 @@ func timeFromNullable(n sql.NullInt64) time.Time {
 	return time.Unix(n.Int64, 0).UTC()
 }
 
-// EnsureProfile returns the single profile row this database holds,
-// creating it with name if none exists yet. Once a profile exists, later
-// calls return that same row and ignore name: this database holds exactly
-// one profile, and its identity is fixed by whichever call created it.
+// EnsureProfile returns the single profile row this database holds. The
+// row is created, with name, only when the profile table is empty: the
+// insert and the emptiness check are one atomic statement, so this
+// database always holds exactly one profile even when two callers make
+// their first call concurrently with different names. Later calls return
+// that same row and ignore name.
 func (s *Store) EnsureProfile(ctx context.Context, name string) (Profile, error) {
 	read := func() (Profile, error) {
 		var p Profile
@@ -159,7 +161,7 @@ func (s *Store) EnsureProfile(ctx context.Context, name string) (Profile, error)
 	}
 
 	if _, err := s.db.ExecContext(ctx,
-		"INSERT INTO profile (name, created_at) VALUES (?, ?) ON CONFLICT(name) DO NOTHING",
+		"INSERT INTO profile (name, created_at) SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM profile)",
 		name, time.Now().Unix(),
 	); err != nil {
 		return Profile{}, fmt.Errorf("insert profile %q: %w", name, err)
@@ -273,7 +275,9 @@ func (s *Store) SetLevelStatus(ctx context.Context, profileID int64, packID, lev
 // StartAttempt records a new attempt row for profileID on levelID and
 // advances level_state to in_progress, incrementing attempts by one. It
 // returns the new attempt's id. attempts is incremented only here, never
-// anywhere else in this package.
+// anywhere else in this package. Marking the level in_progress here,
+// unconditionally, is the ticket-specified behavior: a fresh attempt
+// always supersedes whatever status came before it, passed included.
 func (s *Store) StartAttempt(ctx context.Context, profileID int64, packID, levelID string, levelVersion int, startedAt time.Time) (int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -370,8 +374,18 @@ func (s *Store) FinishAttempt(ctx context.Context, id int64, a Attempt) error {
 	var elapsedSeconds int64
 	if endedUnix.Valid && storedStartedAt.Valid {
 		elapsedSeconds = endedUnix.Int64 - storedStartedAt.Int64
+		if elapsedSeconds < 0 {
+			// A caller clock adjustment could place ended before started;
+			// never let that drive total_seconds negative.
+			elapsedSeconds = 0
+		}
 	}
 
+	// Outcome maps to level status. Abandoned leaves the level in_progress:
+	// this API records what happened and does not keep a previously passed
+	// level marked passed across a later attempt. Preserving passed across
+	// re-attempts is the orchestrator's policy, out of scope for this
+	// ticket; best_score and first_passed_at are preserved regardless.
 	var firstPassedCandidate sql.NullInt64
 	var newStatus LevelStatus
 	switch a.Outcome {

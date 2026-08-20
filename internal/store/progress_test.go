@@ -511,6 +511,7 @@ func TestConcurrentWritesFromTwoStoreHandles(t *testing.T) {
 	}
 
 	const iterations = 25
+	levelIDs := []string{"nav-01", "nav-02"}
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var errs []error
@@ -539,12 +540,24 @@ func TestConcurrentWritesFromTwoStoreHandles(t *testing.T) {
 	}
 
 	wg.Add(2)
-	go run(s1, "nav-01")
-	go run(s2, "nav-02")
+	go run(s1, levelIDs[0])
+	go run(s2, levelIDs[1])
 	wg.Wait()
 
 	for _, err := range errs {
 		t.Errorf("concurrent write error: %v", err)
+	}
+
+	// Both handles wrote through to the same database: not just "no
+	// errors", but the rows both goroutines' StartAttempt calls inserted
+	// are actually all there, and each distinct level_id got its own
+	// level_state row rather than colliding or being dropped.
+	wantAttempts := len(levelIDs) * iterations
+	if n := countRows(t, s1.DB(), "attempt"); n != wantAttempts {
+		t.Errorf("attempt row count = %d, want %d (%d goroutines x %d StartAttempt calls each)", n, wantAttempts, len(levelIDs), iterations)
+	}
+	if n := countRows(t, s1.DB(), "level_state"); n != len(levelIDs) {
+		t.Errorf("level_state row count = %d, want %d (one row per distinct profile_id, level_id pair written)", n, len(levelIDs))
 	}
 }
 
