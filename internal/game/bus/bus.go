@@ -127,7 +127,11 @@ func (b *Bus) Subscribe(name string, fn Handler) (unsubscribe func()) {
 }
 
 // Publish delivers ev to every current subscriber, in subscription order,
-// and returns only after all of them have run.
+// and returns only after all of them have run. This "returns after the last
+// handler" guarantee applies to the dispatching call, the one that found no
+// dispatch already in progress. A Publish called concurrently from another
+// goroutine while a dispatch is in flight enqueues its event and returns
+// before that event has been delivered (see below).
 //
 // If a subscriber, while running, calls Publish again (directly, or on
 // another goroutine while this dispatch is still in flight), that call does
@@ -198,7 +202,8 @@ func (b *Bus) Publish(ctx context.Context, ev Event) {
 			return
 		}
 		ev = b.queue[0]
-		b.queue = b.queue[1:]
+		b.queue[0] = nil      // drop the reference so a delivered event, which may
+		b.queue = b.queue[1:] // hold CommandExecuted.Raw, is not retained by the backing array
 	}
 }
 

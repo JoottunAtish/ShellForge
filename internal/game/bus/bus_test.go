@@ -143,7 +143,9 @@ func TestPanickingSubscriberIsContainedAndReportedWithoutLeakingPayload(t *testi
 	if len(gotStack) == 0 {
 		t.Fatal("stack is empty, want a non-empty stack trace")
 	}
-	if strings.Contains(gotName, "SECRET-TOKEN") || strings.Contains(sprintAny(gotRecovered), "SECRET-TOKEN") {
+	if strings.Contains(gotName, "SECRET-TOKEN") ||
+		strings.Contains(sprintAny(gotRecovered), "SECRET-TOKEN") ||
+		strings.Contains(string(gotStack), "SECRET-TOKEN") {
 		t.Fatal("the error report leaks CommandExecuted.Raw, which is secret material")
 	}
 }
