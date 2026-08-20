@@ -230,22 +230,25 @@ func TestOpenRefusesAForeignDatabase(t *testing.T) {
 }
 
 // TestOpenLeavesAForeignDatabaseUntouched is the measured version of the
-// byte-identity criterion, per plan90.md item 6 step B. The measurement (run
-// before any #90 code existed, using this package's own already-shipped
-// execPragmaWithRetry directly) found: length identical at 8192 bytes before
-// and after; differing bytes only at offsets 18, 19, 27, and 95; nothing at
-// or above offset 100 differed. That matches SQLite's own 100 byte file
-// header ending exactly at offset 100 and confirms Finding 2: Open's own
-// PRAGMA journal_mode=WAL runs before Migrate ever sees the file, and
-// converting a delete-mode database to WAL rewrites the file-format version
-// bytes at offsets 18 and 19, the change counter at 24-27, and the
-// version-valid-for number at 92-95. That conversion is done by the time
-// this refusal runs and cannot be undone without leaving the database in
-// delete mode, which needs the identity gate to run before the WAL pragma:
-// a bigger change than either #90 or #92 makes, filed as a follow-up. So
-// this test asserts precisely what is true rather than literal byte
-// identity: the length is unchanged, everything from offset 100 onward is
-// unchanged, and the foreign table's own schema text and rows are unchanged.
+// byte-identity criterion, per plan90.md item 6 step B, tightened to literal
+// whole-file identity by issue #110.
+//
+// Before #110, Open ran PRAGMA journal_mode=WAL before Migrate ever saw the
+// file, so a refused foreign database had already been converted: a
+// measurement taken then, using this package's own execPragmaWithRetry
+// directly, found the file-format version bytes at offsets 18 and 19, the
+// change counter at 24-27, and the version-valid-for number at 92-95 all
+// rewritten, with nothing at or above offset 100 differing, matching
+// SQLite's own 100 byte file header. This test used to assert only that
+// narrower claim, everything from offset 100 onward unchanged, because the
+// conversion below offset 100 could not be undone.
+//
+// #110 moved the identity gate ahead of the pragma loop instead, so the
+// conversion this test used to tolerate never happens against a foreign
+// database at all. The assertion below is the real criterion: the length is
+// unchanged, every byte of the file is unchanged, no -wal or -shm sidecar
+// exists afterward, and the foreign table's own schema text and rows are
+// unchanged.
 func TestOpenLeavesAForeignDatabaseUntouched(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "progress.db")
 	writeForeignDatabase(t, dbPath,

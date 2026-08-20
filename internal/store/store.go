@@ -122,7 +122,13 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	// read", so that question is settled first, with the same classifier
 	// every other read failure in this function already goes through.
 	// looksLikeOurs succeeds with a false, nil result on a fresh or empty
-	// file, so this does not disturb the adopted-as-fresh path.
+	// file, so this does not disturb the adopted-as-fresh path. It also
+	// means every successful Open now runs the same sqlite_master query
+	// three times over (here, then again inside refuseIfForeign below, then
+	// again inside Migrate's own call to refuseIfForeign): a deliberate,
+	// accepted cost, since all three reads are cheap and read-only, and
+	// splitting the question into "is this readable" and "is this ours"
+	// is what lets a corrupt file classify as corrupt instead of foreign.
 	if _, err := looksLikeOurs(ctx, db); err != nil {
 		_ = db.Close() // best effort: the classified error is what the caller needs to see
 		return nil, classifyOpenError(path, err)
