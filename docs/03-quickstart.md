@@ -57,7 +57,10 @@ off, arrives with them.
 | `shellforge map` | Not built yet. The campaign and what is still locked |
 | `shellforge stats` | Not built yet. XP, rank, streak, achievements |
 | `shellforge skip` | Not built yet. Give up on a level and move on |
-| `shellforge sandbox status` | Not built yet. Check the sandbox is healthy |
+| `shellforge sandbox status` | Check whether the sandbox is provisioned and running |
+| `shellforge sandbox shell` | Open an interactive shell inside the sandbox, with no level running |
+| `shellforge sandbox rebuild` | Destroy the sandbox, then provision it again from scratch |
+| `shellforge sandbox destroy` | Remove the sandbox. Asks you to type the sandbox name first, unless you pass `--yes` |
 
 ## Scoring, briefly
 

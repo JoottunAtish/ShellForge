@@ -17,11 +17,11 @@ import "github.com/creack/pty"
 // learner's shell, so surfacing the real cause here costs nothing a caller
 // was relying on.
 //
-// TODO(v0.2): no issue tracks a real Windows ConPTY resize implementation
-// yet. #68, which this comment used to point at, landed on main in 3a6ff31
+// TODO(v0.2): a real Windows ConPTY implementation, for Attach and for this
+// Resize, is issue #138, filed while implementing #71 for exactly this gap.
+// #68, which this comment used to point at, landed on main in 3a6ff31
 // (PR #131) as the SIGWINCH watcher's Windows console-mode groundwork and
-// does not touch this gap; file a fresh issue before starting that work
-// rather than reusing #68's number.
+// does not touch this gap, so do not reuse its number.
 func (p *wslPTY) Resize(rows, cols uint16) error {
 	return pty.ErrUnsupported
 }
