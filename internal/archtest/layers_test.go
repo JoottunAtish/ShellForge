@@ -22,7 +22,8 @@ const modulePath = "github.com/JoottunAtish/ShellForge"
 var layers = map[string]int{
 	"cmd/shellforge": 5,
 
-	"internal/game": 4,
+	"internal/game":     4,
+	"internal/game/bus": 4,
 
 	"internal/content":           3,
 	"internal/content/setup":     3,
