@@ -84,7 +84,7 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/goccy/go-yaml v1.19.2
 	github.com/spf13/cobra v1.10.2
-	golang.org/x/sys v0.34.0
+	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.33.0
 	modernc.org/sqlite v1.38.0
 )
