@@ -58,8 +58,9 @@ var layers = map[string]int{
 	// embed packs/core-linux-basics from three directories away.
 	"packs": 0,
 
-	// The test itself sits outside the layering.
-	"internal/archtest": 99,
+	// Governance tests over the whole module sit outside the layering.
+	"internal/archtest":  99,
+	"internal/docanchor": 99,
 }
 
 // runtimeImplPrefix marks the runtime backend implementations. Only the
