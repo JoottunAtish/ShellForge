@@ -27,13 +27,13 @@ formally cut.
 | Shell instrumentation | `instrument.bash` written, and exercised by every learner shell CI's golden run provisions, including the missing-SF_STATE recovery path added in this PR. Not exercised on a developer machine here, for the same reason. |
 | Content pack | `pack.yaml` with six acts declared, and nine levels written: `nav-01` to `nav-04`, `files-01` to `files-04` (issue #54), and `pipe-05`. They validate clean, are embedded via `packs/packs.go`, and are all reachable from `shellforge run`. `pipe-05` is out of curriculum order on purpose: it is the engine's reference fixture, the level `docs/LEVEL-FORMAT.md` section 6 is written against, and the first whose world comes from committed assets rather than inline content. The golden contract has run all nine against a real container in CI's Sandbox image job, which found and fixed four real bugs (see the current-state line above); no developer machine here has a Docker socket, so CI rather than a person is the witness. Levels 9 to 25 are Day 5. |
 | Level assets | First three committed: `assets/app-1.log`, `app-2.log`, `billing.log`, for pipe-05. They were produced by a deterministic generator rather than hand written, so their numbers came from code that already had consistency tests; that generator lived in `internal/sandbox/demo_level.go` and was deleted with it under #96, which changes nothing about the committed bytes. The durable guarantee always was `internal/content/pipe05_assets_test.go`, not the generator: five tests count the answers out of the committed bytes the way the level's solution counts them, including one that catches a noise line matching `error` case-insensitively without being an ERROR record. |
-| `internal/game` | A thin `Session`: load, setup, brief, check, teardown, and nothing else. It declares its own `Verifier` interface so it is testable with a two-method fake, borrows the `runtime.Session` it is given and never closes it, and holds the only `content.CheckSpec` to `verify.Spec` conversion, which has to sit above both peers. No event bus, no scoring, no unlock state, no store writes: all Day 4. |
+| `internal/game` | A thin `Session`: load, setup, brief, check, teardown, and nothing else. It declares its own `Verifier` interface so it is testable with a two-method fake, borrows the `runtime.Session` it is given and never closes it, and holds the only `content.CheckSpec` to `verify.Spec` conversion, which has to sit above both peers. The event bus now exists as `internal/game/bus`: a synchronous, typed, in-memory dispatcher for the seven domain events, standard library only, with panics contained per subscriber and nested publishes drained in order under a bounded dispatch depth. It is not wired into the orchestrator yet. No scoring, no unlock state, no store writes: all still Day 4. |
 | Pack loading and validation | Done in `internal/content` (issue #53). `LoadPack`, `Embedded`, `Pack.Level`, `Pack.Order`, and `Validate` with a `TypeChecker` the caller supplies, so `internal/content` and `internal/verify` stay peers rather than one importing the other. `shellforge author validate <pack>` reports every problem one per line and supports `--json`. A legal `command_matched` or `command_not_matched` check now gets a warning naming issue #88: no runtime session wires a real journal yet, so the check verifies nothing until then, and the validator says so rather than staying quiet. |
 | Level setup and teardown runner | Done in `internal/content/setup` (issue #50). `Runner.Setup`, `Teardown`, and `IsSetUp` materialize and remove a level's world inside the sandbox: teardown-first idempotency, a `loglines` content generator behind a registered kind, CRLF stripping on the host side before a `runtime.FileEntry` is built, rollback on any failure via `context.WithoutCancel`, and a `SETUP_OK` sentinel written under the state directory rather than the level root. Not wired into the game orchestrator or the CLI: no caller constructs a `Runner` yet outside its own tests. That wiring, plus the pack loader and validator that produce a real `content.Level`, is #52, #53, and #54. |
 | Runtimes | `Runtime` and `Session` interfaces plus their value types and sentinel errors are defined in `internal/runtime`, the reusable contract suite is in `internal/runtime/runtimetest`, and `internal/runtime/docker` implements both by shelling out to the `docker` CLI. The contract suite is green against it on Windows with Docker Desktop's Linux engine, except one subtest documented below. `internal/runtime/wsl` (issue #69) now implements both by shelling out to `wsl.exe`: `New`, `Provision`, `Destroy`, `Status`, `StartSession`, `Capabilities`, and a `Session` with `Exec`, `Attach`, `PushFiles`, `PullFile`. The UTF-16LE decoder, the seven install directory refusals, both Destroy name refusals, the marker check, the enumerate-and-diff guard, the digest and name-collision refusals, and every argv construction are asserted and green on Linux CI. The contract suite wired against it (`TestWslContract`) skips everywhere this run and CI can reach: no `wsl.exe`, no Windows, and no WSL2 on either CI leg. A human on real Windows 11 with WSL2 still owes the thirteen contract assertions passing for real, the hardening probes seeing a genuinely imported distribution, and the install directory (`.vhdx` included) actually gone after `Destroy`, confirmed in Explorer. See the Day 3 entry below for the full list of what is asserted in code versus what still needs that human. |
 | PTY multiplexer and OSC parser | Both done. Parser: streaming OSC 133 and OSC 7 state machine, fuzzed, with a recorded vim session passing through byte-identical. Multiplexer (`internal/pty/mux.go`): host stdin forwarded to the sandbox verbatim including Ctrl-C, host terminal raw mode restored across every exit path including a panic, initial resize plus SIGWINCH on unix, and CommandEvent assembly from the marker stream. `CommandEvent.Raw` is always empty pending #51. Windows resize watching (issue #68) polls `GetConsoleScreenBufferInfo` through the same injectable `getSize`/`resize` fields the unix watcher uses, every 250ms by default, and forwards a change the same way SIGWINCH does on unix. |
 | Verification engine | Done in `internal/verify` (issue #52). `Engine`, `NewEngine`, `WithCheckTimeout`, `WithLevelTimeout`, `Build` and `Run`, the `any_of`/`all_of`/`not` composition nodes, and `LevelResult` matching `docs/LEVEL-FORMAT.md` section 5 field for field. Checks are built once at level load and run on every `check`. 262 tests and subtests. The hermetic half of the purity guarantee is `internal/verify/purity_test.go`, which asserts every check type runs only read-only commands; the filesystem-hash half is in the golden harness and needs Docker. |
-| Progress database | `internal/store` (schema, migrations) and `internal/journal` (the command journal) are both built and unit tested, per #51. Nothing calls `store.Open` outside their own tests: not wired into `cmd/shellforge`, `internal/game`, or `internal/pty`. `CommandEvent.Raw` on the host-side event stream is still always empty. Issues #92 and #90 closed two `Open` classification bugs: a missing progress database file, or one whose parent directory does not exist yet, no longer reads as corrupt, and a SQLite database Shellforge did not create is refused rather than silently adopted. See the Day 3 follow-up entry below for the byte-identity measurement this forced and the fixture change it required. |
+| Progress database | `internal/store` (schema, migrations) and `internal/journal` (the command journal) are both built and unit tested, per #51. Issue #120 adds `002_progression.sql` and `progress.go`: six new tables (`profile`, `pack`, `level_state`, `attempt`, `concept_mastery`, `achievement`) and a set of `*Store` methods, all unit tested, none wired into `cmd/shellforge`, `internal/game`, or `internal/pty` yet. `EnsureProfile` creates and returns the database's single profile row, ignoring `name` on every call after the first. `LevelState` and `LevelStates` read `level_state`, reporting a row's staleness and zeroing `BestScore` when the caller's `levelVersion` does not match what is stored, while leaving `Attempts` and `HintsUsed` as recorded. `SetLevelStatus` and `StartAttempt` upsert `level_state`; `attempts` is incremented only by `StartAttempt`. `FinishAttempt` closes an `attempt` row exactly once (`ErrNoSuchAttempt`, `ErrAttemptClosed` otherwise) and folds its counters into `level_state`: `best_score` never falls, `first_passed_at` is kept from the first pass rather than the highest score, and a level never passed reads back as `time.Time`'s zero value, not the unix epoch. `TotalXP` sums `best_score` per pack. `TestConcurrentWritesFromTwoStoreHandles` runs clean under `-race` with two `*Store` handles over one file. Two deliberate deviations from ARCHITECTURE 4.11, both called out in `002_progression.sql`'s own header: `level_state.level_version` is new, and `profile.name` is `UNIQUE` so `EnsureProfile` stays a single row. `concept_mastery` and `achievement` are created by this migration but have no Go accessors yet; nothing in this package writes to them. No Docker was needed for any of this, since it is all pure SQLite; `govulncheck` and `gosec` were not run locally, since neither is installed here, and both are left to CI. Nothing calls `store.Open` outside tests: not wired into `cmd/shellforge`, `internal/game`, or `internal/pty`. `CommandEvent.Raw` on the host-side event stream is still always empty. Issues #92 and #90 closed two `Open` classification bugs: a missing progress database file, or one whose parent directory does not exist yet, no longer reads as corrupt, and a SQLite database Shellforge did not create is refused rather than silently adopted. See the Day 3 follow-up entry below for the byte-identity measurement this forced and the fixture change it required. |
 | Documentation | Design record complete. User docs are outlines. |
 | Engineering rules | `CLAUDE.md` index plus 13 on-demand skills under `.claude/skills/` |
 | Link checker | Done, and verified to catch a broken relative link |
@@ -4413,6 +4413,307 @@ happen before it takes ownership of the fd. Declined: lifting the three
 near-identical doc-anchor gate implementations into one shared helper,
 because issue #132 already owns exactly that refactor and it does not belong
 folded into this fix round.
+
+### Day 3 follow-up, 2026-08-19: Scope moves below both packages, and the journal adapter is gone
+
+Issue #88. `internal/journal` used to declare its own `ScopeKind` and `Scope`,
+mirroring `verify.ScopeKind` and `verify.Scope` field for field and value for
+value, because layer 2 may not import layer 3 and `internal/verify` declines to
+import `internal/journal` in the other direction. The mirror worked, but it cost
+a three line translating adapter in `verifycontract_test.go` and a reflect-based
+drift test whose only job was to notice when the two copies stopped matching.
+Both are now deleted, because there is nothing left to drift.
+
+- **`internal/scope` is new, at layer 0, and imports nothing at all.** It holds
+  `ScopeKind`, `Scope`, and the constants `Level`, `LastN`, and `Last`. It exists
+  for one reason: two packages that may never import each other need to name the
+  same type, so that type has to sit underneath both. `internal/archtest`'s
+  layers table gets exactly one new entry for it and nothing else in that file
+  changed.
+- **`internal/verify.Scope` and `.ScopeKind` are now type ALIASES, not new named
+  types**, and `ScopeLevel`, `ScopeLastN`, and `ScopeLast` are the lower
+  package's constants under the old names. The distinction is the whole ticket:
+  an alias makes `verify.Scope` and `scope.Scope` one type, so
+  `*journal.Journal` satisfies `verify.JournalReader` outright. A named type
+  would compile here and silently reinstate the adapter. Every existing caller
+  of `verify.Scope`, including `internal/game`'s `noJournal` and every test that
+  builds one, compiles unchanged; that is what an alias is for.
+- **`journal.Commands` and `journal.commands` now take `scope.Scope`.** The
+  parameter is named `sc`, not `scope`, so it does not shadow the package
+  identifier the switch arms need. Nothing about the query logic moved: the three
+  arms, the ordering rationale, the non-positive `N` guard, and the `Err()`
+  behaviour are byte for byte what they were.
+- **`verifycontract_test.go` lost its adapter and its drift test, but the file
+  itself did not shrink.** It was 143 lines on main and is 156 lines on this
+  branch: slightly longer, not a fifth of its former size. The adapter type
+  and the mirror drift test are gone. What replaces them is
+  `var _ verify.JournalReader = (*journal.Journal)(nil)` with no wrapper,
+  a `var aliasProof scope.Scope = verify.Scope{...}` that fails to compile if the
+  aliases ever become named types (Go assignability needs one side unnamed, so
+  two separate named structs cannot satisfy it however identical their fields),
+  a reflect check that reports which package and name each side actually has when
+  it does break, a table pinning the three kind strings `"level"`, `"last_n"`,
+  and `"last"` because those are the level YAML surface, and one behavioural test
+  driving a real journal through the `verify.JournalReader` interface for all
+  three kinds.
+- **Both guards were confirmed to fire.** Reverting `internal/verify/check.go` to
+  self-consistent named types, so that `internal/verify` itself still builds,
+  breaks `internal/journal`'s test build in three places, not six. Two of the
+  three carry the exact message the ticket is about, at the
+  `var _ verify.JournalReader = (*journal.Journal)(nil)` line and the
+  `var reader verify.JournalReader = j` line: `*journal.Journal does not
+  implement verify.JournalReader (wrong type for method Commands)`. The third
+  is a different, equally valid guard: the `aliasProof` line fails with
+  `cannot use verify.Scope{...} as scope.Scope value in variable declaration`,
+  because Go assignability needs one side unnamed and a named `Scope` no
+  longer qualifies. A test that passes before and after a change tests
+  nothing, so this was worth checking rather than assuming.
+- **The `JournalReader` doc comment in `internal/verify/check.go` was checked
+  against #88's acceptance criteria, as asked, and found accurate.** It says
+  `internal/journal` satisfies this interface from outside the package. That
+  is literally true today because of the `Scope`/`ScopeKind` aliases, so no
+  wording change was required.
+- **One acceptance criterion in #88 cannot be met as literally worded, and was
+  not.** The ticket asks for
+  `var _ verify.JournalReader = (*journal.Journal)(nil)` in a NON-test file in
+  `internal/journal`, with no import of `internal/verify` anywhere in the
+  package. Those two halves contradict each other: naming `verify.JournalReader`
+  requires importing `internal/verify` from the file that names it, so such a
+  non-test file would itself be the upward edge the same ticket exists to remove.
+  The assertion therefore stays in the external `journal_test` package, which is
+  legal because `archtest`'s `collectImports` skips `_test.go` files. What
+  actually changed, and what "literally satisfies" was reaching for, is that the
+  assertion no longer needs a wrapper struct.
+- **Two files outside the ticket's own list were touched, both mechanically.**
+  `internal/journal/journal_test.go` is an in-package test that named the removed
+  `Scope`, `ScopeKind`, and the three constants; it now names them through
+  `scope`. `internal/journal/doc.go`'s earlier section on the level boundary
+  referred to `ScopeLevel`, `ScopeLastN`, and `ScopeLast`, identifiers this
+  package no longer has, so those names were updated in place. No sentence in
+  that section changed meaning.
+- **Left alone deliberately, with one comment correction in review.**
+  `internal/game/session.go`'s `Config.Journal` doc comment used to say a real
+  journal is not wired in because `journal.Journal` does not satisfy
+  `verify.JournalReader`. That second clause went false the moment this
+  ticket landed, so a Phase 4 review pass corrected the comment to say the
+  interface is now satisfied and that wiring a real journal into
+  `internal/game` remains separate, unstarted work. Wiring one in is still
+  not this ticket. Issue #87, the `events` table drift against
+  ARCHITECTURE.md section 4.11, is a separate ticket in the same cluster and
+  was not touched.
+- **Gates run on this host:** `gofmt -s -w .`, `go vet ./...`, `go build ./...`,
+  `go test ./...`, `go test -race ./...`, `go test ./internal/archtest/...`,
+  `./scripts/check-punctuation.sh`, `./scripts/check-allowlist-regexp.sh`,
+  `./scripts/check-links.sh`, `./scripts/check-cli-package.sh`,
+  `python3 scripts/check-ci-gates.py`, all green. `govulncheck` and `gosec` are
+  not installed here and are left to CI. No container is involved anywhere in
+  this change, so nothing was skipped for want of a Docker daemon.
+
+### Day 3 follow-up, 2026-08-19: ARCHITECTURE 4.7 and 4.11 no longer disagree
+
+Issue #87. Sections 4.7 and 4.11 described the command journal table two
+incompatible ways: 4.7 as a flat, typed `events` table, 4.11 as a singular
+`event` table keyed by `attempt_id` with an opaque `payload_json`. #51
+shipped 4.7's shape in `internal/store/schema/001_init.sql`, because only a
+flat typed table can satisfy an appended `Entry` reading back with every
+field intact, so the drift was inside the design record rather than between
+the record and the code.
+
+- **4.11's SQL block now matches the shipped schema column for column**,
+  with a paragraph explaining that `attempt_id` and `kind`, the pair that
+  would turn it into a heterogeneous log spanning commands, checks, hints,
+  achievements and resets, arrive with the Day 4 attempt model in a
+  forward-only `002_*.sql`, once `profile`, `level_state` and `attempt`
+  exist to give them something to reference and disambiguate.
+- **4.7 gains one sentence** naming the two shipped renames (`level_id` for
+  `level`, `exit_code` for `exit`) and stating that `output_sha256`,
+  `output_head` and `output_bytes` are not persisted today. Command output
+  capture is at least as sensitive as the command text and needs its own
+  privacy review before it is designed; no ticket exists for it yet, so
+  none is named.
+- **`internal/journal/doc.go`'s own paragraph on this drift** is corrected
+  from "tracked in issue #87" to say it is resolved.
+- **No schema change.** `internal/store/schema/001_init.sql` is untouched
+  and no `002_*.sql` was added. This is documentation only.
+- **Gates run on this host:** `gofmt -s -w .`, `go vet ./...`,
+  `go build ./...`, `./scripts/check-punctuation.sh`,
+  `./scripts/check-links.sh`, all green. No Go logic changed, so the full
+  test suite was also run as a sanity check rather than because this ticket
+  needed it to pass: it did.
+
+### Day 3 follow-up, 2026-08-19: the WAL pragma no longer runs on an unidentified database
+
+Issue #110. `store.Open` used to run `PRAGMA journal_mode=WAL` before
+`Migrate` ever looked at the file, so a database `Migrate` went on to refuse
+under #90 had already had its 100 byte header rewritten (the format
+read/write version bytes at offset 18 and 19, the low byte of the 4 byte
+change counter at offset 27, and the low byte of the 4 byte version-valid-for
+number at offset 95) and, for a database not already in WAL mode, had already
+grown `-wal` and `-shm` sidecars. Neither is a write to a table, but both are
+irreversible side effects on a file this process may not own.
+
+- **`refuseIfForeign` now runs before the pragma loop**, inside `Open`
+  rather than only inside `Migrate`. `Migrate` still calls it again as its
+  own first step, a second cheap `sqlite_master` read that keeps `Migrate`
+  a safe entry point for a caller that does not go through `Open`.
+- **A real interaction the ticket did not name, found by testing rather
+  than assumed away.** Moving the identity check first meant it was also
+  the *first* thing to touch a corrupt file, and `refuseIfForeign` fails
+  closed on any read error by returning `anchorForeignDatabase` (rule 8 in
+  the `destructive-safety` skill, pinned by
+  `TestRefuseIfForeignFailsClosedWhenItCannotRead`, which is correct and
+  untouched). That turned `TestOpenOnACorruptFileFails` red: a garbage file
+  was reported as foreign rather than corrupt, telling the learner to run
+  `shellforge doctor` instead of the far more useful "rename it and
+  Shellforge will start a new progress file." Fixed by proving the file is
+  at least readable SQLite, via `looksLikeOurs` and `classifyOpenError`,
+  before asking whether it is ours at all: a read failure there is
+  corruption, a permission problem, or contention, none of which is "not
+  ours," and `classifyOpenError` already tells them apart. `looksLikeOurs`
+  succeeds with `false, nil` on a fresh or empty file, so the adopted-as-
+  fresh path is undisturbed, and the extra read only costs anything on a
+  database that was never going to open successfully anyway.
+- **`TestOpenLeavesAForeignDatabaseUntouched`'s assertion tightened** from
+  `after[100:]` against `before[100:]` to the whole file, and a new
+  assertion in the same test confirms no `-wal` or `-shm` sidecar exists
+  next to a foreign database after a refused `Open`.
+- **`TestOpenOnAContendedConversionReportsInUseAndRetries` and
+  `TestOpenLeavesAForeignDatabaseModeUnchanged`** both still pass, unedited,
+  including under `-race`.
+- **A second interaction, caught by review rather than by a failing test.**
+  `busy_timeout` used to be set before `refuseIfForeign` ever ran, back when
+  all three pragmas preceded the identity check, so every read inside it
+  benefited from SQLite's busy handler. Moving the identity check first meant
+  those reads ran with no busy handler set at all: a genuine contention
+  window, though narrower than the one `execPragmaWithRetry` exists for,
+  since an ordinary `SELECT` only needs a shared lock while the WAL
+  conversion needs an exclusive one. `Open` now applies `busy_timeout` and
+  `synchronous` ahead of every read, and leaves `journal_mode=WAL` as the
+  sole pragma that waits for provenance, since it is the only one that
+  touches the file. No existing test exercised this gap; none was added
+  either, since constructing a fixture that holds the specific PENDING or
+  EXCLUSIVE lock a shared-lock read contends against, rather than the
+  RESERVED lock `TestOpenOnAContendedConversionReportsInUseAndRetries`
+  already holds, is a fragile timing-dependent test for a narrow window the
+  ordering fix removes outright.
+- **Gates run on this host:** `gofmt -s -w .`, `go vet ./...`,
+  `go build ./...`, `go test ./...`, `go test -race ./internal/store/...`,
+  `go test ./internal/archtest/...`, `./scripts/check-punctuation.sh`,
+  `./scripts/check-allowlist-regexp.sh`, `./scripts/check-links.sh`,
+  `python3 scripts/check-ci-gates.py`, all green. `govulncheck` and `gosec`
+  are not installed here and are left to CI. No container is involved, so
+  nothing was skipped for want of a Docker daemon.
+
+
+### 2026-08-20: progression schema and accessors (issue #120)
+
+Two new files in `internal/store`: `schema/002_progression.sql`, migrating any
+version 1 database to version 2, and `progress.go`, a set of `*Store` methods
+over the six tables it creates.
+
+Done:
+
+- `002_progression.sql` adds `profile`, `pack`, `level_state`, `attempt`,
+  `concept_mastery`, and `achievement`, plus `idx_mastery_due`. It writes
+  nothing to `schema_version`, since `applyMigration` already does that after
+  running the file, and it does not touch `events`, which stays 001's command
+  journal. Two deliberate departures from ARCHITECTURE 4.11, both recorded in
+  the file's own header comment: `level_state.level_version` is new, and
+  `profile.name` is `UNIQUE` so `EnsureProfile` can stay a single row. The
+  singular `event` table 4.11 names is deliberately not created here: `events`
+  from 001 is the journal, and issue #87 owns that naming contradiction, not
+  this one.
+- `progress.go` adds `EnsureProfile`, `LevelState`, `LevelStates`,
+  `SetLevelStatus`, `StartAttempt`, `FinishAttempt`, and `TotalXP`, plus the
+  `Profile`, `LevelState`, and `Attempt` types, the `LevelStatus` and
+  `Outcome` enums, and four sentinel errors (`ErrInvalidStatus`,
+  `ErrInvalidOutcome`, `ErrNoSuchAttempt`, `ErrAttemptClosed`). These are
+  plain `errors.New` values, not routed through `ux.Fail`: they are internal
+  L0 errors returned to Go callers inside this process, never printed to a
+  learner directly, so they carry no doc anchor and
+  `docs/05-troubleshooting.md` is unchanged.
+- `EnsureProfile` reads the lowest-id profile row if one exists and returns
+  it, ignoring `name`; only with no row at all does it insert one. This
+  database holds exactly one profile, its id is stable across repeated calls
+  and across a second `*Store` opened on the same file, and a later call with
+  a different name never creates a second row.
+- `LevelState` and `LevelStates` read `level_state` through one shared
+  `scanLevelState` helper so the two queries cannot drift apart. `LevelState`
+  additionally compares the stored `level_version` against the caller's: on a
+  mismatch it sets `Stale` and reports `BestScore` as zero, since a score
+  computed against a different level definition is not comparable to this
+  one, while leaving `Attempts`, `HintsUsed`, and everything else as stored.
+- `SetLevelStatus` validates its `LevelStatus` before any SQL runs and
+  upserts `level_state`. `StartAttempt` runs inside a transaction: an
+  `attempt` insert, then a `level_state` upsert that increments `attempts` by
+  one on conflict; `attempts` is incremented nowhere else in this package.
+- `FinishAttempt` validates its `Outcome` before opening a transaction, then
+  in one transaction: refuses `ErrNoSuchAttempt` or `ErrAttemptClosed`
+  without writing anything, closes the `attempt` row, and folds its counters
+  into `level_state`. `best_score` is a running `MAX`, never falls on a lower
+  later score. `first_passed_at` is `COALESCE`d against the existing value,
+  so the first pass is kept even if a later, higher-scoring pass follows it.
+  `total_seconds` accumulates `ended_at - started_at` per attempt, computed
+  in Go from the `attempt` row's own `started_at` rather than reasoned about
+  inside the `UPDATE`, since `level_state` has no `started_at` column of its
+  own. A level never passed reads `FirstPassedAt` back as `time.Time`'s zero
+  value, never as the unix epoch: `nullableUnix` and `timeFromNullable` treat
+  a zero `time.Time` and a null column as the same "not recorded" state in
+  both directions.
+- `TotalXP` sums `best_score` across a profile's `level_state` rows within
+  one pack, ignoring every other pack, and returns zero for a profile with no
+  recorded levels.
+- `concept_mastery` and `achievement` are created by this migration and have
+  no Go accessors yet; nothing in this package reads or writes them.
+- Every new exported test ran red first, against stub bodies that returned a
+  sentinel `errors.New("... not implemented")` or the validation-only half of
+  a function: eleven of the twelve new test functions failed on that
+  sentinel, and `TestMigration002AppliesOverVersion1AndPreservesEvents`
+  passed immediately, since it only exercises the schema file and
+  `applyMigration`, neither of which was a stub.
+- `TestConcurrentWritesFromTwoStoreHandles` opens two `*Store` handles on one
+  file and runs `SetLevelStatus` plus `StartAttempt` from two goroutines
+  concurrently; green under `-race`.
+
+Not done, and deliberately out of scope for this ticket:
+
+- No caller anywhere uses any of this yet: not `cmd/shellforge`, not
+  `internal/game`. Wiring XP, hints, and level status into the game
+  orchestrator is separate work.
+- `EnsureProfile`'s single read-then-insert is not race-safe against two
+  concurrent first calls racing to create the row with two different names:
+  both could observe no row and both insert, since `ON CONFLICT(name) DO
+  NOTHING` only blocks a second insert of the *same* name. No test exercises
+  this, since every test and the documented contract call `EnsureProfile`
+  sequentially; noted here rather than silently relied upon.
+
+Gates run on this host: `gofmt -s -w .`, `go vet ./...`, `go test ./...`,
+`./scripts/check-punctuation.sh`, `go test -race ./internal/store/...`,
+`go test ./internal/archtest/...`, `./scripts/check-allowlist-regexp.sh`,
+`./scripts/check-links.sh`, `python3 scripts/check-ci-gates.py`, all green.
+`python3 -m pytest scripts/tests -q` could not run: no `pytest` module
+installed in this environment. `govulncheck` and `gosec` are not installed
+here either and are left to CI. No container is involved, so nothing was
+skipped for want of a Docker daemon.
+
+### Day 4, 2026-08-20: the event bus and the seven domain events
+
+Issue #121. New package `internal/game/bus`, standard library only, at layer
+L4. A closed `Event` interface (the unexported `kind()` method keeps any
+package outside `bus` from adding an event the switch statements do not
+know), seven event structs, and a `Bus` whose `Publish` is synchronous and in
+subscription order. Re-entrancy is handled by a per-dispatch queue rather
+than a lock held across fan-out: a `Publish` that arrives while a dispatch is
+in flight, whether nested from inside a handler or concurrent from another
+goroutine, enqueues its event and returns, and the one active dispatcher
+drains the queue in publish order before returning. A runaway republish loop
+is bounded at 1000 events per top-level dispatch and reported through the
+error handler rather than hanging. A panicking subscriber is recovered per
+handler, the siblings still run, and the reporter is handed the subscriber
+name and stack only, never the event, because `CommandExecuted.Raw` is secret
+material. Registered in `internal/archtest`'s layer map at L4. Not wired into
+the orchestrator: that is a later Day 4 task.
+
 
 ## Day 6: hardening, CI, packaging
 

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/JoottunAtish/ShellForge/internal/runtime"
+	"github.com/JoottunAtish/ShellForge/internal/scope"
 )
 
 // Status is the outcome of running one Check.
@@ -195,29 +196,35 @@ type Factory func(s Spec) (Check, error)
 type JournalReader interface {
 	// Commands returns the commands in scope, in the order the learner ran
 	// them.
-	Commands(scope Scope) []string
+	Commands(s Scope) []string
 }
 
-// ScopeKind selects which slice of journal history a journal check reads.
-type ScopeKind string
+// Scope and ScopeKind are ALIASES for the types in internal/scope, not new
+// named types. That distinction is the whole point: an alias makes
+// verify.Scope and scope.Scope one type, so *journal.Journal satisfies
+// JournalReader above with no adapter translating between two lookalike
+// structs. A named type (type Scope scope.Scope) would compile here and
+// silently put the adapter back. See internal/scope/doc.go.
+type (
+	// Scope selects which commands a journal check reads. N is meaningful
+	// only when Kind is ScopeLastN.
+	Scope = scope.Scope
+
+	// ScopeKind selects which slice of journal history a journal check
+	// reads.
+	ScopeKind = scope.ScopeKind
+)
 
 const (
 	// ScopeLevel is every command run since the level started.
-	ScopeLevel ScopeKind = "level"
+	ScopeLevel = scope.Level
 
 	// ScopeLastN is the most recent N commands.
-	ScopeLastN ScopeKind = "last_n"
+	ScopeLastN = scope.LastN
 
 	// ScopeLast is only the most recent command.
-	ScopeLast ScopeKind = "last"
+	ScopeLast = scope.Last
 )
-
-// Scope selects which commands a journal check reads. N is meaningful only
-// when Kind is ScopeLastN.
-type Scope struct {
-	Kind ScopeKind
-	N    int
-}
 
 // factoryError wraps err with the check type and id, so a pack loading
 // failure names which check and which type could not be built.

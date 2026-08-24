@@ -22,7 +22,8 @@ const modulePath = "github.com/JoottunAtish/ShellForge"
 var layers = map[string]int{
 	"cmd/shellforge": 5,
 
-	"internal/game": 4,
+	"internal/game":     4,
+	"internal/game/bus": 4,
 
 	"internal/content":           3,
 	"internal/content/setup":     3,
@@ -46,6 +47,7 @@ var layers = map[string]int{
 	"internal/platform":    0,
 	"internal/platform/ux": 0,
 	"internal/doctor":      0,
+	"internal/scope":       0,
 
 	// The shipped content packs, embedded into the binary. It is data, not
 	// a layer: one embed.FS, one string constant, no behaviour, and no
