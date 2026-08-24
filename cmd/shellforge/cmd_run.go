@@ -365,6 +365,31 @@ func packFilesystem() (fs.FS, error) {
 	return packFS, nil
 }
 
+// failUnlessAlreadyUserFacing returns err unchanged when the layer below
+// already classified it, so a specific remediation and doc anchor are not
+// replaced by a vaguer pair. Only an unclassified error gets wrapped.
+//
+// This exists because ux.Render resolves with errors.As, which binds the
+// OUTERMOST *ux.Error in the chain. Wrapping a classified error therefore
+// does not add context, it overwrites the better answer: a learner whose
+// Docker Desktop WSL integration was off was told to run `docker info` and
+// sent to sandbox-unhealthy, while the docker-wsl-integration-off
+// classification sat unread one level down. See issue #74.
+//
+// The remediation and anchor passed here are still the right answer for an
+// unclassified failure, which is why this is a conditional pass-through and
+// not a deletion of the wrapping.
+func failUnlessAlreadyUserFacing(op string, err error, remediation, docAnchor string) error {
+	if err == nil {
+		return nil
+	}
+	var uxErr *ux.Error
+	if errors.As(err, &uxErr) {
+		return err
+	}
+	return ux.Fail(op, err, remediation, docAnchor)
+}
+
 // openSandbox provisions the sandbox and opens a session on it.
 //
 // The returned function closes the session and is safe to defer immediately.
@@ -381,7 +406,7 @@ func openSandbox(ctx context.Context, levelID string) (runtime.Runtime, runtime.
 	fmt.Fprintln(os.Stdout, choice.Reason)
 	fmt.Fprintln(os.Stdout, "Preparing the sandbox. The first run builds the image, which takes a few minutes.")
 	if err := rt.Provision(ctx, sandbox.Spec()); err != nil {
-		return nil, nil, nil, ux.Fail(
+		return nil, nil, nil, failUnlessAlreadyUserFacing(
 			"provision the sandbox",
 			err,
 			fmt.Sprintf("Run `shellforge doctor` to check the backend this machine uses, fix anything it names, then run `shellforge run %s` again.", levelID),
@@ -396,7 +421,7 @@ func openSandbox(ctx context.Context, levelID string) (runtime.Runtime, runtime.
 		Env:      map[string]string{"SF_STATE": setupStateDir()},
 	})
 	if err != nil {
-		return nil, nil, nil, ux.Fail(
+		return nil, nil, nil, failUnlessAlreadyUserFacing(
 			"open a session on the sandbox",
 			err,
 			fmt.Sprintf("Run `shellforge sandbox status` to see whether the sandbox is running, then run `shellforge run %s` again.", levelID),
@@ -449,11 +474,11 @@ func play(ctx context.Context, opts runOptions, sess runtime.Session, lvl playab
 		// used to do, sent the learner to a page about a corrupt level when the
 		// real problem was a bad path or a failing script. A wrong link is
 		// worse than no link.
-		var uxErr *ux.Error
-		if errors.As(err, &uxErr) {
-			return err
-		}
-		return ux.Fail(
+		//
+		// This call site had the pass-through inline first. #74 generalised it
+		// into failUnlessAlreadyUserFacing and applied it to the other four,
+		// which had the same defect and no such comment.
+		return failUnlessAlreadyUserFacing(
 			fmt.Sprintf("set the level %q up", lvl.LevelID()),
 			err,
 			fmt.Sprintf("Run `shellforge run %s` again. Setup tears the level world down before rebuilding it, so a half-finished attempt cannot wedge it.", lvl.LevelID()),
@@ -464,7 +489,7 @@ func play(ctx context.Context, opts runOptions, sess runtime.Session, lvl playab
 	reqPath := path.Join(lvl.StateDir(), "control.req")
 	resPath := path.Join(lvl.StateDir(), "control.res")
 	if err := prepareControlChannel(ctx, sess, reqPath, resPath); err != nil {
-		return ux.Fail(
+		return failUnlessAlreadyUserFacing(
 			"open the control channel into the sandbox",
 			err,
 			fmt.Sprintf("Run `shellforge run %s` again. If it keeps failing, run `docker rm -f shellforge-sandbox` and let the next run rebuild it.", lvl.LevelID()),
@@ -502,7 +527,7 @@ func play(ctx context.Context, opts runOptions, sess runtime.Session, lvl playab
 		},
 	})
 	if err != nil {
-		return ux.Fail(
+		return failUnlessAlreadyUserFacing(
 			"start a shell inside the sandbox",
 			err,
 			fmt.Sprintf("Run `docker ps` to confirm the sandbox container is running, then run `shellforge run %s` again.", lvl.LevelID()),

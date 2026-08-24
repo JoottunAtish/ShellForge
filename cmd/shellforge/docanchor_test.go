@@ -49,7 +49,9 @@ func TestEveryDocAnchorInThisPackageHasAHeading(t *testing.T) {
 	for _, expr := range unverifiable {
 		t.Errorf("ux.Fail at %s passes a docAnchor this test cannot read.\n"+
 			"Pass a string literal, or a constant declared in this package and inlined here, "+
-			"so that the anchor is verifiable at build time.", expr)
+			"so that the anchor is verifiable at build time.\n"+
+			"If this is a helper that forwards its caller's anchor, add its name to "+
+			"anchorForwarders instead, so the gate follows it to the real call sites.", expr)
 	}
 
 	if len(anchors) == 0 {
@@ -104,30 +106,50 @@ func collectUxFailAnchors(t *testing.T) (anchors []string, unverifiable []string
 	consts := stringConstants(files)
 
 	for _, file := range files {
-		ast.Inspect(file, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok || !isUxFail(call.Fun) {
-				return true
-			}
-			// A call with too few arguments does not compile, so the only way
-			// to reach this is a variadic spread, which is not a shape this
-			// codebase uses. Report it rather than index out of range.
-			if len(call.Args) <= uxFailAnchorArg {
-				unverifiable = append(unverifiable, fset.Position(call.Pos()).String())
-				return true
-			}
+		// Walked per declaration so the body of a forwarder can be told apart
+		// from everywhere else. A forwarder's own ux.Fail hands on the anchor
+		// its caller supplied, so it is not a call site with an anchor of its
+		// own and must not be reported as an unreadable one.
+		for _, decl := range file.Decls {
+			fn, isFunc := decl.(*ast.FuncDecl)
+			insideForwarder := isFunc && fn.Name != nil && anchorForwarders[fn.Name.Name]
 
-			value, ok := stringValue(call.Args[uxFailAnchorArg], consts)
-			if !ok {
-				unverifiable = append(unverifiable, fset.Position(call.Pos()).String())
+			ast.Inspect(decl, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				switch {
+				case isAnchorForwarder(call.Fun):
+					// A forwarder call site carries a real anchor: check it.
+				case isUxFail(call.Fun):
+					if insideForwarder {
+						return true
+					}
+				default:
+					return true
+				}
+
+				// A call with too few arguments does not compile, so the only
+				// way to reach this is a variadic spread, which is not a shape
+				// this codebase uses. Report it rather than index out of range.
+				if len(call.Args) <= uxFailAnchorArg {
+					unverifiable = append(unverifiable, fset.Position(call.Pos()).String())
+					return true
+				}
+
+				value, ok := stringValue(call.Args[uxFailAnchorArg], consts)
+				if !ok {
+					unverifiable = append(unverifiable, fset.Position(call.Pos()).String())
+					return true
+				}
+				if value != "" && !seen[value] {
+					seen[value] = true
+					anchors = append(anchors, value)
+				}
 				return true
-			}
-			if value != "" && !seen[value] {
-				seen[value] = true
-				anchors = append(anchors, value)
-			}
-			return true
-		})
+			})
+		}
 	}
 
 	sort.Strings(anchors)
@@ -202,6 +224,28 @@ func isUxFail(fun ast.Expr) bool {
 	}
 	ident, ok := sel.X.(*ast.Ident)
 	return ok && ident.Name == "ux"
+}
+
+// anchorForwarders are functions in this package that take (op, err,
+// remediation, docAnchor) in that order and hand them to ux.Fail, so their
+// call sites carry an anchor a learner can reach and must be checked exactly
+// as a direct ux.Fail is.
+//
+// Without this the helpers would be a blind spot of precisely the kind this
+// file exists to close: converting a call site from ux.Fail to a forwarder
+// would silently remove it from the gate. An unregistered forwarder is still
+// caught: its own internal ux.Fail call passes docAnchor as a parameter,
+// which stringValue cannot resolve, so the call lands in `unverifiable` and
+// TestEveryDocAnchorInThisPackageHasAHeading fails with a message pointing
+// back here.
+var anchorForwarders = map[string]bool{
+	"failUnlessAlreadyUserFacing": true,
+}
+
+// isAnchorForwarder reports whether fun is a call to one of them.
+func isAnchorForwarder(fun ast.Expr) bool {
+	ident, ok := fun.(*ast.Ident)
+	return ok && anchorForwarders[ident.Name]
 }
 
 // troubleshootingHeadings returns a pattern matching any heading line in
