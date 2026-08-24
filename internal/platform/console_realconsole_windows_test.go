@@ -71,6 +71,9 @@ func TestEnableVirtualTerminal_RealConsoleRoundTrip(t *testing.T) {
 	if ok, detail := SupportsVirtualTerminal(); !ok {
 		t.Fatalf("SupportsVirtualTerminal() = (false, %q), want true for a real console", detail)
 	}
+	if redirected, detail := StdoutIsRedirected(); redirected {
+		t.Errorf("StdoutIsRedirected() = (true, %q), want false for a real console", detail)
+	}
 
 	restore, err := EnableVirtualTerminal()
 	if err != nil {

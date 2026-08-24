@@ -416,7 +416,7 @@ jobs:
         run: |
           set -euo pipefail
           docker tag shellforge-sandbox:ci shellforge-authortest:latest
-          go test -run '^TestEveryLevelGoldenPath$|^TestPipe05RejectsNearMisses$' -timeout 30m -v ./cmd/shellforge/...
+          go test -run '^TestEveryLevelGoldenPath$|^TestPipe05RejectsNearMisses$|^TestSandboxHasNoHostMounts$|^TestSandboxIsolationLeavesTheHostUntouched$|^TestSudoIsRefusedByNoNewPrivileges$|^TestInstrumentationEmitsMarkersForARealSession$' -timeout 30m -v ./cmd/shellforge/...
 
       - name: The rootfs tarball exports cleanly and has what WSL import needs
         # The WSL runtime verifies a sha256 before `wsl --import` and refuses on

@@ -111,14 +111,74 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	db.SetMaxIdleConns(1)
 	db.SetConnMaxLifetime(0)
 
-	for _, pragma := range []string{pragmaJournalModeWAL, pragmaBusyTimeout, pragmaSynchronousNormal} {
+	s := &Store{db: db, path: path}
+
+	// busy_timeout and synchronous first, ahead of every read below. Neither
+	// touches the file on disk: they are connection-level settings, not a
+	// format conversion, so applying them early is free and irreversible to
+	// nothing. Doing so before the reads below matters: without a busy
+	// handler set, a plain SELECT that meets contention gets an immediate
+	// SQLITE_BUSY with no wait at all, where the old ordering (all three
+	// pragmas, then the identity check) had busy_timeout active by the time
+	// any read ran. journal_mode=WAL is deliberately not in this loop; see
+	// below for why it waits.
+	for _, pragma := range []string{pragmaBusyTimeout, pragmaSynchronousNormal} {
 		if err := execPragmaWithRetry(ctx, db, pragma); err != nil {
 			_ = db.Close() // best effort: the pragma failure is what the caller needs to see
 			return nil, classifyOpenError(path, fmt.Errorf("apply %s: %w", pragma, err))
 		}
 	}
 
-	s := &Store{db: db, path: path}
+	// Prove the file is at least a readable SQLite database before asking
+	// whether it is ours. A read failure here is corruption, a permission
+	// problem, or contention, all of which classifyOpenError already tells
+	// apart, and none of which means "not ours": refuseIfForeign's own
+	// fail-closed rule (any read failure is refused as a foreign database)
+	// is correct for identity questions and wrong for "can this even be
+	// read", so that question is settled first, with the same classifier
+	// every other read failure in this function already goes through.
+	// looksLikeOurs succeeds with a false, nil result on a fresh or empty
+	// file, so this does not disturb the adopted-as-fresh path. It also
+	// means every successful Open now runs the same sqlite_master query
+	// three times over (here, then again inside refuseIfForeign below, then
+	// again inside Migrate's own call to refuseIfForeign): a deliberate,
+	// accepted cost, since all three reads are cheap and read-only, and
+	// splitting the question into "is this readable" and "is this ours"
+	// is what lets a corrupt file classify as corrupt instead of foreign.
+	if _, err := looksLikeOurs(ctx, db); err != nil {
+		_ = db.Close() // best effort: the classified error is what the caller needs to see
+		return nil, classifyOpenError(path, err)
+	}
+
+	// Provenance before the one pragma that touches the file. journal_mode=WAL
+	// rewrites SQLite's own 100 byte file header (the format read and write
+	// version bytes at offset 18 and 19, the low byte of the 4 byte change
+	// counter at offset 27, and the low byte of the 4 byte version-valid-for
+	// number at offset 95) and, for a database not already in WAL mode,
+	// creates -wal and -shm sidecars next to it. Both are irreversible side
+	// effects on a file this process may not own, so refuseIfForeign has to
+	// run before that pragma, not after it as part of Migrate: Migrate still
+	// calls it again as its own first step, which is a second, cheap
+	// sqlite_master read on the path this check already took (now against a
+	// file already proven readable, above), and is what keeps Migrate a safe
+	// entry point on its own for a caller that does not go through Open. See
+	// issue #110 for the byte-level measurement this ordering fixes and #90
+	// for the refusal itself.
+	if err := s.refuseIfForeign(ctx); err != nil {
+		_ = db.Close() // best effort: the refusal is what the caller needs to see
+		return nil, err
+	}
+
+	// journal_mode=WAL runs alone and last among the pragmas, once both
+	// provenance and readability are settled: it is the one pragma that
+	// converts the file, and execPragmaWithRetry's own retry loop is its
+	// backstop against the exclusive lock the conversion needs, which
+	// busy_timeout's ordinary wait does not fully cover. See pragmaRetries.
+	if err := execPragmaWithRetry(ctx, db, pragmaJournalModeWAL); err != nil {
+		_ = db.Close() // best effort: the pragma failure is what the caller needs to see
+		return nil, classifyOpenError(path, fmt.Errorf("apply %s: %w", pragmaJournalModeWAL, err))
+	}
+
 	if err := s.Migrate(ctx); err != nil {
 		_ = db.Close() // best effort: the migration error is what the caller needs to see
 		return nil, err
@@ -128,15 +188,15 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	// restricts, on a path this package derived itself, and it never
 	// deletes, truncates, or renames anything.
 	//
-	// Runs after Migrate rather than right after the pragma loop that
-	// creates the file, so that a database Migrate refuses, such as the
-	// one ErrForeignDatabase reports, has had nothing at all done to it:
-	// moving the chmod here, rather than making it conditional on the
-	// outcome, avoids a second sqlite_master read to decide whether to run
-	// it and avoids a signature change to Migrate. The cost is that a
-	// fresh database now sits at the process umask default for the
-	// duration of the migrations rather than for the duration of one
-	// pragma; it is inside the 0700 directory EnsureDir created
+	// Runs after Migrate rather than right after the file first comes into
+	// existence, so that a database Migrate refuses for a reason other than
+	// ErrForeignDatabase, such as ErrSchemaTooNew, has had nothing at all
+	// done to it beyond what the provenance check and the pragma loop
+	// above already do: moving the chmod here, rather than making it
+	// conditional on the outcome, avoids a signature change to Migrate. The
+	// cost is that a fresh database sits at the process umask default for
+	// the duration of the pragmas and the migrations rather than only the
+	// pragmas; it is inside the 0700 directory EnsureDir created
 	// throughout that window, and 001_init.sql creates only empty tables,
 	// so no learner data exists in the file while it is briefly widened.
 	//

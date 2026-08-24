@@ -72,14 +72,13 @@ type Config struct {
 	// Journal answers a journal check's questions about command history. Nil
 	// means a reader that reports no commands, which is the default today.
 	//
-	// Nothing wires a real journal in yet, and that is deliberate rather than
-	// pending: internal/journal's Commands takes journal.Scope, not
-	// verify.Scope, so journal.Journal does not literally satisfy
-	// verify.JournalReader. Issue #88 moves Scope down a layer to close that.
-	// Until then a no-op reader is safe, because the pack validator requires
-	// every journal check to be optional or severity: warn, so a reader that
-	// reports nothing can only fail to award a bonus objective. It can never
-	// gate passing.
+	// Issue #88 moved Scope down to internal/scope, so journal.Journal now
+	// satisfies verify.JournalReader outright. Nothing wires a real journal
+	// into internal/game yet, though; that remains a separate piece of work.
+	// Until it lands a no-op reader is safe, because the pack validator
+	// requires every journal check to be optional or severity: warn, so a
+	// reader that reports nothing can only fail to award a bonus objective.
+	// It can never gate passing.
 	Journal verify.JournalReader
 
 	// StateDir overrides SF_STATE. Empty means setup.DefaultStateDir.

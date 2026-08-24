@@ -339,8 +339,8 @@ func assertCheckPurity(ctx context.Context, sess runtime.Session, session *game.
 // hashLevelWorld returns a fingerprint of everything under root.
 //
 // It covers content AND mode, owner and size, because a check that chmods
-// without changing a byte would pass a content-only hash. That is the same
-// recipe internal/sandbox/demo_golden_test.go established.
+// without changing a byte would pass a content-only hash. That is the recipe
+// the Day 1 purity test established, before levels were data.
 //
 // It runs INSIDE the sandbox, so it physically cannot see the host filesystem,
 // and the root is passed as an argument to a fixed script rather than

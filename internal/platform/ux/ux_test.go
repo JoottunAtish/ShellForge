@@ -82,6 +82,23 @@ func TestRenderAlwaysOffersANextStep(t *testing.T) {
 	}
 }
 
+// TestDocURLOmitsTheFragmentForAnEmptyAnchor pins DocURL against ux.Render
+// drifting: Render must print no "More detail:" line when DocAnchor is
+// empty, and this is the same rule stated as a direct assertion on the
+// function outside callers need to use.
+func TestDocURLOmitsTheFragmentForAnEmptyAnchor(t *testing.T) {
+	if got := DocURL(""); got != "" {
+		t.Errorf("DocURL(\"\") = %q, want empty", got)
+	}
+	got := DocURL("wsl-not-installed")
+	if !strings.Contains(got, "docs/05-troubleshooting.md#wsl-not-installed") {
+		t.Errorf("DocURL(%q) = %q, want it to end in the anchor fragment", "wsl-not-installed", got)
+	}
+	if strings.Contains(got, "##") {
+		t.Errorf("DocURL(%q) = %q, want exactly one '#' before the anchor", "wsl-not-installed", got)
+	}
+}
+
 func TestRenderNilIsSilent(t *testing.T) {
 	var buf bytes.Buffer
 	Render(&buf, nil)

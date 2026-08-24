@@ -247,13 +247,18 @@ it. If you cannot, run `shellforge --ascii` or set `NO_COLOR=1`.
 
 ## windows-needs-wsl
 
-**You'll see:** "Could not open an interactive sandbox shell on Windows", when
-you run `shellforge run` from PowerShell or the Windows command prompt.
+**You'll see:** An error opening an interactive sandbox shell, when you run
+`shellforge run` or `shellforge sandbox shell` from PowerShell or the Windows
+command prompt.
 
-**What it means:** The Docker backend gives you a real bash prompt by allocating
-a pseudo terminal on the host, and the library that does that has no Windows
-implementation yet. Windows gets its own sandbox backend on Day 3 of the build
-plan. Until then the game runs from inside WSL, which is a real Linux host.
+**What it means:** Opening an interactive sandbox shell allocates a pseudo
+terminal on the host, and the library Shellforge uses for that has no Windows
+implementation at all. This is true of the Docker backend, and it is also true
+of the WSL backend's own interactive attach, even though the WSL backend can
+already run one-shot commands and push files into the sandbox by shelling out
+to `wsl.exe` directly. Attaching an interactive shell is the one thing that
+does not yet work natively on Windows. Until Windows console support is built,
+the game runs from inside WSL, which is a real Linux host.
 
 **Fix:**
 
@@ -263,7 +268,7 @@ plan. Until then the game runs from inside WSL, which is a real Linux host.
 
 ```bash
 go build -o bin/shellforge ./cmd/shellforge
-./bin/shellforge run demo
+./bin/shellforge run nav-01
 ```
 
 Docker Desktop's WSL integration shares one daemon between Windows and WSL, so
@@ -302,6 +307,27 @@ shellforge sandbox rebuild
 
 ---
 
+## no-runtime-available
+
+**You'll see:** `shellforge init` or `shellforge sandbox shell` reports that
+neither backend is usable on this machine.
+
+**What it means:** Shellforge needs one of two things to run the sandbox: WSL2
+on Windows, or Docker on Windows, Linux and macOS. Neither was found working.
+This is different from a single missing piece, such as Docker not being
+installed: this message means the whole search came up empty.
+
+**Fix:**
+
+1. Run `shellforge doctor`. It checks both backends and reports which one is
+   closest to working.
+2. Follow the fix `doctor` names for that backend. It will point you at one of
+   the other headings on this page, such as `docker-not-found` or
+   `wsl-not-installed`.
+3. Run `shellforge init` again.
+
+---
+
 ## rootfs-checksum-mismatch
 
 **You'll see:** `init` refuses to continue, reporting a checksum mismatch.
@@ -312,6 +338,24 @@ verifying after the fact, which would be too late.
 
 **Fix:** Run `shellforge init` again to re-download. If it happens twice, please
 open an issue with the output of `shellforge doctor --json`.
+
+---
+
+## rootfs-not-found
+
+**You'll see:** `init` reports that it cannot find the Linux system image to import.
+
+**What it means:** The Windows sandbox is built from a rootfs tarball. Shellforge
+looks for one you built yourself first, then for one it downloaded earlier. Neither
+was there.
+
+**Fix:** Build one from the repository:
+
+```bash
+make rootfs
+```
+
+That writes `images/out/rootfs.tar.gz`. Then run `shellforge init` again.
 
 ---
 

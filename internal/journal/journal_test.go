@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/JoottunAtish/ShellForge/internal/scope"
 	"github.com/JoottunAtish/ShellForge/internal/store"
 )
 
@@ -151,8 +152,8 @@ func TestCommandsForEveryScopeKind(t *testing.T) {
 
 	j.SetLevel("pipes-03", 0)
 
-	if got := j.Commands(Scope{Kind: ScopeLevel}); !equalStrings(got, []string{"grep foo", "wc -l", "cat out"}) {
-		t.Errorf("ScopeLevel = %v", got)
+	if got := j.Commands(scope.Scope{Kind: scope.Level}); !equalStrings(got, []string{"grep foo", "wc -l", "cat out"}) {
+		t.Errorf("scope.Level = %v", got)
 	}
 
 	// The regression this pins: a learner finishes pipes-03, starts nav-01,
@@ -160,7 +161,7 @@ func TestCommandsForEveryScopeKind(t *testing.T) {
 	// land in events with a higher id than any pipes-03 row, so a
 	// newest-row guess (the old, buggy behaviour) would now answer with
 	// nav-01's commands instead of pipes-03's. SetLevel still names
-	// pipes-03, so ScopeLevel must not move.
+	// pipes-03, so scope.Level must not move.
 	nav := []Entry{
 		{Seq: 1, TS: base.Add(3 * time.Second), LevelID: "nav-01", Raw: "cd quest", Cwd: "/"},
 		{Seq: 2, TS: base.Add(4 * time.Second), LevelID: "nav-01", Raw: "ls", Cwd: "/"},
@@ -170,26 +171,26 @@ func TestCommandsForEveryScopeKind(t *testing.T) {
 			t.Fatalf("Append: %v", err)
 		}
 	}
-	if got := j.Commands(Scope{Kind: ScopeLevel}); !equalStrings(got, []string{"grep foo", "wc -l", "cat out"}) {
-		t.Errorf("ScopeLevel after a newer level's rows arrived = %v, want unaffected", got)
+	if got := j.Commands(scope.Scope{Kind: scope.Level}); !equalStrings(got, []string{"grep foo", "wc -l", "cat out"}) {
+		t.Errorf("scope.Level after a newer level's rows arrived = %v, want unaffected", got)
 	}
 
-	if got := j.Commands(Scope{Kind: ScopeLastN, N: 2}); !equalStrings(got, []string{"cd quest", "ls"}) {
-		t.Errorf("ScopeLastN N=2 = %v", got)
+	if got := j.Commands(scope.Scope{Kind: scope.LastN, N: 2}); !equalStrings(got, []string{"cd quest", "ls"}) {
+		t.Errorf("scope.LastN N=2 = %v", got)
 	}
-	if got := j.Commands(Scope{Kind: ScopeLastN, N: 0}); len(got) != 0 {
-		t.Errorf("ScopeLastN N=0 = %v, want empty", got)
+	if got := j.Commands(scope.Scope{Kind: scope.LastN, N: 0}); len(got) != 0 {
+		t.Errorf("scope.LastN N=0 = %v, want empty", got)
 	}
-	if got := j.Commands(Scope{Kind: ScopeLastN, N: -1}); len(got) != 0 {
-		t.Errorf("ScopeLastN N=-1 = %v, want empty", got)
+	if got := j.Commands(scope.Scope{Kind: scope.LastN, N: -1}); len(got) != 0 {
+		t.Errorf("scope.LastN N=-1 = %v, want empty", got)
 	}
-	if got := j.Commands(Scope{Kind: ScopeLastN, N: 100}); !equalStrings(got, []string{"grep foo", "wc -l", "cat out", "cd quest", "ls"}) {
-		t.Errorf("ScopeLastN N=100 = %v", got)
+	if got := j.Commands(scope.Scope{Kind: scope.LastN, N: 100}); !equalStrings(got, []string{"grep foo", "wc -l", "cat out", "cd quest", "ls"}) {
+		t.Errorf("scope.LastN N=100 = %v", got)
 	}
-	if got := j.Commands(Scope{Kind: ScopeLast}); !equalStrings(got, []string{"ls"}) {
-		t.Errorf("ScopeLast = %v", got)
+	if got := j.Commands(scope.Scope{Kind: scope.Last}); !equalStrings(got, []string{"ls"}) {
+		t.Errorf("scope.Last = %v", got)
 	}
-	if got := j.Commands(Scope{Kind: "bogus"}); len(got) != 0 {
+	if got := j.Commands(scope.Scope{Kind: "bogus"}); len(got) != 0 {
 		t.Errorf("unknown kind = %v, want empty", got)
 	}
 	if j.Err() == nil {
@@ -199,7 +200,7 @@ func TestCommandsForEveryScopeKind(t *testing.T) {
 
 // TestCommandsScopeLevelWithNoLevelSetReturnsEmptyAndErr pins the removal of
 // the newest-row guess described in journal.go's SetLevel doc comment:
-// before SetLevel is ever called, ScopeLevel must answer with no commands
+// before SetLevel is ever called, scope.Level must answer with no commands
 // rather than guessing a level from whichever row happens to be newest, and
 // Err must explain why.
 func TestCommandsScopeLevelWithNoLevelSetReturnsEmptyAndErr(t *testing.T) {
@@ -209,19 +210,19 @@ func TestCommandsScopeLevelWithNoLevelSetReturnsEmptyAndErr(t *testing.T) {
 		t.Fatalf("Append: %v", err)
 	}
 
-	got := j.Commands(Scope{Kind: ScopeLevel})
+	got := j.Commands(scope.Scope{Kind: scope.Level})
 	if len(got) != 0 {
-		t.Errorf("ScopeLevel with no level set = %v, want empty", got)
+		t.Errorf("scope.Level with no level set = %v, want empty", got)
 	}
 	if j.Err() == nil {
-		t.Error("Err() is nil after ScopeLevel with no level set")
+		t.Error("Err() is nil after scope.Level with no level set")
 	}
 }
 
 func TestCommandsOnAnEmptyTableReturnsEmptyForEveryScopeKind(t *testing.T) {
 	j, _ := newTestJournal(t)
-	for _, kind := range []ScopeKind{ScopeLevel, ScopeLastN, ScopeLast} {
-		if got := j.Commands(Scope{Kind: kind, N: 5}); len(got) != 0 {
+	for _, kind := range []scope.ScopeKind{scope.Level, scope.LastN, scope.Last} {
+		if got := j.Commands(scope.Scope{Kind: kind, N: 5}); len(got) != 0 {
 			t.Errorf("kind %s on an empty table = %v, want empty", kind, got)
 		}
 	}
@@ -233,7 +234,7 @@ func TestCommandsSurfacesAQueryFailureThroughErr(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	got := j.Commands(Scope{Kind: ScopeLast})
+	got := j.Commands(scope.Scope{Kind: scope.Last})
 	if len(got) != 0 {
 		t.Errorf("Commands after Close = %v, want empty", got)
 	}

@@ -8,9 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/JoottunAtish/ShellForge/internal/content"
+	"github.com/JoottunAtish/ShellForge/internal/game"
 	"github.com/JoottunAtish/ShellForge/internal/runtime"
 	"github.com/JoottunAtish/ShellForge/internal/runtime/docker"
-	"github.com/JoottunAtish/ShellForge/internal/sandbox"
+	"github.com/JoottunAtish/ShellForge/internal/verify"
 )
 
 // The end-to-end test of the control channel, against a real container and the
@@ -70,12 +72,11 @@ func controlSession(t *testing.T, ctx context.Context) runtime.Session {
 		}
 	})
 
-	level := sandbox.Demo()
 	sess, err := rt.StartSession(ctx, runtime.SessionSpec{
-		User:     level.User(),
+		User:     sandboxUser,
 		WorkDir:  sandboxHome,
-		StateDir: level.StateDir(),
-		Env:      map[string]string{"SF_STATE": level.StateDir()},
+		StateDir: setupStateDir(),
+		Env:      map[string]string{"SF_STATE": setupStateDir()},
 	})
 	if err != nil {
 		t.Fatalf("StartSession: %v", err)
@@ -88,6 +89,14 @@ func controlSession(t *testing.T, ctx context.Context) runtime.Session {
 	return sess
 }
 
+// controlLevelID is the level this file plays.
+//
+// pipe-05 rather than any other: it has two required objectives and a solution
+// that satisfies both, so the shim's reply carries a real checklist and a real
+// verdict rather than a single line that would look the same whether the
+// engine ran or not.
+const controlLevelID = "pipe-05"
+
 // TestControlChannelAnswersTheShim is the regression test for the silent
 // `check`. It runs the real /opt/shellforge/bin/check shim inside the sandbox
 // and asserts the learner actually sees a verdict.
@@ -96,14 +105,42 @@ func TestControlChannelAnswersTheShim(t *testing.T) {
 	defer cancel()
 
 	sess := controlSession(t, ctx)
-	level := sandbox.Demo()
 
-	if err := level.Setup(ctx, sess); err != nil {
-		t.Fatalf("Setup: %v", err)
+	pack, err := content.Embedded()
+	if err != nil {
+		t.Fatalf("load the embedded pack: %v", err)
+	}
+	level, ok := pack.Level(controlLevelID)
+	if !ok {
+		t.Fatalf("%s is not in the embedded pack", controlLevelID)
+	}
+	packFS, err := goldenPackFS()
+	if err != nil {
+		t.Fatalf("root the pack filesystem: %v", err)
+	}
+	session, err := game.NewSession(game.Config{
+		Level:    level,
+		Sess:     sess,
+		PackFS:   packFS,
+		Verifier: verify.NewEngine(),
+	})
+	if err != nil {
+		t.Fatalf("build the level: %v", err)
 	}
 
-	reqPath := path.Join(level.StateDir(), "control.req")
-	resPath := path.Join(level.StateDir(), "control.res")
+	// Registered before Setup, so a Setup that fails halfway still has its
+	// partial state removed rather than left behind in the container.
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+		defer cancel()
+		_ = session.Teardown(cleanupCtx)
+	})
+	if err := session.Setup(ctx); err != nil {
+		t.Fatalf("set %s up: %v", level.ID, err)
+	}
+
+	reqPath := path.Join(session.StateDir(), "control.req")
+	resPath := path.Join(session.StateDir(), "control.res")
 	if err := prepareControlChannel(ctx, sess, reqPath, resPath); err != nil {
 		t.Fatalf("prepareControlChannel: %v", err)
 	}
@@ -113,7 +150,10 @@ func TestControlChannelAnswersTheShim(t *testing.T) {
 	served := make(chan struct{})
 	go func() {
 		defer close(served)
-		serveControlRequests(serveCtx, sess, &demoResponder{level: level, sess: sess}, reqPath, resPath)
+		// The production responder, with colour off: this test compares
+		// against plain words, and a learner with NO_COLOR set gets exactly
+		// this path.
+		serveControlRequests(serveCtx, sess, &gameResponder{session: session, level: level, color: false}, reqPath, resPath)
 	}()
 
 	// runShim invokes the shim the way the learner's shell does: through the
@@ -122,8 +162,8 @@ func TestControlChannelAnswersTheShim(t *testing.T) {
 	runShim := func(t *testing.T, verb string) string {
 		t.Helper()
 		res, err := sess.Exec(ctx, []string{"/opt/shellforge/bin/" + verb}, runtime.ExecOpts{
-			User:    level.User(),
-			Env:     map[string]string{"SF_STATE": level.StateDir()},
+			User:    sandboxUser,
+			Env:     map[string]string{"SF_STATE": session.StateDir()},
 			Timeout: 60 * time.Second,
 		})
 		if err != nil {
@@ -145,35 +185,54 @@ func TestControlChannelAnswersTheShim(t *testing.T) {
 		return out
 	}
 
+	// The verdict is a summary line inside a checklist, not the first line of
+	// the reply, so these look for the words rather than a prefix. The
+	// checklist is the point: it is what tells a learner which objective is
+	// outstanding, and a reply that carried only a verdict would pass a prefix
+	// check while telling them nothing.
+	//
 	// Before the solution, check must report a failure, and must say so out
 	// loud rather than silently.
 	got := runShim(t, "check")
-	if !strings.HasPrefix(got, "FAIL:") {
-		t.Errorf("before the solution, `check` said %q, want it to start with FAIL:", got)
+	if !strings.Contains(got, "NOT YET:") {
+		t.Errorf("before the solution, `check` said %q, want it to say NOT YET:", got)
+	}
+	if strings.Contains(got, "PASS:") {
+		t.Errorf("before the solution, `check` reported a pass: %q", got)
 	}
 
-	// Solve it the way the learner does.
-	if res, err := sess.Exec(ctx, []string{"/bin/bash", "-lc", level.Solution}, runtime.ExecOpts{
-		User: level.User(),
-		Env:  map[string]string{"HOME": "/home/learner"},
-	}); err != nil {
+	// Solve it the way the learner does, through the same helper the golden
+	// harness uses, so this test and that one cannot disagree about what
+	// running a solution means.
+	if err := applySolution(ctx, sess, level); err != nil {
 		t.Fatalf("run the solution: %v", err)
-	} else if res.ExitCode != 0 {
-		t.Fatalf("the solution exited %d: %s", res.ExitCode, res.Stderr)
+	}
+
+	// Ask the engine directly as well. If this said no, a missing PASS below
+	// would be a level or engine problem rather than the control channel
+	// problem this test exists to catch, and the failure should say which.
+	result, err := session.Check(ctx)
+	if err != nil {
+		t.Fatalf("check %s directly: %v", level.ID, err)
+	}
+	if !result.Passed {
+		t.Fatalf("%s does not pass its own solution, so this test cannot tell whether the control channel works", level.ID)
 	}
 
 	got = runShim(t, "check")
-	if !strings.HasPrefix(got, "PASS:") {
-		t.Errorf("after the solution, `check` said %q, want it to start with PASS:", got)
+	if !strings.Contains(got, "PASS:") {
+		t.Errorf("after the solution, `check` said %q, want it to say PASS:", got)
 	}
-	if !strings.Contains(got, level.Answer()) {
-		t.Errorf("the passing verdict does not mention the answer %q: %q", level.Answer(), got)
+
+	// The checklist reaches the learner too, not only the verdict.
+	if !strings.Contains(got, level.Objectives[0].Text) {
+		t.Errorf("the reply does not carry the objective checklist: %q", got)
 	}
 
 	// The channel has to survive more than one request, which is the part a
 	// single-shot implementation would pass and a real session would not.
 	got = runShim(t, "check")
-	if !strings.HasPrefix(got, "PASS:") {
+	if !strings.Contains(got, "PASS:") {
 		t.Errorf("on the third request, `check` said %q, want PASS:. The control loop does not survive repeated use.", got)
 	}
 
