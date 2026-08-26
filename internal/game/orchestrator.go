@@ -27,11 +27,28 @@ import (
 // exported method enters or exits it: there is no hint ladder this ticket.
 //
 // Locking discipline: one sync.Mutex, o.mu, guards state, closed, passed,
-// attemptID and checkCount, and is held for every Progress and bus.Publish
-// call. It is released only around the three calls that touch the sandbox:
-// Session.Setup (in Start), Session.Check (in Check), Session.Teardown (in
-// Close), and reacquired immediately afterward to record the outcome. See
-// Check and Close for what that buys when the two race.
+// attemptID, checkCount and startDone. It is held to read and write those
+// fields and for nothing else. In particular it never spans a call that
+// leaves this package: not the three sandbox calls (Session.Setup in Start,
+// Session.Check in Check, Session.Teardown in Close), not a Progress call,
+// and not a bus.Publish. Publish runs every subscriber synchronously, in the
+// publishing goroutine, so holding o.mu across it would deadlock this
+// Orchestrator outright the first time a subscriber called back into it; a
+// Progress call is sqlite, and holding a mutex across a disk write blocks
+// every other caller for nothing. Each such call is therefore made with the
+// lock released, and the lock is reacquired immediately afterward to record
+// the outcome, which means every one of those reacquisitions has to re-read
+// o.closed rather than assume it is what it was.
+//
+// Ordering, which a mutex alone cannot buy: Close must never tear the level's
+// world down while a Start is still building it, or Setup finishes afterward
+// and leaves behind a world nothing will ever remove. So a Start that reaches
+// Session.Setup registers startDone before it goes, closes it once its last
+// sandbox and store call has returned, and Close waits on it before tearing
+// anything down. Close does not wait on an in-flight Check: a check is
+// read-only in the sandbox (CLAUDE.md non-negotiable 4), so a Check that
+// finishes after a teardown has nothing left behind to remove. See Start,
+// Check and Close for what all of that buys when they race.
 
 // ErrOrchestratorClosed is returned by Start and Check once Close has run.
 // closed is set exactly once, by the first Close, and never cleared: there
@@ -111,6 +128,19 @@ type Orchestrator struct {
 	passed     bool
 	attemptID  int64
 	checkCount int
+
+	// startDone is created by the Start call that reaches Session.Setup and
+	// closed by that same call once its last sandbox and store operation has
+	// returned. Close waits on it, so that a teardown is always the last
+	// thing to touch the level's world.
+	//
+	// It is nil until such a Start begins and is left in place, closed,
+	// afterward rather than being set back to nil: at most one Start ever
+	// reaches Session.Setup, because Start is legal only from StateIdle and
+	// leaves StateIdle under the lock, so a closed channel here simply reads
+	// as "no Start is in flight any more" and every later Close receives
+	// from it without waiting.
+	startDone chan struct{}
 }
 
 // NewOrchestrator validates cfg and returns an Orchestrator ready for
@@ -143,7 +173,8 @@ func NewOrchestrator(cfg OrchestratorConfig) (*Orchestrator, error) {
 
 // level returns the level the wrapped Session is playing. A small accessor
 // rather than a repeated o.session.Level() so every call site reads the
-// same way.
+// same way. It needs no lock: o.session is set once, by NewOrchestrator, and
+// never reassigned.
 func (o *Orchestrator) level() *content.Level { return o.session.Level() }
 
 // transition moves o.state to to, after checking legalTransition. Every
@@ -175,6 +206,18 @@ func (o *Orchestrator) Passed() bool {
 	return o.passed
 }
 
+// failStart moves o to StateFailed after a step of Start failed, unless a
+// concurrent Close already won. Close owns both the state and the outcome of
+// the attempt from the moment it sets closed, and it has already torn this
+// attempt's world back down, so there is nothing left for Failed to describe.
+func (o *Orchestrator) failStart() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.closed {
+		o.transition(StateFailed)
+	}
+}
+
 // Start opens a new attempt at o's level: it materializes the level's
 // world, records the attempt, and publishes LevelStarted. Legal only from
 // StateIdle; refused everywhere else with a *TransitionError, and refused
@@ -182,7 +225,18 @@ func (o *Orchestrator) Passed() bool {
 //
 // A Session.Setup failure never opens an attempt: the store is left
 // untouched and the Orchestrator moves to StateFailed, with no retry this
-// ticket.
+// ticket. A failure after Progress.StartAttempt has already succeeded is
+// different, and records the attempt id before it returns even though the
+// call as a whole fails: StartAttempt has written a row and marked the level
+// in_progress by then, and Close has to be able to close that row rather
+// than orphan it with ended_at never set.
+//
+// A Close racing this call always wins, and waits for it rather than racing
+// it: from the moment Session.Setup begins until the last store call
+// returns, a concurrent Close blocks instead of tearing down a world that is
+// still being built. This call then finds o closed and stops. LevelStarted
+// is published after that window has closed, so a subscriber may call Close
+// from inside its handler without deadlocking.
 func (o *Orchestrator) Start(ctx context.Context) error {
 	o.mu.Lock()
 	if o.closed {
@@ -195,51 +249,70 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 		return &TransitionError{Op: "start", State: state}
 	}
 	o.transition(StateSetup)
+	inFlight := make(chan struct{})
+	o.startDone = inFlight
 	o.mu.Unlock()
 
+	// done releases a Close waiting for this call to stop touching the
+	// sandbox and the store. It runs on every path out, failures included,
+	// and is called explicitly before the final Publish so that a subscriber
+	// is free to call Close from inside its handler.
+	var once sync.Once
+	done := func() { once.Do(func() { close(inFlight) }) }
+	defer done()
+
+	lvl := o.level()
+
 	if err := o.session.Setup(ctx); err != nil {
-		o.mu.Lock()
-		// Close may have raced in while Setup ran unlocked; it always wins
-		// once it has set closed, and it already tore this attempt's world
-		// back down, so there is nothing left here for Failed to describe.
-		if !o.closed {
-			o.transition(StateFailed)
-		}
-		o.mu.Unlock()
-		return fmt.Errorf("start level %q: %w", o.level().ID, err)
+		o.failStart()
+		return fmt.Errorf("start level %q: %w", lvl.ID, err)
 	}
 
 	startedAt := o.now()
 
 	o.mu.Lock()
-	defer o.mu.Unlock()
-	if o.closed {
-		// Same race, on the success side: Setup finished after Close had
-		// already torn the world down. Opening an attempt now would open a
-		// store row for a level nobody is playing any more.
+	closed := o.closed
+	o.mu.Unlock()
+	if closed {
+		// Close raced in while Setup ran unlocked and is waiting on done to
+		// tear back down the world Setup just built. Opening an attempt now
+		// would open a store row for a level nobody is playing any more.
 		return ErrOrchestratorClosed
 	}
 
-	lvl := o.level()
 	attemptID, err := o.progress.StartAttempt(ctx, o.profileID, o.packID, lvl.ID, lvl.Version, startedAt)
 	if err != nil {
-		o.transition(StateFailed)
+		o.failStart()
 		return fmt.Errorf("start attempt for level %q: %w", lvl.ID, err)
 	}
 
+	// Recorded here, before the read-back below rather than after it. The
+	// row exists from this point on, so every path out from here has to
+	// leave Close able to find its id and finish it.
+	o.mu.Lock()
+	o.attemptID = attemptID
+	o.checkCount = 0
+	o.mu.Unlock()
+
 	levelState, ok, err := o.progress.LevelState(ctx, o.profileID, lvl.ID, lvl.Version)
 	if err != nil {
-		o.transition(StateFailed)
+		o.failStart()
 		return fmt.Errorf("read level state for %q right after starting an attempt: %w", lvl.ID, err)
 	}
 	if !ok {
-		o.transition(StateFailed)
+		o.failStart()
 		return fmt.Errorf("start level %q: no level_state row right after StartAttempt reported one written", lvl.ID)
 	}
 
-	o.attemptID = attemptID
-	o.checkCount = 0
+	o.mu.Lock()
+	if o.closed {
+		o.mu.Unlock()
+		return ErrOrchestratorClosed
+	}
 	o.transition(StateActive)
+	o.mu.Unlock()
+
+	done()
 	o.bus.Publish(ctx, bus.LevelStarted{
 		LevelID:   lvl.ID,
 		AttemptID: attemptID,
@@ -252,12 +325,16 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 // Check runs the level's checks once and returns the result. Legal only
 // from StateActive; refused everywhere else with a *TransitionError naming
 // the state that refused it, including StateChecking itself, which is how
-// a second concurrent Check finds the first still running.
+// a second concurrent Check finds the first still running. That is also
+// what a subscriber calling Check from inside a handler for this call's own
+// CheckRun gets: a refusal, promptly, rather than a deadlock.
 //
 // If Close closes the Orchestrator while this call's Session.Check is
 // running, unlocked, Close always wins: this call returns
 // ErrOrchestratorClosed and a zero LevelResult instead of publishing or
-// recording anything further. Close never waits on it.
+// recording anything further. Close never waits on it, because a check only
+// reads the sandbox and so leaves nothing behind a teardown would have to
+// remove.
 func (o *Orchestrator) Check(ctx context.Context) (verify.LevelResult, error) {
 	o.mu.Lock()
 	if o.closed {
@@ -279,16 +356,29 @@ func (o *Orchestrator) Check(ctx context.Context) (verify.LevelResult, error) {
 	result, err := o.session.Check(ctx)
 
 	o.mu.Lock()
-	defer o.mu.Unlock()
 	if o.closed {
+		o.mu.Unlock()
 		return verify.LevelResult{}, ErrOrchestratorClosed
 	}
 	if err != nil {
+		// Back to Active rather than to Failed: a check command that could
+		// not run is retryable, and does not end the attempt.
 		o.transition(StateActive)
+		o.mu.Unlock()
 		return result, fmt.Errorf("check level %q: %w", lvl.ID, err)
 	}
 
 	now := o.now()
+	// Decided and recorded under the lock, acted on with it released. A
+	// Close racing the two calls below has to see the pass this check just
+	// made, whichever of them lands first, or it would finish the attempt as
+	// abandoned while the learner was being told they had passed.
+	markPassed := result.Passed && !o.passed
+	if markPassed {
+		o.passed = true
+	}
+	o.mu.Unlock()
+
 	o.bus.Publish(ctx, bus.CheckRun{
 		LevelID:          lvl.ID,
 		AttemptID:        attemptID,
@@ -298,12 +388,19 @@ func (o *Orchestrator) Check(ctx context.Context) (verify.LevelResult, error) {
 		At:               now,
 	})
 
-	if result.Passed && !o.passed {
+	if markPassed {
 		if err := o.progress.SetLevelStatus(ctx, o.profileID, o.packID, lvl.ID, lvl.Version, store.StatusPassed); err != nil {
-			o.transition(StateActive)
+			o.mu.Lock()
+			if !o.closed {
+				// The pass was recorded above so that a racing Close could
+				// see it; it did not reach the store, so take it back and
+				// let a later check try again.
+				o.passed = false
+				o.transition(StateActive)
+			}
+			o.mu.Unlock()
 			return result, fmt.Errorf("mark level %q passed: %w", lvl.ID, err)
 		}
-		o.passed = true
 		o.bus.Publish(ctx, bus.LevelPassed{
 			LevelID:   lvl.ID,
 			AttemptID: attemptID,
@@ -312,7 +409,11 @@ func (o *Orchestrator) Check(ctx context.Context) (verify.LevelResult, error) {
 		})
 	}
 
-	o.transition(StateActive)
+	o.mu.Lock()
+	if !o.closed {
+		o.transition(StateActive)
+	}
+	o.mu.Unlock()
 	return result, nil
 }
 
@@ -331,8 +432,22 @@ func countObjectivesPassed(objectives []verify.ObjectiveResult) int {
 // Close ends the attempt, once and permanently: it tears the level's world
 // down and, if an attempt was ever opened, closes it. It is always legal,
 // from any state, and always safe to call more than once: the second and
-// every later call is a no-op that returns nil immediately, without a
-// second teardown and without a second FinishAttempt.
+// every later call is a no-op that returns nil immediately, without a second
+// teardown and without a second FinishAttempt.
+//
+// Two callers racing is fire and forget for the loser, deliberately: the
+// first caller through does the work, and every other one returns nil at
+// once rather than waiting to report the winner's teardown and FinishAttempt
+// errors as its own. A caller that needs the outcome of the teardown has to
+// be the caller that performs it.
+//
+// A Start still building the level's world is waited for rather than raced.
+// Close marks the Orchestrator closed first, which is what stops that Start
+// from opening or advancing anything further, then blocks until its last
+// sandbox and store call has returned, and only then tears down. That
+// ordering is what makes a teardown the last thing to touch the level's
+// world even when the learner interrupts the run mid-Setup. An in-flight
+// Check is not waited for: it only reads the sandbox.
 //
 // Session.Teardown and Progress.FinishAttempt are both attempted
 // unconditionally, regardless of the other's outcome, and their errors are
@@ -345,12 +460,20 @@ func (o *Orchestrator) Close(ctx context.Context) error {
 		return nil
 	}
 	o.closed = true
+	inFlight := o.startDone
+	o.mu.Unlock()
+
+	if inFlight != nil {
+		<-inFlight
+	}
+
+	o.mu.Lock()
 	o.transition(StateTeardown)
 	attemptID := o.attemptID
 	passed := o.passed
-	lvl := o.level()
 	o.mu.Unlock()
 
+	lvl := o.level()
 	teardownErr := o.session.Teardown(ctx)
 
 	var finishErr error

@@ -10,9 +10,10 @@ import "fmt"
 // production code this ticket. StateProvisioning and StateBriefing are never
 // assigned to an Orchestrator's state this ticket: provisioning a sandbox and
 // rendering a briefing both belong to a caller above this package. StateHinting
-// is reachable only through legalTransition, exercised directly by this
-// package's own tests, because no public method enters or exits it yet. See
-// orchestrator.go's package doc comment for the full transition table.
+// and StatePassed are reachable only through legalTransition, exercised
+// directly by this package's own tests, because no public method enters or
+// exits either one yet. See orchestrator.go's package doc comment for the full
+// transition table.
 type State string
 
 // The ten declared states. Ordering here is the ordering of a typical run,
@@ -25,9 +26,16 @@ const (
 	StateActive       State = "active"
 	StateChecking     State = "checking"
 	StateHinting      State = "hinting"
-	StatePassed       State = "passed"
-	StateFailed       State = "failed"
-	StateTeardown     State = "teardown"
+	// StatePassed is declared and legal in the table below, both as a
+	// destination from StateChecking and as a way back to StateActive, but
+	// no production code assigns it: Check returns to StateActive whether
+	// the level passed or not, because a learner who has just passed can
+	// keep working in the level and check again. Whether passing should
+	// come to rest in a state of its own is a scoring and next-level
+	// question, and both are out of scope this ticket.
+	StatePassed   State = "passed"
+	StateFailed   State = "failed"
+	StateTeardown State = "teardown"
 )
 
 // String returns the state's wire form, which is also its constant's value.
@@ -47,9 +55,11 @@ func (s State) String() string { return string(s) }
 //
 // The table is otherwise deliberately wider than what any exported
 // Orchestrator method exercises this ticket. Active <-> Hinting is legal
-// here even though no public method enters or exits StateHinting yet: this
-// ticket's tests reach those two edges directly, in the same package, to pin
-// the contract before any caller depends on it.
+// here even though no public method enters or exits StateHinting yet, and so
+// is Checking -> Passed, which no production code takes either: Check goes
+// back to StateActive on a pass as well as on a failure. This ticket's tests
+// reach all three edges directly, in the same package, to pin the contract
+// before any caller depends on it.
 func legalTransition(from, to State) bool {
 	if to == StateTeardown {
 		return from != StateTeardown

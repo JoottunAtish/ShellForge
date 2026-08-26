@@ -3,6 +3,7 @@ package game
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -446,6 +447,75 @@ func TestFirstCheckPassEmitsLevelPassedOnce(t *testing.T) {
 	if got := rec.countKind(bus.KindCheckRun); got != 3 {
 		t.Errorf("CheckRun published %d times over three checks, want 3", got)
 	}
+	if progress.setLevelStatusCalls != 1 {
+		t.Errorf("SetLevelStatus was called %d times over three passing checks, want 1", progress.setLevelStatusCalls)
+	}
+
+	var passedEvent *bus.LevelPassed
+	for _, ev := range rec.snapshot() {
+		if lp, ok := ev.(bus.LevelPassed); ok {
+			passedEvent = &lp
+		}
+	}
+	if passedEvent == nil {
+		t.Fatal("no LevelPassed was published")
+	}
+	if !passedEvent.FirstTry {
+		t.Error("LevelPassed.FirstTry = false for a level passed on the first check")
+	}
+}
+
+// TestLevelPassedIsNotFirstTryAfterAFailedCheck is the other half of
+// FirstTry: it is computed from this attempt's check count, so a pass that
+// arrives on the second check is not a first try.
+func TestLevelPassedIsNotFirstTryAfterAFailedCheck(t *testing.T) {
+	s, verifier, _ := newTestSession(t, Config{})
+	verifier.result = verify.LevelResult{
+		LevelID: "nav-01",
+		Passed:  false,
+		Objectives: []verify.ObjectiveResult{
+			{ID: "location", Status: verify.StatusFail},
+		},
+	}
+	progress := newFakeProgress()
+	o, _, rec := newTestOrchestrator(t, s, progress)
+
+	if err := o.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := o.Check(context.Background()); err != nil {
+		t.Fatalf("first Check: %v", err)
+	}
+	if o.Passed() {
+		t.Fatal("Passed() = true after a failing check")
+	}
+
+	verifier.result = verify.LevelResult{
+		LevelID: "nav-01",
+		Passed:  true,
+		Objectives: []verify.ObjectiveResult{
+			{ID: "location", Status: verify.StatusPass},
+		},
+	}
+	if _, err := o.Check(context.Background()); err != nil {
+		t.Fatalf("second Check: %v", err)
+	}
+
+	var passedEvent *bus.LevelPassed
+	for _, ev := range rec.snapshot() {
+		if lp, ok := ev.(bus.LevelPassed); ok {
+			passedEvent = &lp
+		}
+	}
+	if passedEvent == nil {
+		t.Fatal("no LevelPassed was published for a level passed on the second check")
+	}
+	if passedEvent.FirstTry {
+		t.Error("LevelPassed.FirstTry = true for a level that failed its first check")
+	}
+	if progress.setLevelStatusCalls != 1 {
+		t.Errorf("SetLevelStatus was called %d times, want 1", progress.setLevelStatusCalls)
+	}
 }
 
 // --- AC5 ---
@@ -649,12 +719,332 @@ func TestCheckAndCloseRace(t *testing.T) {
 	}
 }
 
-// --- legalTransition, exercised directly (Active <-> Hinting) ---
+// --- regressions found in review ---
 
-// TestLegalTransitionCoversHintingBothWays pins the two edges no exported
-// method reaches yet, so the contract is provable before any caller (the
-// hint ladder, a later ticket) depends on it.
-func TestLegalTransitionCoversHintingBothWays(t *testing.T) {
+// TestCloseFinishesAnAttemptStartCouldNotComplete covers the window between
+// Progress.StartAttempt succeeding and the rest of Start succeeding. The row
+// exists from the moment StartAttempt returns, and level_state is already
+// marked in_progress, so a Start that fails after that point still has to
+// leave Close able to close the row out. Without the attempt id recorded
+// straight away, Close skips FinishAttempt, ended_at stays NULL forever and
+// the level is stuck in_progress with no legal way back.
+func TestCloseFinishesAnAttemptStartCouldNotComplete(t *testing.T) {
+	tests := []struct {
+		name    string
+		arrange func(*fakeProgress)
+	}{
+		{
+			name:    "the level state read fails",
+			arrange: func(p *fakeProgress) { p.levelStateErr = errors.New("database is locked") },
+		},
+		{
+			name:    "the level state row is missing",
+			arrange: func(p *fakeProgress) { p.levelStateOK = false },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, _, _ := newTestSession(t, Config{})
+			progress := newFakeProgress()
+			tt.arrange(progress)
+			o, _, _ := newTestOrchestrator(t, s, progress)
+
+			if err := o.Start(context.Background()); err == nil {
+				t.Fatal("Start succeeded despite the level state read failing right after StartAttempt")
+			}
+			if progress.startAttemptCalls != 1 {
+				t.Fatalf("StartAttempt was called %d times, want 1: this test is about the window after it has already succeeded", progress.startAttemptCalls)
+			}
+			if o.State() != StateFailed {
+				t.Errorf("State() = %q after a failed Start, want %q", o.State(), StateFailed)
+			}
+
+			if err := o.Close(context.Background()); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+
+			if progress.finishAttemptCalls != 1 {
+				t.Fatalf("FinishAttempt was called %d times, want 1: StartAttempt opened a row and nothing else will ever close it", progress.finishAttemptCalls)
+			}
+			if progress.finishAttemptID != 1 {
+				t.Errorf("FinishAttempt closed attempt %d, want the one StartAttempt opened", progress.finishAttemptID)
+			}
+			if progress.finishAttemptArg.Outcome != store.OutcomeAbandoned {
+				t.Errorf("Outcome = %q, want %q", progress.finishAttemptArg.Outcome, store.OutcomeAbandoned)
+			}
+		})
+	}
+}
+
+// waitForClosed blocks until Close has marked o closed, so that a test
+// racing Close against another call can be certain the two genuinely
+// overlap rather than running one after the other. It polls, because closed
+// is guarded by o.mu and nothing signals it; the deadline exists only so
+// that a regression fails this test instead of hanging the suite.
+func waitForClosed(t *testing.T, o *Orchestrator) {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		o.mu.Lock()
+		closed := o.closed
+		o.mu.Unlock()
+		if closed {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Close did not mark the orchestrator closed within 5s")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestStartAndCloseRace is the Ctrl-C-during-Start case: a Session.Setup
+// still materializing the level's world races a concurrent Close.
+//
+// Setup writes to the sandbox, unlike Check, which only reads it, so the
+// order matters here in a way it does not for TestCheckAndCloseRace. If
+// Close tears down first and Setup finishes afterward, the learner is left
+// with a level world that nothing will ever remove: Close has already
+// returned and told its caller the world is gone, and a second Close is a
+// no-op. So the assertion is about ordering, not just about counts: the last
+// thing the sandbox sees must be the teardown's recursive delete of the
+// level root.
+func TestStartAndCloseRace(t *testing.T) {
+	sess := &fakeSession{result: runtime.ExecResult{ExitCode: 0}}
+	gate := make(chan struct{})
+	inSetup := make(chan struct{})
+	var once sync.Once
+	sess.execHook = func(argv []string) {
+		// The level root's own mkdir, which Setup runs after its unconditional
+		// teardown and before it writes anything. Blocking here holds Setup
+		// open mid-flight, exactly where an interrupted run would sit.
+		if len(argv) > 0 && argv[0] == "mkdir" {
+			once.Do(func() {
+				close(inSetup)
+				<-gate
+			})
+		}
+	}
+
+	s, err := NewSession(Config{Level: testLevel(), Sess: sess, Verifier: &fakeVerifier{}})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	progress := newFakeProgress()
+	o, _, _ := newTestOrchestrator(t, s, progress)
+
+	var startErr error
+	startDone := make(chan struct{})
+	go func() {
+		startErr = o.Start(context.Background())
+		close(startDone)
+	}()
+
+	<-inSetup // Setup is now blocked mid-flight, holding no lock.
+
+	var closeErr error
+	closeDone := make(chan struct{})
+	go func() {
+		closeErr = o.Close(context.Background())
+		close(closeDone)
+	}()
+
+	waitForClosed(t, o) // Close is committed and past the point of no return.
+	close(gate)         // Only now may Setup finish, so the two genuinely overlap.
+
+	<-startDone
+	<-closeDone
+
+	if closeErr != nil {
+		t.Errorf("Close: %v", closeErr)
+	}
+	if startErr != nil && !errors.Is(startErr, ErrOrchestratorClosed) {
+		t.Errorf("Start returned an unexpected error: %v", startErr)
+	}
+
+	sess.mu.Lock()
+	calls := make([][]string, len(sess.calls))
+	copy(calls, sess.calls)
+	teardowns := sess.teardownCalls
+	sess.mu.Unlock()
+
+	if len(calls) == 0 {
+		t.Fatal("the sandbox saw no calls at all")
+	}
+	last := calls[len(calls)-1]
+	if len(last) != 4 || last[0] != "rm" || last[1] != "-rf" || last[3] != "/home/learner/quest" {
+		t.Errorf("the last call the sandbox saw was %q, want the teardown's recursive delete of the level root: "+
+			"a Setup that finishes after Close returned leaves a level world nothing will ever remove", last)
+	}
+	if teardowns != 2 {
+		t.Errorf("the sandbox saw %d recursive deletes, want 2: the one Setup always does first, and Close's", teardowns)
+	}
+	if o.State() != StateIdle {
+		t.Errorf("State() = %q after the race settled, want %q", o.State(), StateIdle)
+	}
+	if progress.startAttemptCalls != progress.finishAttemptCalls {
+		t.Errorf("Start opened %d attempts and Close finished %d: an attempt row was left open",
+			progress.startAttemptCalls, progress.finishAttemptCalls)
+	}
+}
+
+// mustNotHang runs fn on its own goroutine and fails the test if it has not
+// returned within d. A deadlock inside the Orchestrator has to fail a test,
+// not hang the whole suite until the package timeout fires.
+func mustNotHang(t *testing.T, d time.Duration, what string, fn func()) {
+	t.Helper()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		fn()
+	}()
+	select {
+	case <-done:
+	case <-time.After(d):
+		t.Fatalf("%s did not return within %s: an Orchestrator call is deadlocked", what, d)
+	}
+}
+
+// TestSubscriberMayCallBackIntoTheOrchestrator is the re-entrancy contract.
+// bus.Bus.Publish runs every subscriber synchronously, in the publishing
+// goroutine, so an Orchestrator that published while holding its own mutex
+// would deadlock against itself the first time a subscriber asked it a
+// question, and every later call on it would then hang too. The achievement,
+// hint and scoring subscribers are all coming, so this is pinned now.
+func TestSubscriberMayCallBackIntoTheOrchestrator(t *testing.T) {
+	passing := verify.LevelResult{
+		LevelID: "nav-01",
+		Passed:  true,
+		Objectives: []verify.ObjectiveResult{
+			{ID: "location", Status: verify.StatusPass},
+		},
+	}
+
+	t.Run("a handler reads and is refused a re-entrant check", func(t *testing.T) {
+		s, verifier, _ := newTestSession(t, Config{})
+		verifier.result = passing
+		progress := newFakeProgress()
+
+		var o *Orchestrator
+		handlerErrs := make(chan error, 16)
+		b := bus.New()
+		b.Subscribe("calls-back", func(ctx context.Context, ev bus.Event) {
+			if got := o.State(); got == "" {
+				handlerErrs <- errors.New("State() reported an empty state from inside a handler")
+			}
+			o.Passed()
+			if ev.Kind() != bus.KindCheckRun {
+				return
+			}
+			// A mutating verb, from inside a handler, on the Orchestrator
+			// that is publishing. It must be refused promptly rather than
+			// block: the check that published this event is still running.
+			if _, err := o.Check(ctx); err == nil {
+				handlerErrs <- errors.New("a re-entrant Check was accepted while a check was already running")
+			} else {
+				var transErr *TransitionError
+				if !errors.As(err, &transErr) {
+					handlerErrs <- fmt.Errorf("a re-entrant Check returned %v, want a *TransitionError", err)
+				}
+			}
+		})
+
+		var err error
+		o, err = NewOrchestrator(OrchestratorConfig{
+			Session: s, Bus: b, Progress: progress, ProfileID: 1, PackID: "core-linux-basics",
+		})
+		if err != nil {
+			t.Fatalf("NewOrchestrator: %v", err)
+		}
+
+		var startErr, checkErr, closeErr error
+		mustNotHang(t, 5*time.Second, "Start", func() { startErr = o.Start(context.Background()) })
+		mustNotHang(t, 5*time.Second, "Check", func() { _, checkErr = o.Check(context.Background()) })
+		mustNotHang(t, 5*time.Second, "Close", func() { closeErr = o.Close(context.Background()) })
+
+		close(handlerErrs)
+		for err := range handlerErrs {
+			t.Error(err)
+		}
+		if startErr != nil {
+			t.Errorf("Start: %v", startErr)
+		}
+		if checkErr != nil {
+			t.Errorf("Check: %v", checkErr)
+		}
+		if closeErr != nil {
+			t.Errorf("Close: %v", closeErr)
+		}
+	})
+
+	t.Run("a handler closes the orchestrator", func(t *testing.T) {
+		s, verifier, sess := newTestSession(t, Config{})
+		verifier.result = passing
+		progress := newFakeProgress()
+
+		var o *Orchestrator
+		var closeOnce sync.Once
+		var closeFromHandlerErr error
+		b := bus.New()
+		b.Subscribe("closes", func(ctx context.Context, ev bus.Event) {
+			if ev.Kind() == bus.KindCheckRun {
+				closeOnce.Do(func() { closeFromHandlerErr = o.Close(ctx) })
+			}
+		})
+
+		var err error
+		o, err = NewOrchestrator(OrchestratorConfig{
+			Session: s, Bus: b, Progress: progress, ProfileID: 1, PackID: "core-linux-basics",
+		})
+		if err != nil {
+			t.Fatalf("NewOrchestrator: %v", err)
+		}
+
+		var startErr, checkErr error
+		mustNotHang(t, 5*time.Second, "Start", func() { startErr = o.Start(context.Background()) })
+		if startErr != nil {
+			t.Fatalf("Start: %v", startErr)
+		}
+		sess.mu.Lock()
+		before := sess.teardownCalls
+		sess.mu.Unlock()
+
+		mustNotHang(t, 5*time.Second, "Check", func() { _, checkErr = o.Check(context.Background()) })
+
+		if checkErr != nil {
+			t.Errorf("Check: %v", checkErr)
+		}
+		if closeFromHandlerErr != nil {
+			t.Errorf("Close from inside a handler: %v", closeFromHandlerErr)
+		}
+		sess.mu.Lock()
+		got := sess.teardownCalls - before
+		sess.mu.Unlock()
+		if got != 1 {
+			t.Errorf("a Close from inside a handler performed %d teardowns, want 1", got)
+		}
+		if o.State() != StateIdle {
+			t.Errorf("State() = %q, want %q", o.State(), StateIdle)
+		}
+		// The pass was recorded before CheckRun went out, so the Close the
+		// handler ran has to finish the attempt as passed, not abandoned.
+		if progress.finishAttemptArg.Outcome != store.OutcomePassed {
+			t.Errorf("Outcome = %q, want %q: a Close racing a passing check must not throw the pass away",
+				progress.finishAttemptArg.Outcome, store.OutcomePassed)
+		}
+	})
+}
+
+// --- legalTransition, exercised directly ---
+
+// TestLegalTransitionCoversTheEdgesNoMethodTakes pins the edges the table
+// declares but no exported method reaches yet, so the contract is provable
+// before any caller (the hint ladder, scoring, both later tickets) depends on
+// it.
+func TestLegalTransitionCoversTheEdgesNoMethodTakes(t *testing.T) {
 	if !legalTransition(StateActive, StateHinting) {
 		t.Error("Active -> Hinting is not legal, but the hint ladder needs it")
 	}
@@ -663,5 +1053,14 @@ func TestLegalTransitionCoversHintingBothWays(t *testing.T) {
 	}
 	if legalTransition(StateHinting, StateChecking) {
 		t.Error("Hinting -> Checking is legal; a learner must return to Active before checking again")
+	}
+	// Check itself never takes this edge: it returns to StateActive whether
+	// the level passed or not. The edge is pinned here so that the state a
+	// later scoring ticket will want is already agreed on.
+	if !legalTransition(StateChecking, StatePassed) {
+		t.Error("Checking -> Passed is not legal, but a passing check has nowhere else to come to rest")
+	}
+	if !legalTransition(StatePassed, StateActive) {
+		t.Error("Passed -> Active is not legal, but a learner may keep working in a level they have passed")
 	}
 }
