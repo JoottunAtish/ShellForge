@@ -27,7 +27,7 @@ formally cut.
 | Shell instrumentation | `instrument.bash` written, and exercised by every learner shell CI's golden run provisions, including the missing-SF_STATE recovery path added in this PR. Not exercised on a developer machine here, for the same reason. |
 | Content pack | `pack.yaml` with six acts declared, and nine levels written: `nav-01` to `nav-04`, `files-01` to `files-04` (issue #54), and `pipe-05`. They validate clean, are embedded via `packs/packs.go`, and are all reachable from `shellforge run`. `pipe-05` is out of curriculum order on purpose: it is the engine's reference fixture, the level `docs/LEVEL-FORMAT.md` section 6 is written against, and the first whose world comes from committed assets rather than inline content. The golden contract has run all nine against a real container in CI's Sandbox image job, which found and fixed four real bugs (see the current-state line above); no developer machine here has a Docker socket, so CI rather than a person is the witness. Levels 9 to 25 are Day 5. |
 | Level assets | First three committed: `assets/app-1.log`, `app-2.log`, `billing.log`, for pipe-05. They were produced by a deterministic generator rather than hand written, so their numbers came from code that already had consistency tests; that generator lived in `internal/sandbox/demo_level.go` and was deleted with it under #96, which changes nothing about the committed bytes. The durable guarantee always was `internal/content/pipe05_assets_test.go`, not the generator: five tests count the answers out of the committed bytes the way the level's solution counts them, including one that catches a noise line matching `error` case-insensitively without being an ERROR record. |
-| `internal/game` | A thin `Session`: load, setup, brief, check, teardown, and nothing else. It declares its own `Verifier` interface so it is testable with a two-method fake, borrows the `runtime.Session` it is given and never closes it, and holds the only `content.CheckSpec` to `verify.Spec` conversion, which has to sit above both peers. The event bus now exists as `internal/game/bus`: a synchronous, typed, in-memory dispatcher for the seven domain events, standard library only, with panics contained per subscriber and nested publishes drained in order under a bounded dispatch depth. It is not wired into the orchestrator yet. No scoring, no unlock state, no store writes: all still Day 4. |
+| `internal/game` | A thin `Session`: load, setup, brief, check, teardown, and nothing else. It declares its own `Verifier` interface so it is testable with a two-method fake, borrows the `runtime.Session` it is given and never closes it, and holds the only `content.CheckSpec` to `verify.Spec` conversion, which has to sit above both peers. The event bus exists as `internal/game/bus`: a synchronous, typed, in-memory dispatcher for the seven domain events, standard library only, with panics contained per subscriber and nested publishes drained in order under a bounded dispatch depth. Issue #122 adds the Session Orchestrator, `orchestrator.go` and `state.go`: a ten-state machine (`State` plus an unexported `legalTransition` table) wrapped around one `*Session`, with exactly three public verbs, `Start`, `Check`, `Close`, plus the two pure reads `State` and `Passed`. One `sync.Mutex` guards `state`/`closed`/`passed`/`attemptID`/`checkCount` and is released only around the three sandbox-touching calls (`Session.Setup`, `Session.Check`, `Session.Teardown`); `Close` always attempts both `Session.Teardown` and a matching `Progress.FinishAttempt` and combines their errors with `errors.Join`, and is safe to call more than once, from any state, concurrently with an in-flight `Check`. `Start` opens a `store.Attempt` through a new `Progress` interface (a four-method subset of `*store.Store`, declared here the same way `Verifier` is), reads the attempt count back with `LevelState`, and publishes `LevelStarted`; `Check` publishes `CheckRun` on every call and `LevelPassed` exactly once, on the first fully passing check, marking the level passed in the store at that moment rather than waiting for `Close`. `StateProvisioning`, `StateBriefing`, and `StateHinting` are declared and legal edges exist in `legalTransition` for `StateHinting`, but no exported method enters or exits any of the three this ticket: no sandbox provisioning, no briefing rendering, and no hint ladder here. No scoring beyond the zero values `LevelPassed` already carries, no reset, no next-level selection, no CLI wiring: `cmd/shellforge/cmd_run.go` is untouched and `shellforge run` still calls `Session` directly, not the Orchestrator. |
 | Pack loading and validation | Done in `internal/content` (issue #53). `LoadPack`, `Embedded`, `Pack.Level`, `Pack.Order`, and `Validate` with a `TypeChecker` the caller supplies, so `internal/content` and `internal/verify` stay peers rather than one importing the other. `shellforge author validate <pack>` reports every problem one per line and supports `--json`. A legal `command_matched` or `command_not_matched` check now gets a warning naming issue #88: no runtime session wires a real journal yet, so the check verifies nothing until then, and the validator says so rather than staying quiet. |
 | Level setup and teardown runner | Done in `internal/content/setup` (issue #50). `Runner.Setup`, `Teardown`, and `IsSetUp` materialize and remove a level's world inside the sandbox: teardown-first idempotency, a `loglines` content generator behind a registered kind, CRLF stripping on the host side before a `runtime.FileEntry` is built, rollback on any failure via `context.WithoutCancel`, and a `SETUP_OK` sentinel written under the state directory rather than the level root. Not wired into the game orchestrator or the CLI: no caller constructs a `Runner` yet outside its own tests. That wiring, plus the pack loader and validator that produce a real `content.Level`, is #52, #53, and #54. |
 | Runtimes | `Runtime` and `Session` interfaces plus their value types and sentinel errors are defined in `internal/runtime`, the reusable contract suite is in `internal/runtime/runtimetest`, and `internal/runtime/docker` implements both by shelling out to the `docker` CLI. The contract suite is green against it on Windows with Docker Desktop's Linux engine, except one subtest documented below. `internal/runtime/wsl` (issue #69) now implements both by shelling out to `wsl.exe`: `New`, `Provision`, `Destroy`, `Status`, `StartSession`, `Capabilities`, and a `Session` with `Exec`, `Attach`, `PushFiles`, `PullFile`. The UTF-16LE decoder, the seven install directory refusals, both Destroy name refusals, the marker check, the enumerate-and-diff guard, the digest and name-collision refusals, and every argv construction are asserted and green on Linux CI. The contract suite wired against it (`TestWslContract`) skips everywhere this run and CI can reach: no `wsl.exe`, no Windows, and no WSL2 on either CI leg. A human on real Windows 11 with WSL2 still owes the thirteen contract assertions passing for real, the hardening probes seeing a genuinely imported distribution, and the install directory (`.vhdx` included) actually gone after `Destroy`, confirmed in Explorer. See the Day 3 entry below for the full list of what is asserted in code versus what still needs that human. |
@@ -4600,6 +4600,49 @@ handler, the siblings still run, and the reporter is handed the subscriber
 name and stack only, never the event, because `CommandExecuted.Raw` is secret
 material. Registered in `internal/archtest`'s layer map at L4. Not wired into
 the orchestrator: that is a later Day 4 task.
+
+### 2026-08-26: the Session Orchestrator state machine (issue #122)
+
+New `internal/game/orchestrator.go` and `internal/game/state.go`, no changes to
+`session.go`. Ten declared states, three public mutating verbs (`Start`, `Check`,
+`Close`) plus two pure reads (`State`, `Passed`), and an unexported
+`legalTransition(from, to State) bool` table that every real transition the
+package performs is checked against; `Active <-> Hinting` is legal in the table
+and exercised directly by a test even though no exported method reaches
+`StateHinting` yet. One `sync.Mutex` guards the mutable fields and is released
+only around the three calls that touch the sandbox (`Session.Setup`,
+`Session.Check`, `Session.Teardown`), reacquired immediately after each to record
+the outcome; `Close` sets a permanent `closed` flag before releasing the lock to
+tear down, so a concurrent `Check` that reacquires the lock after `Close` has run
+sees `closed` and returns `ErrOrchestratorClosed` rather than publishing or
+mutating anything further, and `Close` itself never waits on an in-flight
+`Check`'s sandbox call. `Start` opens a `store.Attempt` through a new four-method
+`Progress` interface, reads the attempt count back with `LevelState` for
+`LevelStarted.Attempt`, and moves to `StateFailed` with no attempt opened if
+`Session.Setup` or either store call fails. `Check` publishes `CheckRun` on every
+call and `LevelPassed` exactly once, gated on a `passed` flag set only after
+`SetLevelStatus` succeeds, with `FirstTry` computed from a per-attempt
+`checkCount` incremented on entry. `Close` always attempts both
+`Session.Teardown` and `Progress.FinishAttempt` unconditionally, combining their
+errors with `errors.Join`, and is idempotent: a second call, from any goroutine,
+returns `nil` immediately with no second teardown and no second `FinishAttempt`.
+
+One test per acceptance criterion, eight in total, each confirmed to fail for the
+right reason (a wrong assertion, a missing `*TransitionError`, or a genuine hang
+on the AC7 race test, never a compile error) against a deliberately wrong stub
+`orchestrator.go` before the real implementation replaced it. `TestCheckAndCloseRace`
+runs clean under `go test -race`, racing a `Check` blocked mid-flight in a fake
+`Verifier.Run` against a concurrent `Close`. `TestIllegalOrderRefusesAcrossAllMethods`
+is table-driven over all ten states by both mutating methods, minus the one legal
+pair each has. `internal/archtest` stays green with both new files in place, and
+`go vet`, `gofmt -s`, `go test ./... -race`, the punctuation gate, the allowlist
+gate, the link checker, `check-ci-gates.py`, and the 62-case Python test suite
+under `scripts/tests` all ran clean locally. `govulncheck` and `gosec` are not
+installed in this environment; CI is the witness for both, as for every prior
+entry that says the same. Still not built this ticket, on purpose: sandbox
+provisioning, briefing rendering, the hint ladder, scoring beyond the zero values
+`LevelPassed` already carries, reset, next-level selection, and any CLI wiring:
+`shellforge run` still talks to `Session` directly, not the Orchestrator.
 
 
 ## Day 6: hardening, CI, packaging

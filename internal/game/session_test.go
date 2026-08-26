@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io/fs"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 
@@ -80,10 +81,37 @@ type fakeSession struct {
 	// symlinkedRoot makes readlink report a different path than it was asked
 	// about, which is how the runner detects a symlink on the level root.
 	symlinkedRoot string
+
+	// mu guards calls and teardownCalls only. Every other field is set once
+	// before a test starts exercising the fake and never mutated concurrently
+	// with an Exec call, so it needs no lock; calls and teardownCalls are the
+	// two fields orchestrator_test.go's race test (TestCheckAndCloseRace)
+	// reads and writes from more than one goroutine at once, on purpose.
+	mu            sync.Mutex
+	teardownCalls int
+
+	// execHook, when set, runs once per Exec call, after the call is
+	// recorded and outside mu, so it may safely block without deadlocking a
+	// concurrent Exec on the same fake. It exists for
+	// TestCheckAndCloseRace, to hold a "check" call open until the test
+	// says otherwise, simulating a real check command still running in the
+	// sandbox while a concurrent Close proceeds unlocked.
+	execHook func(argv []string)
 }
 
 func (f *fakeSession) Exec(_ context.Context, argv []string, _ runtime.ExecOpts) (runtime.ExecResult, error) {
+	f.mu.Lock()
 	f.calls = append(f.calls, argv)
+	if len(argv) >= 2 && argv[0] == "rm" && argv[1] == "-rf" {
+		f.teardownCalls++
+	}
+	hook := f.execHook
+	f.mu.Unlock()
+
+	if hook != nil {
+		hook(argv)
+	}
+
 	if f.err != nil {
 		return runtime.ExecResult{}, f.err
 	}
