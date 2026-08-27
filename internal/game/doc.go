@@ -12,12 +12,20 @@
 // Game mechanics subscribe to the event bus rather than being wired into the
 // orchestrator. That is what makes achievements and scoring pluggable.
 //
-// What exists today is Session, and only Session: load a level, set its world
-// up, hand out the briefing and the objective checklist, answer `check`, tear
-// the world down. There is no event bus, no scoring, no XP, no hint ladder, no
-// prerequisite gating, no unlock state and no write to the progress database.
+// What exists today is Session (load a level, set its world up, hand out the
+// briefing and the objective checklist, answer `check`, tear the world down),
+// the Orchestrator wrapped around one Session, and JournalSink. There is no
+// scoring, no XP, no hint ladder, no prerequisite gating and no unlock state.
 // Those are Day 4, and the paragraph above describes where they will attach
 // rather than what is here now.
+//
+// JournalSink (journalsink.go) drains the in-sandbox command journal into the
+// events table and publishes one CommandExecuted per command, which is what
+// gives the efficiency bonus and the command-counting achievements real
+// evidence to read. Layer 4 is the lowest place that can hold it: it needs a
+// journal.Collector, which needs a runtime.Session, and it needs the bus.
+// Nothing wires it up yet, so no Session or Orchestrator calls Drain; that is
+// a later Day 4 task.
 //
 // Two seams keep this package testable and honestly layered, and both follow
 // the pattern its neighbours already use. Verifier is declared here rather than

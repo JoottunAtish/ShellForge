@@ -1,6 +1,7 @@
 package pty
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -29,12 +31,18 @@ const eventBufferSize = 64
 // and OSC 7 marker stream that images/rc/instrument.bash emits around every
 // prompt.
 type CommandEvent struct {
-	// Raw is the command line the learner typed. It is always empty today.
+	// Raw is the command line the learner typed, and Mux always leaves it
+	// empty. That is now a decision rather than a gap: the command text
+	// reaches the host through the TSV instrument.bash writes inside the
+	// sandbox, read by internal/journal's Collector and recorded by
+	// internal/game's JournalSink, which needs a runtime.Session. Handing
+	// Mux one would make the multiplexer something other than a byte pump,
+	// so it does not get one and this field stays empty here.
 	//
-	// TODO(v0.2): populate from the journal TSV once #51 threads a
-	// runtime.Session (or an equivalent correlation step) into the event
-	// pipeline. Mux has no Session reference today, only a runtime.PTY, and
-	// the journal lives inside the sandbox filesystem.
+	// TODO(v0.2): decide whether a consumer that holds both streams should
+	// fill this in, which needs a correlation between an OSC event and a
+	// TSV record that does not drift when either side drops one. Matching by
+	// index is not that correlation.
 	Raw string
 
 	// ExitCode is the command's exit status, from the OSC 133;D marker.
@@ -50,6 +58,50 @@ type CommandEvent struct {
 	// Duration is the time between PreExec and the OSC 133;D (CommandDone)
 	// marker, both stamped by the OSC parser.
 	Duration time.Duration
+
+	// UsedTab reports that the learner pressed Tab between the previous
+	// prompt and this command being submitted. It is evidence for an
+	// achievement and nothing else, and it is deliberately imprecise: the
+	// tap counts a Tab byte anywhere in the stdin stream for that window,
+	// including one typed into a full screen application that happened to
+	// be running, and it cannot tell a completion that fired from one that
+	// found nothing. Nothing that scores a level may read it. See tabTap.
+	UsedTab bool
+}
+
+// tabByte is the ASCII horizontal tab, what the learner's Tab key sends in
+// raw mode.
+const tabByte = 0x09
+
+// tabTap is an io.Reader that reports whether byte 0x09, Tab, has passed
+// through it, while passing every byte on exactly as it found it.
+//
+// It wraps the host's stdin on the way to the sandbox. Observation is all it
+// does: it adds nothing, drops nothing, reorders nothing, and rewrites
+// nothing, because the learner's shell is real bash and vim, less and tab
+// completion all depend on that stream being literally, not approximately,
+// unmodified.
+//
+// seen is an *atomic.Bool because the stdin copy goroutine writes it and the
+// output copy goroutine, the one that runs the OSC parser and therefore
+// onOSCEvent, reads and clears it. A plain bool would be a data race, and a
+// mutex is the wrong instrument: this Read sits directly under io.Copy and
+// blocks on the host's own stdin for as long as the learner is thinking, so
+// nothing here may hold a lock across it.
+type tabTap struct {
+	r    io.Reader
+	seen *atomic.Bool
+}
+
+// Read implements io.Reader. It reads through to the wrapped reader and
+// returns exactly what that returned, having only looked at the bytes: p is
+// never written to here, and n and err are passed back untouched.
+func (t tabTap) Read(p []byte) (int, error) {
+	n, err := t.r.Read(p)
+	if n > 0 && bytes.IndexByte(p[:n], tabByte) >= 0 {
+		t.seen.Store(true)
+	}
+	return n, err
 }
 
 // fdHaver is satisfied by anything that can report its own OS file
@@ -96,6 +148,12 @@ type Mux struct {
 	// rather than waiting on the real one. Unix's SIGWINCH-driven watcher in
 	// raw_unix.go never reads it.
 	resizePollInterval time.Duration
+
+	// tabSeen records that a Tab byte passed through the stdin tap since the
+	// last command started. onOSCEvent swaps it back to false when it opens
+	// a new pending CommandEvent, which is both the read and the reset for
+	// that command's window. See tabTap for why it is atomic.
+	tabSeen atomic.Bool
 
 	// signalled carries a caught external terminating signal from the
 	// watcher goroutine to Run's own select, so Run unwinds through its
@@ -266,7 +324,7 @@ func (m *Mux) Run(ctx context.Context) error {
 	oscParser := NewParser(m.out, m.onOSCEvent)
 
 	stdinDone := runRecovered(func() error {
-		_, err := io.Copy(m.pty, m.in)
+		_, err := io.Copy(m.pty, tabTap{r: m.in, seen: &m.tabSeen})
 		return err
 	})
 	outDone := runRecovered(func() error {
@@ -395,7 +453,13 @@ func (m *Mux) onOSCEvent(ev Event) {
 			// holding it forever and losing the next command's data too.
 			m.emit(*m.pending)
 		}
-		m.pending = &CommandEvent{StartedAt: ev.At}
+		// Swap is the read and the reset in one step: whatever tab
+		// keystrokes accumulated since the last command started belong to
+		// this one, and the next command's window begins now. PS0 fires
+		// after the command line has been read but before it runs, so by
+		// the time this marker arrives every keystroke that submitted this
+		// command has already streamed through the tap.
+		m.pending = &CommandEvent{StartedAt: ev.At, UsedTab: m.tabSeen.Swap(false)}
 
 	case CommandDone:
 		if m.pending == nil {

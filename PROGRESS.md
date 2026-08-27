@@ -31,9 +31,9 @@ formally cut.
 | Pack loading and validation | Done in `internal/content` (issue #53). `LoadPack`, `Embedded`, `Pack.Level`, `Pack.Order`, and `Validate` with a `TypeChecker` the caller supplies, so `internal/content` and `internal/verify` stay peers rather than one importing the other. `shellforge author validate <pack>` reports every problem one per line and supports `--json`. A legal `command_matched` or `command_not_matched` check now gets a warning naming issue #88: no runtime session wires a real journal yet, so the check verifies nothing until then, and the validator says so rather than staying quiet. |
 | Level setup and teardown runner | Done in `internal/content/setup` (issue #50). `Runner.Setup`, `Teardown`, and `IsSetUp` materialize and remove a level's world inside the sandbox: teardown-first idempotency, a `loglines` content generator behind a registered kind, CRLF stripping on the host side before a `runtime.FileEntry` is built, rollback on any failure via `context.WithoutCancel`, and a `SETUP_OK` sentinel written under the state directory rather than the level root. Not wired into the game orchestrator or the CLI: no caller constructs a `Runner` yet outside its own tests. That wiring, plus the pack loader and validator that produce a real `content.Level`, is #52, #53, and #54. |
 | Runtimes | `Runtime` and `Session` interfaces plus their value types and sentinel errors are defined in `internal/runtime`, the reusable contract suite is in `internal/runtime/runtimetest`, and `internal/runtime/docker` implements both by shelling out to the `docker` CLI. The contract suite is green against it on Windows with Docker Desktop's Linux engine, except one subtest documented below. `internal/runtime/wsl` (issue #69) now implements both by shelling out to `wsl.exe`: `New`, `Provision`, `Destroy`, `Status`, `StartSession`, `Capabilities`, and a `Session` with `Exec`, `Attach`, `PushFiles`, `PullFile`. The UTF-16LE decoder, the seven install directory refusals, both Destroy name refusals, the marker check, the enumerate-and-diff guard, the digest and name-collision refusals, and every argv construction are asserted and green on Linux CI. The contract suite wired against it (`TestWslContract`) skips everywhere this run and CI can reach: no `wsl.exe`, no Windows, and no WSL2 on either CI leg. A human on real Windows 11 with WSL2 still owes the thirteen contract assertions passing for real, the hardening probes seeing a genuinely imported distribution, and the install directory (`.vhdx` included) actually gone after `Destroy`, confirmed in Explorer. See the Day 3 entry below for the full list of what is asserted in code versus what still needs that human. |
-| PTY multiplexer and OSC parser | Both done. Parser: streaming OSC 133 and OSC 7 state machine, fuzzed, with a recorded vim session passing through byte-identical. Multiplexer (`internal/pty/mux.go`): host stdin forwarded to the sandbox verbatim including Ctrl-C, host terminal raw mode restored across every exit path including a panic, initial resize plus SIGWINCH on unix, and CommandEvent assembly from the marker stream. `CommandEvent.Raw` is always empty pending #51. Windows resize watching (issue #68) polls `GetConsoleScreenBufferInfo` through the same injectable `getSize`/`resize` fields the unix watcher uses, every 250ms by default, and forwards a change the same way SIGWINCH does on unix. |
+| PTY multiplexer and OSC parser | Both done. Parser: streaming OSC 133 and OSC 7 state machine, fuzzed, with a recorded vim session passing through byte-identical. Multiplexer (`internal/pty/mux.go`): host stdin forwarded to the sandbox verbatim including Ctrl-C, host terminal raw mode restored across every exit path including a panic, initial resize plus SIGWINCH on unix, and CommandEvent assembly from the marker stream. Issue #123 adds `CommandEvent.UsedTab`, fed by a `tabTap` reader that wraps host stdin inside `Run`'s existing `io.Copy`: it flags byte `0x09` as it passes and forwards every byte unchanged, and `onOSCEvent`'s `PreExec` case swaps the flag into the new pending event and clears it in the same atomic step. The flag is deliberately imprecise (a Tab typed into `vim` counts) and is achievement evidence only, never scoring input. `CommandEvent.Raw` is still always empty, and that is now a decision rather than a gap: command text reaches the host through `journal.tsv`, read by `journal.Collector`, because filling `Raw` here would mean handing `Mux` a `runtime.Session` and it stays a byte pump. Windows resize watching (issue #68) polls `GetConsoleScreenBufferInfo` through the same injectable `getSize`/`resize` fields the unix watcher uses, every 250ms by default, and forwards a change the same way SIGWINCH does on unix. |
 | Verification engine | Done in `internal/verify` (issue #52). `Engine`, `NewEngine`, `WithCheckTimeout`, `WithLevelTimeout`, `Build` and `Run`, the `any_of`/`all_of`/`not` composition nodes, and `LevelResult` matching `docs/LEVEL-FORMAT.md` section 5 field for field. Checks are built once at level load and run on every `check`. 262 tests and subtests. The hermetic half of the purity guarantee is `internal/verify/purity_test.go`, which asserts every check type runs only read-only commands; the filesystem-hash half is in the golden harness and needs Docker. |
-| Progress database | `internal/store` (schema, migrations) and `internal/journal` (the command journal) are both built and unit tested, per #51. Issue #120 adds `002_progression.sql` and `progress.go`: six new tables (`profile`, `pack`, `level_state`, `attempt`, `concept_mastery`, `achievement`) and a set of `*Store` methods, all unit tested, none wired into `cmd/shellforge`, `internal/game`, or `internal/pty` yet. `EnsureProfile` creates and returns the database's single profile row, ignoring `name` on every call after the first. `LevelState` and `LevelStates` read `level_state`, reporting a row's staleness and zeroing `BestScore` when the caller's `levelVersion` does not match what is stored, while leaving `Attempts` and `HintsUsed` as recorded. `SetLevelStatus` and `StartAttempt` upsert `level_state`; `attempts` is incremented only by `StartAttempt`. `FinishAttempt` closes an `attempt` row exactly once (`ErrNoSuchAttempt`, `ErrAttemptClosed` otherwise) and folds its counters into `level_state`: `best_score` never falls, `first_passed_at` is kept from the first pass rather than the highest score, and a level never passed reads back as `time.Time`'s zero value, not the unix epoch. `TotalXP` sums `best_score` per pack. `TestConcurrentWritesFromTwoStoreHandles` runs clean under `-race` with two `*Store` handles over one file. Two deliberate deviations from ARCHITECTURE 4.11, both called out in `002_progression.sql`'s own header: `level_state.level_version` is new, and `profile.name` is `UNIQUE` so `EnsureProfile` stays a single row. `concept_mastery` and `achievement` are created by this migration but have no Go accessors yet; nothing in this package writes to them. No Docker was needed for any of this, since it is all pure SQLite; `govulncheck` and `gosec` were not run locally, since neither is installed here, and both are left to CI. Nothing calls `store.Open` outside tests: not wired into `cmd/shellforge`, `internal/game`, or `internal/pty`. `CommandEvent.Raw` on the host-side event stream is still always empty. Issues #92 and #90 closed two `Open` classification bugs: a missing progress database file, or one whose parent directory does not exist yet, no longer reads as corrupt, and a SQLite database Shellforge did not create is refused rather than silently adopted. See the Day 3 follow-up entry below for the byte-identity measurement this forced and the fixture change it required. |
+| Progress database | `internal/store` (schema, migrations) and `internal/journal` (the command journal) are both built and unit tested, per #51. Issue #120 adds `002_progression.sql` and `progress.go`: six new tables (`profile`, `pack`, `level_state`, `attempt`, `concept_mastery`, `achievement`) and a set of `*Store` methods, all unit tested, none wired into `cmd/shellforge`, `internal/game`, or `internal/pty` yet. `EnsureProfile` creates and returns the database's single profile row, ignoring `name` on every call after the first. `LevelState` and `LevelStates` read `level_state`, reporting a row's staleness and zeroing `BestScore` when the caller's `levelVersion` does not match what is stored, while leaving `Attempts` and `HintsUsed` as recorded. `SetLevelStatus` and `StartAttempt` upsert `level_state`; `attempts` is incremented only by `StartAttempt`. `FinishAttempt` closes an `attempt` row exactly once (`ErrNoSuchAttempt`, `ErrAttemptClosed` otherwise) and folds its counters into `level_state`: `best_score` never falls, `first_passed_at` is kept from the first pass rather than the highest score, and a level never passed reads back as `time.Time`'s zero value, not the unix epoch. `TotalXP` sums `best_score` per pack. `TestConcurrentWritesFromTwoStoreHandles` runs clean under `-race` with two `*Store` handles over one file. Two deliberate deviations from ARCHITECTURE 4.11, both called out in `002_progression.sql`'s own header: `level_state.level_version` is new, and `profile.name` is `UNIQUE` so `EnsureProfile` stays a single row. `concept_mastery` and `achievement` are created by this migration but have no Go accessors yet; nothing in this package writes to them. No Docker was needed for any of this, since it is all pure SQLite; `govulncheck` and `gosec` were not run locally, since neither is installed here, and both are left to CI. Nothing calls `store.Open` outside tests: not wired into `cmd/shellforge`, `internal/game`, or `internal/pty`. Issue #123 connects the three journal pieces that existed separately: `journal.Collector` (`NewCollector`, `Since`) pulls `$SF_STATE/journal.tsv` out of the sandbox through `runtime.Session.PullFile` and parses it with the existing `ReadTSV`, incrementally, bounded to 1000 records per call, degrading to zero commands when the file is absent or unreadable; `game.JournalSink.Drain` appends each record through `journal.Append` and publishes one `bus.CommandExecuted` per appended record. So the events table now receives real command text, exit codes and working directories, and `CommandExecuted.Raw` is populated on that path. Not wired into the orchestrator: that is a later Day 4 task, so nothing constructs a `Collector` or a `JournalSink` outside its own tests yet, `commands_used` is still zero everywhere a level is actually played, and `CommandEvent.Raw` on the PTY event stream is still always empty by design (see the PTY row). Issues #92 and #90 closed two `Open` classification bugs: a missing progress database file, or one whose parent directory does not exist yet, no longer reads as corrupt, and a SQLite database Shellforge did not create is refused rather than silently adopted. See the Day 3 follow-up entry below for the byte-identity measurement this forced and the fixture change it required. |
 | Documentation | Design record complete. User docs are outlines. |
 | Engineering rules | `CLAUDE.md` index plus 13 on-demand skills under `.claude/skills/` |
 | Link checker | Done, and verified to catch a broken relative link |
@@ -4670,6 +4670,165 @@ waiting for the winner's result, now stated in `Close`'s doc comment, and the
 passed-to-`in_progress` downgrade on an abandoned replay stays deferred, recorded
 in the `internal/game` row above.
 
+
+### 2026-08-27: the learner's commands reach the host (issue #123)
+
+Three pieces that already existed and were never connected now are.
+`internal/journal/collector.go` adds `Collector`, `NewCollector(runtime.Session,
+stateDir)` and `Since(ctx, levelID)`: one `PullFile` of
+`path.Join(stateDir, "journal.tsv")`, parsed by the existing `ReadTSV`, with no
+second channel invented and no OSC event correlated with a TSV row by index.
+`internal/game/journalsink.go` adds `JournalSink` and `Drain(ctx, levelID,
+attemptID)`, which appends each new record through `Journal.Append` and publishes
+one `bus.CommandExecuted` per appended record, in journal order.
+`internal/pty/mux.go` gains `CommandEvent.UsedTab` and the `tabTap` reader that
+feeds it. `internal/journal` importing `internal/runtime` is L2 to L1, downward
+and legal; `internal/game` importing `internal/journal` is L4 to L2; `archtest`
+needed no table edit and none was made.
+
+Three contract decisions the ticket left open, all made explicitly rather than
+silently. **`UsedTab` on a collected entry is always false, and so is
+`Duration`.** `instrument.bash` writes four fields (`EPOCHREALTIME`, exit code,
+`PWD`, command line) and none of them is a tab tap or a duration; a tab tap is a
+host-side observation of keystrokes, which is why it lives on
+`pty.CommandEvent.UsedTab` instead. Joining the two streams needs a correlation
+that does not drift when either side drops a record, index matching is not that
+correlation, and inventing one is out of this ticket's scope, so `Drain` passes
+the entry's own zero values through and says why at the call site, next to a
+`TODO(v0.2)`. The consequence, stated plainly: `tab_master` and `manual_labour`
+have no evidence yet even once this is wired up, while `one_liner` and `no_hints`
+do, since they need only the command text. **`Append` did not need a batch
+form**: `Drain` appends one row at a time so that a publish follows exactly the
+appends that succeeded, and a batch insert that half succeeded would either
+publish for rows that were never written or lose the ones that were; the write
+volume here is a handful of rows per check on a WAL database, so the transaction
+per row costs nothing worth this. **`Seq` is stamped by the `Collector`,
+monotonic for its lifetime**, rather than kept from `ReadTSV`, whose `Seq` is
+1-based within one parse: `Journal.Level` orders by seq, so three drains of one
+level would otherwise read back interleaved instead of oldest first.
+
+Bounding. `maxTSVLine` already bounds one line to 64 KiB; `maxRecordsPerSince`
+(1000) bounds the other dimension, so `yes >> journal.tsv` cannot make one
+`Drain` parse unboundedly. `completeRecords` scans for at most that many
+newlines and never returns a trailing fragment, which is also what makes a
+truncated final line wait for the call after the shell finishes writing it. One
+call still pulls the whole file into memory, because `PullFile` has no ranged
+form; that is recorded as a `TODO(v0.2)` on the constant rather than left for a
+reader to discover. `TestSinceWorkPerCallDoesNotGrowWithTheFileSize` pins the
+bound by asserting a journal ten times larger yields the same number of records
+from one call.
+
+Tab tapping is a reader wrapping `m.in` inside `Run`'s existing `io.Copy`, not a
+change to what is forwarded: it flags `0x09` and passes every byte through
+unchanged, adding nothing, dropping nothing, reordering nothing.
+`onOSCEvent`'s `PreExec` case reads and clears it with one `atomic.Bool` swap,
+because the stdin copy goroutine writes the flag and the output copy goroutine
+reads it, and nothing may hold a mutex across a `Read` that blocks for as long
+as the learner is thinking. `TestMux_TabTap_UsedTabReflectsTheRecordedStdinStream`
+drives a recorded byte stream (a Tab completion, a command typed out in full, a
+`0x03` Ctrl-C, a second Tab), asserts `UsedTab` per emitted event, and asserts
+the fake PTY's write side is byte identical to what was typed; the existing
+`TestMux_StdinForwardedVerbatim` and `TestMux_CtrlCForwardedNotIntercepted` pass
+unchanged.
+
+Every test named in the ticket's test plan was written first and seen to fail
+against a deliberately wrong stub (`Since` returning `nil, nil`, `Drain`
+returning `nil`, `UsedTab` a field nothing sets), and each failure was a real
+assertion failure, never a compile error. Two of them could not be made to fail
+that way and are honest about it: a stub that does nothing is indistinguishable
+from correct degradation, so `TestDrainDegradesToZeroCommandsWhenTheJournalCannotBeRead`
+and its absent-journal twin passed against the stub and stand as regression
+guards against a future `Drain` that starts failing the check. Privacy is
+covered on both sides: `internal/journal`'s existing AST guards
+(`TestJournalPackageDoesNotPrintOrLog`, `TestJournalPackageKeepsRawOutOfErrors`,
+`TestJournalPackageCallsNoFilesystemRemoval`) glob the package's production
+files and so cover `collector.go` for free, and `TestJournalSinkNeverFormatsAnEntry`
+does the same scan over `journalsink.go`, alongside
+`TestDrainKeepsCommandTextOutOfTheErrorItReturns`, which fails a real `Append`
+against a closed store and asserts the returned error carries neither the
+command nor the password inside it.
+
+Ran clean locally: `gofmt -s`, `go vet ./...`, `go test ./...`, the punctuation
+gate, `go test -race -count=2` over `internal/pty`, `internal/journal` and
+`internal/game`, `go test ./internal/archtest/...`, the allowlist gate, the link
+checker, `check-ci-gates.py`, the Python suite under `scripts/tests`, and
+`make fuzz`. `govulncheck` and `gosec` are not installed in this environment and
+are left to CI, as with every prior entry that says so; no Docker was needed,
+since nothing here starts a container.
+
+Deliberately not done: no orchestrator wiring, so `Orchestrator`, `Session` and
+`cmd/shellforge` are untouched and nothing constructs a `Collector` or a
+`JournalSink` outside tests; no `internal/verify` change and no new coupling to
+it, because no check may ever gate passing on a journal record; no new
+`DocAnchor` and no new `docs/05-troubleshooting.md` heading, because a missing or
+corrupt `journal.tsv` degrades silently to zero commands and must never reach the
+learner; and no `docs/LEVEL-FORMAT.md` change, since the level schema and the
+check catalogue are untouched.
+
+Review follow-up on PR #149, seven findings, one of them a real bug. **The
+stale offset after a shrink.** `Since` tracked `c.offset` as a byte position
+into `journal.tsv` and, on noticing the file had shrunk under it, returned
+nothing for that call but kept the offset. Once the file grew back past that
+value, the next read started at a byte position with no relationship to any
+line boundary in the file that was there now, handed `ReadTSV` the fragment
+from there to the next `\n`, and so silently dropped every command written
+since the shrink or admitted a garbled row in their place. Only the
+immediately-post-shrink case had a test.
+`Since` now resets `c.offset` to 0 on that branch, so the call after a shrink
+re-syncs from byte 0 of the new content. The cost is that a record the
+truncation left in place can be collected twice, which is the better of the
+two: a duplicate row is a wrong count in a bonus that is knowingly gameable,
+a garbled row is a wrong command in the learner's own history.
+`TestSinceResyncsFromTheStartWhenTheJournalRegrowsAfterAShrink` shrinks the
+file, asserts the shrink call returns nothing, regrows it past the old
+consumed length (`assertLongerThan` pins that, since the case only corrupts
+when the stale offset lands inside the new content rather than past its end),
+and asserts the four regrown commands all arrive with their own `Cwd` and a
+non-zero `TS`. With the one-line reset removed it fails collecting zero of
+those four. Detection is still only a length comparison, which cannot see a
+file that shrank and regrew between two calls, so `Collector` now carries an
+explicit lifetime rule in its doc comment: one per attempt, never carried
+across a level reset, which recreates `journal.tsv` from empty. `Seq` being
+monotonic for the Collector's life is the second reason for the same rule.
+
+**A fourth contract decision, stated as plainly as the other three:
+`Duration` is always zero through the `Collector` and `Drain` path, and issue
+#123's first acceptance criterion is therefore met only in part.** That
+criterion asks the `events` table to hold rows with the real command text,
+exit codes, cwd and durations. `Raw`, `ExitCode` and `Cwd` arrive.
+`Duration` does not, because `instrument.bash` writes four fields and none of
+them is a duration, and the only other place a duration exists is
+`pty.CommandEvent`, which could only be joined to a TSV record by index: the
+same correlation that leaves `UsedTab` false, and the one the ticket's
+Approach section forbids because it drifts the moment either side drops a
+record. So this is not fixable inside this ticket's own constraints, and it
+is called out rather than left implicit.
+`TestDrainPublishesAZeroDurationForEveryTSVRecord` asserts the zero through
+`Drain` for entries sourced from real TSV lines, on the bus and in the
+`events` table both, so the day the durable correlation named in the existing
+`TODO(v0.2)` lands, somebody has to change that assertion deliberately, and
+an accidental fix or a regression is visible either way.
+
+Four smaller items from the same review. `maxRecordsPerSince`'s doc comment
+now says in its first sentence that it bounds the parse dimension and nothing
+else, since the previous "bounds the other dimension" could be read as
+bounding the whole call; the whole-file `PullFile` read is still unbounded
+and still a `TODO(v0.2)`, because a ranged read is a `runtime.Session`
+interface change and out of this ticket's scope. `NewCollector` now returns
+`(*Collector, error)` and refuses a `stateDir` that is empty, relative,
+carries a `..` segment, or sits outside `platform.LearnerHomePrefix`, through
+the same `platform.UnsafeLevelRoot` that `internal/content/setup` puts the
+same value through; `internal/platform` is L0 so the import points downward
+and `archtest` needed no edit. `Drain`'s doc comment loses the word "simply",
+per the writing-style rule. And two test gaps closed:
+`TestDrainLosesTheRestOfTheBatchWhenAnAppendFailsPartWayThrough` fails the
+second of three appends (a bus subscriber closes the store after the first
+`CommandExecuted`, which is the only way to fail one `Append` mid-batch
+against the real `*journal.Journal`) and asserts a later `Drain` never sees
+the lost two again, pinning the documented trade-off rather than changing it;
+and both `TestDrainDegradesToZeroCommands...` tests now count `PullFile`
+calls and require exactly one, since a `Drain` that did nothing at all used
+to pass them.
 
 ## Day 6: hardening, CI, packaging
 

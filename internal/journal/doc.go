@@ -1,10 +1,19 @@
 // Package journal records every command the learner ran, with exit code,
 // working directory, and timing, plus the environment and cwd snapshots.
 //
-// Layer L2. May import internal/store and below.
+// Layer L2. May import internal/store, internal/runtime, and below.
 //
 // The journal is written twice on purpose: to SQLite for the game, and to a TSV
 // inside the sandbox so check scripts can read it and so it survives a crash.
+//
+// Collector (collector.go) is what carries the second of those into the first:
+// it takes a runtime.Session, reads journal.tsv out of the sandbox with
+// PullFile, and parses it with ReadTSV. It takes a Session because reading a
+// file out of the sandbox is a session operation, and that is exactly the
+// dependency internal/pty does not have and deliberately is not given, so
+// the multiplexer stays a byte pump and the command text travels this way
+// instead. runtime.Session is the interface package at L1, not an
+// implementation: this package never names Docker or WSL.
 //
 // Entry.String and Entry.GoString redact Raw everywhere fmt can reach one of
 // them: a bare Entry, a *Entry, a slice or map of either, a struct that

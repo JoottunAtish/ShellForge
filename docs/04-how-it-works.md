@@ -74,8 +74,22 @@ terminal standard called OSC 133. Shellforge strips those markers out of the out
 before you ever see them. They tell it when a command started, when it finished,
 and what exit code it produced.
 
+The same configuration file appends one line per command to a plain text file
+inside the sandbox, `journal.tsv`: the time, the exit code, the directory you were
+in, and the command line itself. Shellforge reads that file to fill in your command
+log and to work out whether you beat the level's par. That is the only place your
+command text comes from, and it is why the count is right even for a command you
+ran inside a script.
+
 You can read exactly what that configuration file does:
 [`images/rc/instrument.bash`](../images/rc/instrument.bash).
+
+**Where that text goes, and where it does not.** It is copied out of the sandbox
+into the SQLite database described in section 4, on your own machine, and that is
+the end of its journey. It is never uploaded, never included in a crash report, and
+never printed by an error message. There is no server to send it to. If the file
+goes missing or is unreadable, Shellforge records no commands for that level and
+carries on: a lost journal costs you an efficiency bonus, never a level.
 
 Verification is separate, and it looks at the real system. If a level asks for a
 count in `report.txt`, it reads `report.txt` and checks the number. It does not
