@@ -19,7 +19,7 @@ formally cut.
 | `go test ./...` | Green |
 | Layer dependency enforcement | Done, and verified to fail on a deliberate violation |
 | Punctuation gate | Done, and verified to fail on a deliberate violation |
-| CLI dispatcher | `cmd/shellforge` runs on `spf13/cobra` as of #48, not the hand-rolled dispatcher. Fourteen verbs registered (`doctor` `init` `play` `run` `check` `hint` `reset` `skip` `map` `stats` `sandbox` `bug-report` `author` `version`). As of issue #71, `init` and the whole `sandbox` group are real rather than stubs: `init` resolves a backend through `internal/sandbox.Resolve`, prints which one it picked and why, and provisions it; `sandbox` is `status`, `shell`, `rebuild`, `destroy` (`build` is gone: `Provision` already builds the image or distribution, so it had no behaviour distinct from `init`), each real. `run`'s own sandbox resolution now goes through the same `internal/sandbox.Resolve` path as `init`, dropping its direct `internal/runtime/docker` import. `doctor` (issue #70) is wired to a real `sandbox.NewProber()` instead of `nil`, so `sandbox_health` reports real state instead of an unconditional `Warn`. `version`, `help`, `run <level-id>`, `author validate`, `author test`, `doctor`, `init`, and the four `sandbox` subcommands all work; every other verb still fails through `ux.Fail` with a remediation. Acceptance criterion 11 of #71 (an interactive `sandbox shell` on Windows) is deliberately not delivered: see the Day 3 entry below. **The whole `cmd/shellforge` package was untracked by git until #11**: `.gitignore`'s unanchored `shellforge` pattern matched the directory, so it was never committed and CI never compiled or tested it. |
+| CLI dispatcher | `cmd/shellforge` runs on `spf13/cobra` as of #48, not the hand-rolled dispatcher. Fourteen verbs registered (`doctor` `init` `play` `run` `check` `hint` `reset` `skip` `map` `stats` `sandbox` `bug-report` `author` `version`). As of issue #71, `init` and the whole `sandbox` group are real rather than stubs: `init` resolves a backend through `internal/sandbox.Resolve`, prints which one it picked and why, and provisions it; `sandbox` is `status`, `shell`, `rebuild`, `destroy` (`build` is gone: `Provision` already builds the image or distribution, so it had no behaviour distinct from `init`), each real. `run`'s own sandbox resolution now goes through the same `internal/sandbox.Resolve` path as `init`, dropping its direct `internal/runtime/docker` import. `doctor` (issue #70) is wired to a real `sandbox.NewProber()` instead of `nil`, so `sandbox_health` reports real state instead of an unconditional `Warn`. Issue #124 makes `map` real: it loads the embedded pack, opens the progress database, and prints the campaign as a tree, with no runtime resolved and no sandbox touched. `version`, `help`, `run <level-id>`, `author validate`, `author test`, `doctor`, `init`, `map`, and the four `sandbox` subcommands all work; every other verb still fails through `ux.Fail` with a remediation. Acceptance criterion 11 of #71 (an interactive `sandbox shell` on Windows) is deliberately not delivered: see the Day 3 entry below. **The whole `cmd/shellforge` package was untracked by git until #11**: `.gitignore`'s unanchored `shellforge` pattern matched the directory, so it was never committed and CI never compiled or tested it. |
 | `shellforge run <level-id>` | Works on Linux for any level in the pack, with zero Go changes between levels. Loads from the embedded YAML, renders the briefing through glamour, prints the objective checklist, provisions, materializes the level, hands over a real instrumented bash, serves `check` over the existing FIFO control channel, and tears the level world down on every exit path through one cleanup function. An unknown id fails through `ux.Fail` naming the ids that exist. Refuses on a Windows host with the `windows-needs-wsl` anchor. **Never run against a real container from a developer machine**: no Docker socket here, so every end-to-end claim rests on unit tests plus CI's golden run. The learner's shell starts in `/home/learner`, not the level root, which is what a login shell does and what nav-01 teaches. |
 | `shellforge run demo` | Gone, as of #96. The Day 1 hardcoded level and its four files are deleted, and `demo` is now an unknown level id like any other: `run demo` reports that there is no such level and lists the ones there are. The safety coverage its tests carried moved to `cmd/shellforge/isolation_test.go`, against `pipe-05` from the real pack, and is named in the Sandbox image job's own `-run` pattern so it actually runs. |
 | `shellforge author test` | Done. Runs the `docs/LEVEL-FORMAT.md` section 7 golden contract per level and is what `make golden` calls, a target that had been calling a command that did not exist since Day 0. Refuses rather than skips without a Docker daemon, because a `make golden` reporting success having tested nothing is worse than no gate. |
@@ -27,7 +27,7 @@ formally cut.
 | Shell instrumentation | `instrument.bash` written, and exercised by every learner shell CI's golden run provisions, including the missing-SF_STATE recovery path added in this PR. Not exercised on a developer machine here, for the same reason. |
 | Content pack | `pack.yaml` with six acts declared, and nine levels written: `nav-01` to `nav-04`, `files-01` to `files-04` (issue #54), and `pipe-05`. They validate clean, are embedded via `packs/packs.go`, and are all reachable from `shellforge run`. `pipe-05` is out of curriculum order on purpose: it is the engine's reference fixture, the level `docs/LEVEL-FORMAT.md` section 6 is written against, and the first whose world comes from committed assets rather than inline content. The golden contract has run all nine against a real container in CI's Sandbox image job, which found and fixed four real bugs (see the current-state line above); no developer machine here has a Docker socket, so CI rather than a person is the witness. Levels 9 to 25 are Day 5. |
 | Level assets | First three committed: `assets/app-1.log`, `app-2.log`, `billing.log`, for pipe-05. They were produced by a deterministic generator rather than hand written, so their numbers came from code that already had consistency tests; that generator lived in `internal/sandbox/demo_level.go` and was deleted with it under #96, which changes nothing about the committed bytes. The durable guarantee always was `internal/content/pipe05_assets_test.go`, not the generator: five tests count the answers out of the committed bytes the way the level's solution counts them, including one that catches a noise line matching `error` case-insensitively without being an ERROR record. |
-| `internal/game` | A thin `Session`: load, setup, brief, check, teardown, and nothing else. It declares its own `Verifier` interface so it is testable with a two-method fake, borrows the `runtime.Session` it is given and never closes it, and holds the only `content.CheckSpec` to `verify.Spec` conversion, which has to sit above both peers. The event bus exists as `internal/game/bus`: a synchronous, typed, in-memory dispatcher for the seven domain events, standard library only, with panics contained per subscriber and nested publishes drained in order under a bounded dispatch depth. Issue #122 adds the Session Orchestrator, `orchestrator.go` and `state.go`: a ten-state machine (`State` plus an unexported `legalTransition` table) wrapped around one `*Session`, with exactly three public verbs, `Start`, `Check`, `Close`, plus the two pure reads `State` and `Passed`. One `sync.Mutex` guards `state`/`closed`/`passed`/`attemptID`/`checkCount`/`startDone` and never spans a call that leaves the package: not the three sandbox calls (`Session.Setup`, `Session.Check`, `Session.Teardown`), not a `Progress` call, and not a `bus.Publish`, so a subscriber may call back into the same Orchestrator from inside its handler without deadlocking against it, while `Close` waits on an in-flight `Start`'s `startDone` channel before tearing anything down, so that a teardown is always the last thing to touch the level's world even when the learner interrupts a run mid-`Setup`; `Close` always attempts both `Session.Teardown` and a matching `Progress.FinishAttempt` and combines their errors with `errors.Join`, and is safe to call more than once, from any state, concurrently with an in-flight `Check`. `Start` opens a `store.Attempt` through a new `Progress` interface (a four-method subset of `*store.Store`, declared here the same way `Verifier` is), reads the attempt count back with `LevelState`, and publishes `LevelStarted`; `Check` publishes `CheckRun` on every call and `LevelPassed` exactly once, on the first fully passing check, marking the level passed in the store at that moment rather than waiting for `Close`. `StateProvisioning`, `StateBriefing`, and `StateHinting` are declared and legal edges exist in `legalTransition` for `StateHinting`, but no exported method enters or exits any of the three this ticket: no sandbox provisioning, no briefing rendering, and no hint ladder here. No scoring beyond the zero values `LevelPassed` already carries, no reset, no next-level selection, no CLI wiring: `cmd/shellforge/cmd_run.go` is untouched and `shellforge run` still calls `Session` directly, not the Orchestrator. Known and deliberately deferred, so a future reader does not rediscover it as a surprise: replaying a level that was already passed and then abandoning it downgrades that level's stored status from `passed` back to `in_progress`, because `store.StartAttempt` resets the status on every new attempt and `store.FinishAttempt`'s non-passed branch writes `in_progress` again, and preserving a best-known status across re-attempts is orchestrator policy that belongs with scoring, which this ticket puts out of scope. |
+| `internal/game` | A thin `Session`: load, setup, brief, check, teardown, and nothing else. It declares its own `Verifier` interface so it is testable with a two-method fake, borrows the `runtime.Session` it is given and never closes it, and holds the only `content.CheckSpec` to `verify.Spec` conversion, which has to sit above both peers. The event bus exists as `internal/game/bus`: a synchronous, typed, in-memory dispatcher for the seven domain events, standard library only, with panics contained per subscriber and nested publishes drained in order under a bounded dispatch depth. Issue #122 adds the Session Orchestrator, `orchestrator.go` and `state.go`: a ten-state machine (`State` plus an unexported `legalTransition` table) wrapped around one `*Session`, with exactly three public verbs, `Start`, `Check`, `Close`, plus the two pure reads `State` and `Passed`. One `sync.Mutex` guards `state`/`closed`/`passed`/`attemptID`/`checkCount`/`startDone` and never spans a call that leaves the package: not the three sandbox calls (`Session.Setup`, `Session.Check`, `Session.Teardown`), not a `Progress` call, and not a `bus.Publish`, so a subscriber may call back into the same Orchestrator from inside its handler without deadlocking against it, while `Close` waits on an in-flight `Start`'s `startDone` channel before tearing anything down, so that a teardown is always the last thing to touch the level's world even when the learner interrupts a run mid-`Setup`; `Close` always attempts both `Session.Teardown` and a matching `Progress.FinishAttempt` and combines their errors with `errors.Join`, and is safe to call more than once, from any state, concurrently with an in-flight `Check`. `Start` opens a `store.Attempt` through a new `Progress` interface (a four-method subset of `*store.Store`, declared here the same way `Verifier` is), reads the attempt count back with `LevelState`, and publishes `LevelStarted`; `Check` publishes `CheckRun` on every call and `LevelPassed` exactly once, on the first fully passing check, marking the level passed in the store at that moment rather than waiting for `Close`. `StateProvisioning`, `StateBriefing`, and `StateHinting` are declared and legal edges exist in `legalTransition` for `StateHinting`, but no exported method enters or exits any of the three this ticket: no sandbox provisioning, no briefing rendering, and no hint ladder here. No scoring beyond the zero values `LevelPassed` already carries, no reset, no next-level selection, no CLI wiring: `cmd/shellforge/cmd_run.go` is untouched and `shellforge run` still calls `Session` directly, not the Orchestrator. Known and deliberately deferred, so a future reader does not rediscover it as a surprise: replaying a level that was already passed and then abandoning it downgrades that level's stored status from `passed` back to `in_progress`, because `store.StartAttempt` resets the status on every new attempt and `store.FinishAttempt`'s non-passed branch writes `in_progress` again, and preserving a best-known status across re-attempts is orchestrator policy that belongs with scoring, which this ticket puts out of scope. Issue #124 adds `curriculum.go`: `Availability`, `Node`, `Resolve(pack, states) ([]Node, error)`, and `Next(nodes) (Node, bool)`. `Resolve` is a pure function, no database handle and no context, joining `Pack.Order` with a `map[string]store.LevelState` to say what each level's unlock state is; a nil `states` map behaves exactly like an empty one. Not wired into the Orchestrator or `Session`: nothing here changes what `run` or `check` do, this is read-only join logic for `map` alone. |
 | Pack loading and validation | Done in `internal/content` (issue #53). `LoadPack`, `Embedded`, `Pack.Level`, `Pack.Order`, and `Validate` with a `TypeChecker` the caller supplies, so `internal/content` and `internal/verify` stay peers rather than one importing the other. `shellforge author validate <pack>` reports every problem one per line and supports `--json`. A legal `command_matched` or `command_not_matched` check now gets a warning naming issue #88: no runtime session wires a real journal yet, so the check verifies nothing until then, and the validator says so rather than staying quiet. |
 | Level setup and teardown runner | Done in `internal/content/setup` (issue #50). `Runner.Setup`, `Teardown`, and `IsSetUp` materialize and remove a level's world inside the sandbox: teardown-first idempotency, a `loglines` content generator behind a registered kind, CRLF stripping on the host side before a `runtime.FileEntry` is built, rollback on any failure via `context.WithoutCancel`, and a `SETUP_OK` sentinel written under the state directory rather than the level root. Not wired into the game orchestrator or the CLI: no caller constructs a `Runner` yet outside its own tests. That wiring, plus the pack loader and validator that produce a real `content.Level`, is #52, #53, and #54. |
 | Runtimes | `Runtime` and `Session` interfaces plus their value types and sentinel errors are defined in `internal/runtime`, the reusable contract suite is in `internal/runtime/runtimetest`, and `internal/runtime/docker` implements both by shelling out to the `docker` CLI. The contract suite is green against it on Windows with Docker Desktop's Linux engine, except one subtest documented below. `internal/runtime/wsl` (issue #69) now implements both by shelling out to `wsl.exe`: `New`, `Provision`, `Destroy`, `Status`, `StartSession`, `Capabilities`, and a `Session` with `Exec`, `Attach`, `PushFiles`, `PullFile`. The UTF-16LE decoder, the seven install directory refusals, both Destroy name refusals, the marker check, the enumerate-and-diff guard, the digest and name-collision refusals, and every argv construction are asserted and green on Linux CI. The contract suite wired against it (`TestWslContract`) skips everywhere this run and CI can reach: no `wsl.exe`, no Windows, and no WSL2 on either CI leg. A human on real Windows 11 with WSL2 still owes the thirteen contract assertions passing for real, the hardening probes seeing a genuinely imported distribution, and the install directory (`.vhdx` included) actually gone after `Destroy`, confirmed in Explorer. See the Day 3 entry below for the full list of what is asserted in code versus what still needs that human. |
@@ -4829,6 +4829,104 @@ the lost two again, pinning the documented trade-off rather than changing it;
 and both `TestDrainDegradesToZeroCommands...` tests now count `PullFile`
 calls and require exactly one, since a `Drain` that did nothing at all used
 to pass them.
+
+### 2026-08-27: the curriculum DAG, unlock resolution, and shellforge map (issue #124)
+
+`internal/game/curriculum.go` adds `Availability`, `Node`, `Resolve(pack,
+states) ([]Node, error)`, and `Next(nodes) (Node, bool)`. `Resolve` is a pure
+function over two in-memory values: no database handle, no context, no I/O.
+It calls `Pack.Order` once for the campaign order and the cycle check, rather
+than re-deriving either from `Prerequisites` directly, and joins each level
+against a `map[string]store.LevelState` to decide whether it is passed,
+skipped, locked, or available now. `cmd/shellforge/cmd_map.go` and
+`render_map.go` make `map` real: it loads `content.Embedded()`, opens the
+progress database at `platform.DatabasePath()`, reads `EnsureProfile` and
+`LevelStates`, calls `Resolve`, and prints a text tree grouped by act. No
+runtime is resolved and nothing is provisioned, so this runs with Docker
+stopped, which was confirmed by hand in this environment: `docker info`
+fails here, and `shellforge map --ascii` still prints the campaign against a
+freshly created, empty progress database.
+
+One deliberate divergence from ARCHITECTURE 4.11, stated here because
+PROGRESS.md is supposed to be the honest build-state record. ARCHITECTURE
+4.11 conditions a skip satisfying a prerequisite on a `soft_prereq` flag.
+No such field exists in `docs/LEVEL-FORMAT.md` or `content.Level`, and
+adding one is a level format change this ticket was not scoped to make.
+SESSION-PROMPTS Day 4 Session G item 4 states the simpler rule Shellforge
+ships instead: a prerequisite is satisfied by a pass or a skip, unconditionally.
+A future ratification ticket owns deciding whether `soft_prereq` is ever
+built; until then every skip unlocks every downstream level it gates.
+
+A second decision, smaller but worth naming: a level's recorded score is
+shown as unknown, not as a stale number, once its `level_state.level_version`
+no longer matches the level's current `Version` in the pack, but the level
+still counts as passed for unlocking. `LevelStates` itself always reports
+`Stale` as false, since it takes no per-level expected version; `Resolve`
+computes staleness itself by comparing each state's `LevelVersion` against
+`Pack.Level(id).Version`, and zeroes `BestScore` on a stale row the same way
+`store.LevelState` (singular) already does for its own callers. Re-locking a
+learner's progress because an author fixed a typo in a level's checks would
+be worse than showing a best score as unknown, so a stale pass is still a
+pass for the unlock graph.
+
+`internal/game/curriculum_test.go` fixtures a small diamond pack (`a`, then
+`b` and `c` requiring `a`, then `d` requiring both) entirely by hand, never
+the embedded pack: the shipped `packs/core-linux-basics` currently has nine
+of its roughly twenty-five listed level ids written, so `Pack.Order` on the
+real pack omits most of them today, and a test pinned to that shape would
+drift every time a level is authored. Coverage: a fresh profile with no rows
+unlocks exactly the prerequisite-free levels; the diamond unlocks stage by
+stage as `a`, then `b`, then `c` are marked passed; a skip on `b` satisfies
+`d`'s prerequisite the same as a pass once `c` also passes; `BlockedBy`
+names `d`'s unmet prerequisites in campaign order; a nil `states` map
+produces node-for-node identical output to an empty non-nil one; `Next`
+returns the first available node in campaign order and reports false rather
+than a zero `Node` once every level is passed; a state recorded at level
+version 1 read against version 2 still counts as passed and reports
+`BestScore` zero with `Stale` true; and a two-level cycle fails with both
+stuck ids named in the error text, straight from `Pack.Order`.
+
+`cmd/shellforge/render_map_test.go` fixtures its own small two-act pack and
+hand-built `[]game.Node` slice, separately from the curriculum fixture, since
+this file is testing rendering, not resolution. It covers acts printing in
+`pack.yaml` order with title and subtitle, each level's marker, title and XP,
+a locked level's `(locked: needs ...)` suffix, per-act and total progress
+counts (a level counts once it is passed or skipped), and two golden
+outputs, one plain and one coloured, held as inline Go string literals per
+the ticket's own Definition of Done rather than a `testdata/` fixture, since
+this repository has no golden-file convention for CLI text. `--ascii` and
+`NO_COLOR` both resolve to the same `color=false` argument inside
+`cmd_map.go`, so their outputs are byte identical by construction; the test
+that matters at the renderer level is that `color=false` output carries no
+`\x1b` escape and no byte outside ASCII, and that stripping every escape
+from the `color=true` output reproduces the plain text exactly.
+
+Contract decisions taken, all of them this ticket's own call rather than
+specified: the printed tree uses `[x]` passed, `[ ]` available, `[s]`
+skipped, `[-]` locked, all plain ASCII, matching the ASCII-only marks
+`render_check.go` already uses for the same CI-visible reason; a locked
+level's line ends `(locked: needs id, id)`, naming unmet prerequisites in
+campaign order rather than the order they happen to be listed in the
+level's own YAML; and `render_map.go` copies `render_check.go`'s
+`colours`/`palette` shape under new names (`mapColours`, `mapPalette`)
+rather than sharing it, since `render_check.go`'s version is entangled with
+`crlf` and the sandbox's raw-mode PTY, which `map` never touches, running
+on the host with a plain `"\n"` instead.
+
+Ran clean locally: `gofmt -s`, `go vet ./...`, `go test ./...`, the
+punctuation gate, `go test -race ./...`, `go test ./internal/archtest/...`,
+the allowlist gate, the link checker, `check-ci-gates.py`, and the Python
+suite under `scripts/tests`. `govulncheck` and `gosec` are not installed in
+this environment and are left to CI, as with every prior entry that says
+so. No Docker was needed to write or test any of this; the one place Docker
+mattered was confirming `docker info` genuinely fails here, which is the
+same claim `map`'s own acceptance criteria rest on.
+
+Deliberately not done: no `Session` or `Orchestrator` wiring, so nothing
+outside `map` itself calls `Resolve` or `Next` yet; no `play` verb, which is
+the next ticket's job and is named as such in the interfaces section of
+#124; no rendering of a graph, only a grouped list; and no `soft_prereq`
+schema field, per the divergence noted above.
 
 ## Day 6: hardening, CI, packaging
 
