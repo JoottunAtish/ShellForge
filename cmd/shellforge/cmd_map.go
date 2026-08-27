@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 
 	"github.com/spf13/cobra"
 
@@ -95,7 +94,7 @@ func runMap(ctx context.Context, out io.Writer, ascii bool) error {
 			docAnchorPackInvalid)
 	}
 
-	color := ux.ColorEnabled(os.Stdout) && !ascii
+	color := ux.ColorEnabled(out) && !ascii
 	fmt.Fprint(out, renderMap(pack, nodes, color))
 	return nil
 }

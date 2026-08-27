@@ -198,6 +198,43 @@ func TestRenderMapGoldenColorOutput(t *testing.T) {
 	}
 }
 
+// TestRenderMapOrphanLevelPrintsUnderUnassignedHeading covers a node whose
+// ActID names no act present in the pack's Acts: content.Pack.Order can
+// surface this for a level listed in no act's Levels list, and renderMap
+// must still show it rather than silently dropping it, under a final
+// "Unassigned" heading that also counts toward the total.
+func TestRenderMapOrphanLevelPrintsUnderUnassignedHeading(t *testing.T) {
+	pack := fixtureMapPack()
+	nodes := fixtureMapNodes()
+	nodes = append(nodes, game.Node{
+		LevelID:      "orphan-01",
+		ActID:        "no-such-act",
+		Title:        "Adrift",
+		XP:           5,
+		Difficulty:   1,
+		Availability: game.AvailableNow,
+	})
+
+	out := renderMap(pack, nodes, false)
+
+	unassignedIdx := strings.Index(out, "Unassigned")
+	orphanIdx := strings.Index(out, "[ ] Adrift (5 xp)")
+	if unassignedIdx == -1 {
+		t.Fatalf("output missing the Unassigned heading: %q", out)
+	}
+	if orphanIdx == -1 {
+		t.Fatalf("output missing the orphan level's line: %q", out)
+	}
+	if orphanIdx < unassignedIdx {
+		t.Errorf("orphan level line (index %d) does not appear under the Unassigned heading (index %d): %q", orphanIdx, unassignedIdx, out)
+	}
+	// act1: 1/2, act2: 0/1, Unassigned: 1/1 (orphan is available, not done)
+	// counted, so the total gains one to its denominator: 1/4.
+	if !strings.Contains(out, "Total: 1/4 complete") {
+		t.Errorf("orphan level was not counted in the total progress line: %q", out)
+	}
+}
+
 func TestRenderMapEmptyPackProducesTotalLine(t *testing.T) {
 	pack := &content.Pack{ID: "empty"}
 	out := renderMap(pack, nil, false)

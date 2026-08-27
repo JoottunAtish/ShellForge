@@ -149,6 +149,12 @@ func writeAct(b *strings.Builder, p mapColours, title, subtitle string, nodes []
 
 // levelLine renders one level's row: its marker, title, XP, and, when
 // locked, what it is waiting on.
+//
+// TODO(v0.2): n.Title here, and an act's Title and Subtitle in writeAct,
+// are written straight to the terminal with no sanitizing against control
+// or ANSI bytes. Not exploitable today: content.Embedded() is the only
+// source, and that is trusted compiled-in YAML. It becomes a real path once
+// third-party pack loading ships, and must be sanitized before that lands.
 func levelLine(p mapColours, n game.Node) string {
 	line := fmt.Sprintf("  %s %s (%d xp)", mark(p, n.Availability), n.Title, n.XP)
 	if n.Availability == game.AvailableLocked && len(n.BlockedBy) > 0 {

@@ -1,6 +1,7 @@
 package game
 
 import (
+	"fmt"
 	"sort"
 
 	"github.com/JoottunAtish/ShellForge/internal/content"
@@ -95,7 +96,7 @@ type Node struct {
 func Resolve(pack *content.Pack, states map[string]store.LevelState) ([]Node, error) {
 	order, err := pack.Order()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("resolve campaign order: %w", err)
 	}
 
 	position := make(map[string]int, len(order))

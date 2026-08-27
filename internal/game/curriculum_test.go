@@ -187,6 +187,32 @@ func TestResolveBlockedByNamesUnmetPrerequisitesInPackOrder(t *testing.T) {
 	if a := nodeByID(t, nodes, "a"); len(a.BlockedBy) != 0 {
 		t.Errorf("level a has BlockedBy %v, want empty", a.BlockedBy)
 	}
+
+	// BlockedBy must also be empty for a passed level and for a skipped
+	// level, not just for the available one already checked above. This
+	// pins "empty for every other availability" explicitly, on its own
+	// Resolve call, rather than only by construction: nodes above never
+	// carries a passed or skipped node, since states was nil.
+	passedOrSkipped := map[string]store.LevelState{
+		"a": passedState("a", 1),
+		"b": skippedState("b"),
+	}
+	nodes2, err := Resolve(pack, passedOrSkipped)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got := nodeByID(t, nodes2, "a"); got.Availability != AvailablePassed {
+		t.Fatalf("level a = %q, want passed (fixture check, not the assertion under test)", got.Availability)
+	}
+	if got := nodeByID(t, nodes2, "a"); len(got.BlockedBy) != 0 {
+		t.Errorf("passed level a has BlockedBy %v, want empty", got.BlockedBy)
+	}
+	if got := nodeByID(t, nodes2, "b"); got.Availability != AvailableSkipped {
+		t.Fatalf("level b = %q, want skipped (fixture check, not the assertion under test)", got.Availability)
+	}
+	if got := nodeByID(t, nodes2, "b"); len(got.BlockedBy) != 0 {
+		t.Errorf("skipped level b has BlockedBy %v, want empty", got.BlockedBy)
+	}
 }
 
 // TestResolveNilStatesBehavesLikeEmptyMap is contract decision 2: a nil
