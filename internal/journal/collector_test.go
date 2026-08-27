@@ -81,6 +81,16 @@ func (f *fakeSession) pullCount() int {
 	return f.pulls
 }
 
+// snapshot returns a copy of the file's current content, so a test can size
+// it without racing appendContent.
+func (f *fakeSession) snapshot() []byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]byte, len(f.data))
+	copy(out, f.data)
+	return out
+}
+
 func (f *fakeSession) pulledPaths() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -98,9 +108,14 @@ func tsvLine(epoch string, exit int, cwd, raw string) string {
 
 // newTestCollector returns a Collector over a fakeSession preloaded with
 // content, using the state directory the sandbox image actually sets.
-func newTestCollector(content string) (*Collector, *fakeSession) {
+func newTestCollector(t *testing.T, content string) (*Collector, *fakeSession) {
+	t.Helper()
 	f := &fakeSession{data: []byte(content)}
-	return NewCollector(f, "/home/learner/.shellforge"), f
+	c, err := NewCollector(f, "/home/learner/.shellforge")
+	if err != nil {
+		t.Fatalf("NewCollector: %v", err)
+	}
+	return c, f
 }
 
 func TestSinceReturnsEveryRecordStampedWithTheLevelID(t *testing.T) {
@@ -108,7 +123,7 @@ func TestSinceReturnsEveryRecordStampedWithTheLevelID(t *testing.T) {
 		tsvLine("1755000001.250000", 2, "/home/learner", "grep -r 'error' logs/") +
 		tsvLine("1755000002.000000", 0, "/home/learner/logs", "cd logs")
 
-	c, _ := newTestCollector(content)
+	c, _ := newTestCollector(t, content)
 
 	got, err := c.Since(context.Background(), "nav-01")
 	if err != nil {
@@ -146,8 +161,8 @@ func TestSinceReturnsEveryRecordStampedWithTheLevelID(t *testing.T) {
 }
 
 func TestSinceIsIncrementalAcrossCallsWithNoDuplicatesAndNoGaps(t *testing.T) {
-	c, f := newTestCollector(
-		tsvLine("1755000000.000000", 0, "/home/learner", "pwd") +
+	c, f := newTestCollector(t,
+		tsvLine("1755000000.000000", 0, "/home/learner", "pwd")+
 			tsvLine("1755000001.000000", 0, "/home/learner", "ls"),
 	)
 	ctx := context.Background()
@@ -199,8 +214,8 @@ func TestSinceIsIncrementalAcrossCallsWithNoDuplicatesAndNoGaps(t *testing.T) {
 }
 
 func TestSinceSkipsATruncatedFinalLineAndReturnsItOnceComplete(t *testing.T) {
-	c, f := newTestCollector(
-		tsvLine("1755000000.000000", 0, "/home/learner", "pwd") +
+	c, f := newTestCollector(t,
+		tsvLine("1755000000.000000", 0, "/home/learner", "pwd")+
 			"1755000001.000000\t0\t/home/learner\tls -l", // no terminator: mid-write
 	)
 	ctx := context.Background()
@@ -240,7 +255,7 @@ func TestSinceSkipsAMalformedMiddleLineAndKeepsTheSurroundingRecords(t *testing.
 		"1755000001.000000\tnot-an-exit-code\t/home/learner\tls\n" +
 		tsvLine("1755000002.000000", 0, "/home/learner", "whoami")
 
-	c, _ := newTestCollector(content)
+	c, _ := newTestCollector(t, content)
 
 	got, err := c.Since(context.Background(), "nav-01")
 	if err != nil {
@@ -260,7 +275,7 @@ func TestSinceSkipsAnOverLongLineAndKeepsTheSurroundingRecords(t *testing.T) {
 		tsvLine("1755000001.000000", 0, "/home/learner", huge) +
 		tsvLine("1755000002.000000", 0, "/home/learner", "whoami")
 
-	c, _ := newTestCollector(content)
+	c, _ := newTestCollector(t, content)
 
 	got, err := c.Since(context.Background(), "nav-01")
 	if err != nil {
@@ -275,7 +290,7 @@ func TestSinceSkipsAnOverLongLineAndKeepsTheSurroundingRecords(t *testing.T) {
 }
 
 func TestSinceReportsNoCommandsAndNoErrorWhenTheJournalDoesNotExist(t *testing.T) {
-	c, f := newTestCollector("")
+	c, f := newTestCollector(t, "")
 	f.setErr(fmt.Errorf("open %s: %w", "/home/learner/.shellforge/journal.tsv", fs.ErrNotExist))
 
 	got, err := c.Since(context.Background(), "nav-01")
@@ -291,7 +306,7 @@ func TestSinceReportsNoCommandsAndNoErrorWhenTheJournalDoesNotExist(t *testing.T
 }
 
 func TestSinceReportsAReadErrorWithNoCommandTextInIt(t *testing.T) {
-	c, f := newTestCollector("")
+	c, f := newTestCollector(t, "")
 	f.setErr(errors.New("docker cp (pull) /home/learner/.shellforge/journal.tsv exited 1"))
 
 	got, err := c.Since(context.Background(), "nav-01")
@@ -307,7 +322,7 @@ func TestSinceReportsAReadErrorWithNoCommandTextInIt(t *testing.T) {
 }
 
 func TestSinceRecoversOnceTheJournalBecomesReadableAgain(t *testing.T) {
-	c, f := newTestCollector(tsvLine("1755000000.000000", 0, "/home/learner", "pwd"))
+	c, f := newTestCollector(t, tsvLine("1755000000.000000", 0, "/home/learner", "pwd"))
 	ctx := context.Background()
 
 	f.setErr(errors.New("transient backend failure"))
@@ -326,7 +341,7 @@ func TestSinceRecoversOnceTheJournalBecomesReadableAgain(t *testing.T) {
 }
 
 func TestSinceReadsJournalTSVUnderTheStateDirectoryWithSlashSeparators(t *testing.T) {
-	c, f := newTestCollector("")
+	c, f := newTestCollector(t, "")
 
 	if _, err := c.Since(context.Background(), "nav-01"); err != nil {
 		t.Fatalf("Since: %v", err)
@@ -342,7 +357,7 @@ func TestSinceReadsJournalTSVUnderTheStateDirectoryWithSlashSeparators(t *testin
 }
 
 func TestSincePullsTheJournalExactlyOncePerCall(t *testing.T) {
-	c, f := newTestCollector(tsvLine("1755000000.000000", 0, "/home/learner", "pwd"))
+	c, f := newTestCollector(t, tsvLine("1755000000.000000", 0, "/home/learner", "pwd"))
 	ctx := context.Background()
 
 	for i := 1; i <= 3; i++ {
@@ -356,7 +371,7 @@ func TestSincePullsTheJournalExactlyOncePerCall(t *testing.T) {
 }
 
 func TestSinceLeavesUsedTabAndUsedHistoryFalse(t *testing.T) {
-	c, _ := newTestCollector(tsvLine("1755000000.000000", 0, "/home/learner", "ls -l"))
+	c, _ := newTestCollector(t, tsvLine("1755000000.000000", 0, "/home/learner", "ls -l"))
 
 	got, err := c.Since(context.Background(), "nav-01")
 	if err != nil {
@@ -387,7 +402,7 @@ func manyRecords(n int) string {
 
 func TestSinceBoundsHowManyRecordsItReturnsInOneCall(t *testing.T) {
 	const extra = 7
-	c, _ := newTestCollector(manyRecords(2*maxRecordsPerSince + extra))
+	c, _ := newTestCollector(t, manyRecords(2*maxRecordsPerSince+extra))
 	ctx := context.Background()
 
 	want := []int{maxRecordsPerSince, maxRecordsPerSince, extra, 0}
@@ -424,8 +439,8 @@ func TestSinceBoundsHowManyRecordsItReturnsInOneCall(t *testing.T) {
 func TestSinceWorkPerCallDoesNotGrowWithTheFileSize(t *testing.T) {
 	ctx := context.Background()
 
-	small, _ := newTestCollector(manyRecords(3 * maxRecordsPerSince))
-	large, _ := newTestCollector(manyRecords(30 * maxRecordsPerSince))
+	small, _ := newTestCollector(t, manyRecords(3*maxRecordsPerSince))
+	large, _ := newTestCollector(t, manyRecords(30*maxRecordsPerSince))
 
 	gotSmall, err := small.Since(ctx, "nav-01")
 	if err != nil {
@@ -449,7 +464,7 @@ func TestSinceReturnsNothingFromAJournalOfNothingButGarbage(t *testing.T) {
 	// What `yes >> journal.tsv` produces, followed by one real record, so
 	// this asserts the garbage is skipped rather than that nothing at all
 	// came back.
-	c, f := newTestCollector(strings.Repeat("y\n", 100000) +
+	c, f := newTestCollector(t, strings.Repeat("y\n", 100000)+
 		tsvLine("1755000000.000000", 0, "/home/learner", "pwd"))
 
 	var got []Entry
@@ -472,8 +487,8 @@ func TestSinceReturnsNothingFromAJournalOfNothingButGarbage(t *testing.T) {
 }
 
 func TestSinceReturnsNothingWhenTheJournalShrinksUnderIt(t *testing.T) {
-	c, f := newTestCollector(
-		tsvLine("1755000000.000000", 0, "/home/learner", "pwd") +
+	c, f := newTestCollector(t,
+		tsvLine("1755000000.000000", 0, "/home/learner", "pwd")+
 			tsvLine("1755000001.000000", 0, "/home/learner", "ls"),
 	)
 	ctx := context.Background()
@@ -495,8 +510,142 @@ func TestSinceReturnsNothingWhenTheJournalShrinksUnderIt(t *testing.T) {
 	}
 }
 
+// assertLongerThan fails when the regrown journal did not reach past the byte
+// count an earlier call had already consumed. A test that means to exercise a
+// stale offset landing INSIDE the new content proves nothing if the new
+// content stops short of it.
+func assertLongerThan(t *testing.T, got, floor int) {
+	t.Helper()
+	if got <= floor {
+		t.Fatalf("the regrown journal is %d bytes and the first call consumed %d; it must be longer, or the stale offset lands past the end of the file and this test exercises the wrong case", got, floor)
+	}
+}
+
+// TestSinceResyncsFromTheStartWhenTheJournalRegrowsAfterAShrink is the other
+// half of the truncation contract, and the half that was missing: asserting
+// that the call after a shrink returns nothing says nothing about the calls
+// after that one.
+//
+// A stale offset survives a shrink as a byte count into content that no
+// longer exists. Once the file grows back past it, reading from it lands in
+// the middle of a record: the fragment before the next '\n' is handed to
+// ReadTSV as if it were a whole line, so the command it belongs to is lost
+// and, given four tab separated fields in the wrong places, a garbled row
+// takes its place. The regrown content here is deliberately longer than the
+// content the first call consumed, so the stale offset is inside it rather
+// than past its end, which is the case that corrupts rather than the case
+// that merely stalls.
+func TestSinceResyncsFromTheStartWhenTheJournalRegrowsAfterAShrink(t *testing.T) {
+	c, f := newTestCollector(t,
+		tsvLine("1755000000.000000", 0, "/home/learner", "grep -rn 'ERROR' /var/log/app/")+
+			tsvLine("1755000001.000000", 0, "/home/learner", "awk '{print $3}' access.log | sort -u")+
+			tsvLine("1755000002.000000", 0, "/home/learner", "find . -name '*.conf' -mtime -7"),
+	)
+	ctx := context.Background()
+	consumed := len(f.snapshot())
+
+	if got, err := c.Since(ctx, "nav-01"); err != nil || len(got) != 3 {
+		t.Fatalf("first Since = (%d entries, %v), want (3, nil)", len(got), err)
+	}
+
+	// The learner truncates the journal and starts it again from one short
+	// record. The call that notices returns nothing: the remainder must not
+	// be re-emitted the instant the file shrinks.
+	f.setContent([]byte(tsvLine("1755000003.000000", 0, "/home/learner", "whoami")))
+	if got, err := c.Since(ctx, "nav-01"); err != nil || len(got) != 0 {
+		t.Fatalf("Since on the shrink = (%d entries, %v), want (0, nil)", len(got), err)
+	}
+
+	// The shell keeps writing. Three well formed records take the file back
+	// past the length the first call had already consumed, so the stale
+	// offset now points inside the new content rather than past the end of
+	// it. assertLongerThan below pins that, because it is the whole point of
+	// the case and a later edit to these command strings could quietly undo
+	// it.
+	f.appendContent(
+		tsvLine("1755000004.000000", 0, "/home/learner", "sed -n '1,20p' /etc/services") +
+			tsvLine("1755000005.000000", 1, "/home/learner", "tar -czf backup.tar.gz /home/learner/notes") +
+			tsvLine("1755000006.000000", 0, "/home/learner", "chmod 0644 /home/learner/notes/reading-list.md"),
+	)
+	assertLongerThan(t, len(f.snapshot()), consumed)
+
+	var got []Entry
+	for i := 0; i < 3; i++ {
+		batch, err := c.Since(ctx, "nav-01")
+		if err != nil {
+			t.Fatalf("Since call %d after the regrowth: %v", i+1, err)
+		}
+		got = append(got, batch...)
+	}
+
+	want := []string{
+		"whoami",
+		"sed -n '1,20p' /etc/services",
+		"tar -czf backup.tar.gz /home/learner/notes",
+		"chmod 0644 /home/learner/notes/reading-list.md",
+	}
+	var raws []string
+	for _, e := range got {
+		raws = append(raws, e.Raw)
+	}
+	if strings.Join(raws, "|") != strings.Join(want, "|") {
+		t.Fatalf("after the regrowth Since collected %v, want %v: a stale offset reads from the middle of a record, which drops the commands around it and can admit a garbled one",
+			raws, want)
+	}
+	for i, e := range got {
+		if e.Cwd != "/home/learner" {
+			t.Errorf("entry %d Cwd = %q, want /home/learner: a record parsed from a mid-line offset carries the wrong fields", i, e.Cwd)
+		}
+		if e.TS.IsZero() {
+			t.Errorf("entry %d TS is the zero time, so its first field was not a timestamp", i)
+		}
+	}
+}
+
+func TestNewCollectorRefusesAStateDirectoryOutsideTheLearnerHome(t *testing.T) {
+	// Every one of these fails a different arm of platform.UnsafeLevelRoot,
+	// and none of them is somewhere the sandbox state directory can live.
+	cases := map[string]string{
+		"empty":            "",
+		"relative":         ".shellforge",
+		"dot dot segment":  "/home/learner/../etc/shellforge",
+		"host path":        "/etc/shellforge",
+		"the root itself":  "/",
+		"the learner home": "/home/learner",
+	}
+
+	for name, dir := range cases {
+		t.Run(name, func(t *testing.T) {
+			c, err := NewCollector(&fakeSession{}, dir)
+			if err == nil {
+				t.Fatalf("NewCollector(%q) returned no error, want a refusal", dir)
+			}
+			if c != nil {
+				t.Errorf("NewCollector(%q) returned a Collector alongside its refusal, want nil", dir)
+			}
+			if !strings.Contains(err.Error(), "state directory") {
+				t.Errorf("NewCollector(%q) error = %q, want it to name what was refused", dir, err)
+			}
+		})
+	}
+}
+
+func TestNewCollectorAcceptsTheStateDirectoryTheSandboxImageSets(t *testing.T) {
+	f := &fakeSession{}
+	c, err := NewCollector(f, "/home/learner/.shellforge")
+	if err != nil {
+		t.Fatalf("NewCollector on the real state directory: %v", err)
+	}
+	if _, err := c.Since(context.Background(), "nav-01"); err != nil {
+		t.Fatalf("Since: %v", err)
+	}
+	if paths := f.pulledPaths(); len(paths) != 1 || paths[0] != "/home/learner/.shellforge/journal.tsv" {
+		t.Errorf("pulled %v, want [/home/learner/.shellforge/journal.tsv]", paths)
+	}
+}
+
 func TestSinceIsSafeUnderConcurrentCalls(t *testing.T) {
-	c, _ := newTestCollector(manyRecords(50))
+	c, _ := newTestCollector(t, manyRecords(50))
 	ctx := context.Background()
 
 	var (

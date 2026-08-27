@@ -26,14 +26,16 @@ import (
 // that one.
 
 type journalFakeSession struct {
-	mu   sync.Mutex
-	data []byte
-	err  error
+	mu    sync.Mutex
+	data  []byte
+	err   error
+	pulls int
 }
 
 func (f *journalFakeSession) PullFile(context.Context, string) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.pulls++
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -70,6 +72,17 @@ func (f *journalFakeSession) setErr(err error) {
 	f.err = err
 }
 
+// pullCount is how many times a Drain has reached into the sandbox for
+// journal.tsv, mirroring internal/journal's own fakeSession.pullCount. It is
+// what separates "Drain read the journal and correctly found nothing in it"
+// from "Drain did not read the journal at all", which every degrade-to-zero
+// assertion otherwise cannot tell apart.
+func (f *journalFakeSession) pullCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.pulls
+}
+
 // sinkTSVLine renders one record exactly as images/rc/instrument.bash writes
 // it: EPOCHREALTIME, exit code, PWD, then the command line, tab separated.
 func sinkTSVLine(epoch string, exit int, cwd, raw string) string {
@@ -92,7 +105,11 @@ func newTestSink(t *testing.T, content string) (*JournalSink, *journalFakeSessio
 	j := journal.New(s)
 	b, rec := newRecordingBus()
 
-	return NewJournalSink(journal.NewCollector(sess, "/home/learner/.shellforge"), j, b), sess, j, rec, s
+	c, err := journal.NewCollector(sess, "/home/learner/.shellforge")
+	if err != nil {
+		t.Fatalf("journal.NewCollector: %v", err)
+	}
+	return NewJournalSink(c, j, b), sess, j, rec, s
 }
 
 func commandEvents(rec *recordingBus) []bus.CommandExecuted {
@@ -232,10 +249,13 @@ func TestDrainDegradesToZeroCommandsWhenTheJournalCannotBeRead(t *testing.T) {
 	if n := len(commandEvents(rec)); n != 0 {
 		t.Errorf("bus carried %d events, want 0", n)
 	}
+	if n := sess.pullCount(); n != 1 {
+		t.Errorf("Drain read the journal %d times, want exactly 1: zero rows must mean Drain tried and degraded, not that it skipped the read", n)
+	}
 }
 
 func TestDrainDegradesToZeroCommandsWhenThereIsNoJournalYet(t *testing.T) {
-	sink, _, j, rec, _ := newTestSink(t, "")
+	sink, sess, j, rec, _ := newTestSink(t, "")
 	ctx := context.Background()
 
 	if err := sink.Drain(ctx, "nav-01", 3); err != nil {
@@ -250,6 +270,9 @@ func TestDrainDegradesToZeroCommandsWhenThereIsNoJournalYet(t *testing.T) {
 	}
 	if n := len(commandEvents(rec)); n != 0 {
 		t.Errorf("bus carried %d events, want 0", n)
+	}
+	if n := sess.pullCount(); n != 1 {
+		t.Errorf("Drain read the journal %d times, want exactly 1: zero rows must mean Drain tried and degraded, not that it skipped the read", n)
 	}
 }
 
@@ -299,6 +322,124 @@ func TestDrainKeepsCommandTextOutOfTheErrorItReturns(t *testing.T) {
 	}
 	if n := len(commandEvents(rec)); n != 0 {
 		t.Errorf("bus carried %d events for an entry that was never appended, want 0", n)
+	}
+}
+
+// TestDrainPublishesAZeroDurationForEveryTSVRecord pins the documented gap in
+// issue #123's first acceptance criterion, which asks the events table to hold
+// the real command text, exit codes, cwd and durations. Three of those four
+// arrive. Duration does not, and cannot on this path: images/rc/instrument.bash
+// writes four fields and none of them is a duration, the only other place a
+// duration exists is pty.CommandEvent, and joining that stream to these
+// records by index is the correlation the ticket's Approach section forbids.
+//
+// This asserts the zero rather than leaving it unstated, so the day a durable
+// correlation lands (the TODO(v0.2) in journalsink.go) somebody has to change
+// this assertion on purpose, and so a partial or accidental fix cannot slip in
+// unnoticed either way.
+func TestDrainPublishesAZeroDurationForEveryTSVRecord(t *testing.T) {
+	sink, _, j, rec, _ := newTestSink(t, fiveCommands())
+	ctx := context.Background()
+
+	if err := sink.Drain(ctx, "pipe-05", 11); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+
+	events := commandEvents(rec)
+	if len(events) != 5 {
+		t.Fatalf("bus carried %d CommandExecuted events, want 5", len(events))
+	}
+	for i, ev := range events {
+		if ev.Duration != 0 {
+			t.Errorf("event %d Duration = %s, want exactly 0: the TSV carries no duration, so anything else means a correlation was invented", i, ev.Duration)
+		}
+		// The rest of acceptance criterion 1 does arrive, and asserting it
+		// here is what keeps this test a statement about Duration alone
+		// rather than a test that would also pass if Drain published nothing
+		// real at all.
+		if ev.Raw == "" || ev.Cwd == "" {
+			t.Errorf("event %d has Raw = %q and Cwd = %q; both must be the record's own", i, ev.Raw, ev.Cwd)
+		}
+	}
+
+	rows, err := j.Level(ctx, "pipe-05")
+	if err != nil {
+		t.Fatalf("Level: %v", err)
+	}
+	if len(rows) != 5 {
+		t.Fatalf("events table holds %d rows, want 5", len(rows))
+	}
+	for i, e := range rows {
+		if e.DurationMS != 0 {
+			t.Errorf("row %d DurationMS = %d, want exactly 0", i, e.DurationMS)
+		}
+	}
+}
+
+// TestDrainLosesTheRestOfTheBatchWhenAnAppendFailsPartWayThrough pins the
+// data-loss trade-off Drain's doc comment describes, rather than changing it.
+// The read side has already advanced past every record in the batch by the
+// time the first Append fails, so the entries after the failure point are
+// gone: a later Drain does not see them again.
+//
+// Closing the store from inside the first CommandExecuted subscriber is what
+// makes the SECOND of three appends fail. The bus is synchronous, so the
+// handler runs before Drain moves on to the next entry, which is the only way
+// to fail one Append in the middle of a batch against the real *journal.Journal
+// that NewJournalSink takes.
+func TestDrainLosesTheRestOfTheBatchWhenAnAppendFailsPartWayThrough(t *testing.T) {
+	ctx := context.Background()
+
+	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "progress.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	sess := &journalFakeSession{data: []byte(
+		sinkTSVLine("1755000000.000000", 0, "/home/learner", "pwd") +
+			sinkTSVLine("1755000001.000000", 0, "/home/learner", "ls -la") +
+			sinkTSVLine("1755000002.000000", 0, "/home/learner", "cd logs"),
+	)}
+	b, rec := newRecordingBus()
+
+	var closeOnce sync.Once
+	b.Subscribe("close the store after the first command", func(_ context.Context, ev bus.Event) {
+		if _, ok := ev.(bus.CommandExecuted); !ok {
+			return
+		}
+		closeOnce.Do(func() {
+			if err := s.Close(); err != nil {
+				t.Errorf("close store: %v", err)
+			}
+		})
+	})
+
+	c, err := journal.NewCollector(sess, "/home/learner/.shellforge")
+	if err != nil {
+		t.Fatalf("journal.NewCollector: %v", err)
+	}
+	sink := NewJournalSink(c, journal.New(s), b)
+
+	if err := sink.Drain(ctx, "nav-01", 4); err == nil {
+		t.Fatal("Drain returned no error when the second Append of the batch failed")
+	}
+	if n := len(commandEvents(rec)); n != 1 {
+		t.Fatalf("bus carried %d CommandExecuted events, want 1: Drain must stop at the first failed Append and publish nothing for it", n)
+	}
+
+	// The second Drain is the assertion that matters. The two entries after
+	// the failure point are not retried and not recovered: Since has already
+	// moved past them, so this call has nothing to return and reports no
+	// error.
+	if err := sink.Drain(ctx, "nav-01", 4); err != nil {
+		t.Fatalf("second Drain returned %v, want no error: there is nothing left to append, so nothing can fail", err)
+	}
+	if n := len(commandEvents(rec)); n != 1 {
+		t.Errorf("after a second Drain the bus carries %d CommandExecuted events, want still 1: the rest of the failed batch is lost by design and must not reappear", n)
+	}
+	if n := sess.pullCount(); n != 2 {
+		t.Errorf("Drain read the journal %d times across two calls, want 2", n)
 	}
 }
 

@@ -4765,6 +4765,71 @@ corrupt `journal.tsv` degrades silently to zero commands and must never reach th
 learner; and no `docs/LEVEL-FORMAT.md` change, since the level schema and the
 check catalogue are untouched.
 
+Review follow-up on PR #149, seven findings, one of them a real bug. **The
+stale offset after a shrink.** `Since` tracked `c.offset` as a byte position
+into `journal.tsv` and, on noticing the file had shrunk under it, returned
+nothing for that call but kept the offset. Once the file grew back past that
+value, the next read started at a byte position with no relationship to any
+line boundary in the file that was there now, handed `ReadTSV` the fragment
+from there to the next `\n`, and so silently dropped every command written
+since the shrink or admitted a garbled row in their place. Only the
+immediately-post-shrink case had a test.
+`Since` now resets `c.offset` to 0 on that branch, so the call after a shrink
+re-syncs from byte 0 of the new content. The cost is that a record the
+truncation left in place can be collected twice, which is the better of the
+two: a duplicate row is a wrong count in a bonus that is knowingly gameable,
+a garbled row is a wrong command in the learner's own history.
+`TestSinceResyncsFromTheStartWhenTheJournalRegrowsAfterAShrink` shrinks the
+file, asserts the shrink call returns nothing, regrows it past the old
+consumed length (`assertLongerThan` pins that, since the case only corrupts
+when the stale offset lands inside the new content rather than past its end),
+and asserts the four regrown commands all arrive with their own `Cwd` and a
+non-zero `TS`. With the one-line reset removed it fails collecting zero of
+those four. Detection is still only a length comparison, which cannot see a
+file that shrank and regrew between two calls, so `Collector` now carries an
+explicit lifetime rule in its doc comment: one per attempt, never carried
+across a level reset, which recreates `journal.tsv` from empty. `Seq` being
+monotonic for the Collector's life is the second reason for the same rule.
+
+**A fourth contract decision, stated as plainly as the other three:
+`Duration` is always zero through the `Collector` and `Drain` path, and issue
+#123's first acceptance criterion is therefore met only in part.** That
+criterion asks the `events` table to hold rows with the real command text,
+exit codes, cwd and durations. `Raw`, `ExitCode` and `Cwd` arrive.
+`Duration` does not, because `instrument.bash` writes four fields and none of
+them is a duration, and the only other place a duration exists is
+`pty.CommandEvent`, which could only be joined to a TSV record by index: the
+same correlation that leaves `UsedTab` false, and the one the ticket's
+Approach section forbids because it drifts the moment either side drops a
+record. So this is not fixable inside this ticket's own constraints, and it
+is called out rather than left implicit.
+`TestDrainPublishesAZeroDurationForEveryTSVRecord` asserts the zero through
+`Drain` for entries sourced from real TSV lines, on the bus and in the
+`events` table both, so the day the durable correlation named in the existing
+`TODO(v0.2)` lands, somebody has to change that assertion deliberately, and
+an accidental fix or a regression is visible either way.
+
+Four smaller items from the same review. `maxRecordsPerSince`'s doc comment
+now says in its first sentence that it bounds the parse dimension and nothing
+else, since the previous "bounds the other dimension" could be read as
+bounding the whole call; the whole-file `PullFile` read is still unbounded
+and still a `TODO(v0.2)`, because a ranged read is a `runtime.Session`
+interface change and out of this ticket's scope. `NewCollector` now returns
+`(*Collector, error)` and refuses a `stateDir` that is empty, relative,
+carries a `..` segment, or sits outside `platform.LearnerHomePrefix`, through
+the same `platform.UnsafeLevelRoot` that `internal/content/setup` puts the
+same value through; `internal/platform` is L0 so the import points downward
+and `archtest` needed no edit. `Drain`'s doc comment loses the word "simply",
+per the writing-style rule. And two test gaps closed:
+`TestDrainLosesTheRestOfTheBatchWhenAnAppendFailsPartWayThrough` fails the
+second of three appends (a bus subscriber closes the store after the first
+`CommandExecuted`, which is the only way to fail one `Append` mid-batch
+against the real `*journal.Journal`) and asserts a later `Drain` never sees
+the lost two again, pinning the documented trade-off rather than changing it;
+and both `TestDrainDegradesToZeroCommands...` tests now count `PullFile`
+calls and require exactly one, since a `Drain` that did nothing at all used
+to pass them.
+
 ## Day 6: hardening, CI, packaging
 
 - [ ] CI green on both platforms

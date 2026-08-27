@@ -44,7 +44,7 @@ func NewJournalSink(c *journal.Collector, j *journal.Journal, b *bus.Bus) *Journ
 // however many times Drain runs.
 //
 // A journal that cannot be read, or that does not exist yet, is not a
-// failure: Drain reports no error and simply records no commands, so a
+// failure: Drain reports no error and records no commands, so a
 // learner whose journal was lost sees an efficiency bonus of zero rather than
 // a check that will not run. Nothing in this path reaches ux.Fail and nothing
 // in it is a reason to fail a level. The error Drain does return is a failure
@@ -90,7 +90,13 @@ func (s *JournalSink) Drain(ctx context.Context, levelID string, attemptID int64
 			// because matching an OSC event to a TSV row by index drifts the
 			// moment either side drops one. Duration is zero for the same
 			// reason: instrument.bash writes four fields and none of them is
-			// a duration.
+			// a duration. Named plainly, because it is half of an acceptance
+			// criterion rather than a nicety: issue #123 asks the events
+			// table to hold the real command text, exit codes, cwd AND
+			// durations, and this path delivers the first three only.
+			// TestDrainPublishesAZeroDurationForEveryTSVRecord pins the zero
+			// so that filling it in has to be a deliberate change to an
+			// assertion rather than something that happens by accident.
 			// TODO(v0.2): correlate CommandEvent with the TSV record by
 			// something durable, and fill UsedTab, UsedHistory and Duration
 			// from it. The tab_master and manual_labour achievements need it;
