@@ -927,3 +927,108 @@ drain:
 		t.Errorf("received %d events, want exactly %d (the buffer's capacity)", got, eventBufferSize)
 	}
 }
+
+// --- 15: tab tapping, and the forwarding it must not disturb --------------
+
+// feedCompletedCommand feeds the three markers that close out one command
+// and returns the CommandEvent Mux assembles from them.
+func feedCompletedCommand(t *testing.T, p *fakePTY, mux *Mux, exit int, cwd string) CommandEvent {
+	t.Helper()
+	p.feedOutput(t, preExecSeq())
+	p.feedOutput(t, commandDoneSeq(exit))
+	p.feedOutput(t, cwdReportSeq(cwd))
+	return recvEvent(t, mux)
+}
+
+// typeStdin writes payload to the host stdin side and waits until every byte
+// of it has reached the fake PTY's write side. That wait is the
+// synchronization point the tab flag needs: the stdin copy goroutine reads a
+// chunk (observing its bytes) before it writes that same chunk on, so a byte
+// visible on the write side has already been through the tap.
+func typeStdin(t *testing.T, p *fakePTY, inW *io.PipeWriter, payload []byte, before int) {
+	t.Helper()
+	if _, err := inW.Write(payload); err != nil {
+		t.Fatalf("write to stdin: %v", err)
+	}
+	waitUntil(t, 2*time.Second, func() bool { return len(p.writesSnapshot()) >= before+len(payload) })
+}
+
+func TestMux_TabTap_UsedTabReflectsTheRecordedStdinStream(t *testing.T) {
+	p, mux, inW, _ := newTestMux(t)
+	done := runAsync(mux, context.Background())
+	t.Cleanup(func() {
+		p.triggerWait(nil)
+		<-done
+	})
+
+	// A recorded stdin byte stream, one entry per command the learner
+	// submits: what they typed, and whether a Tab (0x09) is in it.
+	stream := []struct {
+		name    string
+		payload []byte
+		wantTab bool
+	}{
+		{"completed with tab", []byte("cd Doc\tuments\r"), true},
+		{"typed out in full", []byte("ls -la\r"), false},
+		{"ctrl-c then a plain command", []byte{0x03, 'p', 'w', 'd', '\r'}, false},
+		{"tab again after a plain command", []byte("cat rep\t\r"), true},
+	}
+
+	var typed []byte
+	for _, s := range stream {
+		typeStdin(t, p, inW, s.payload, len(typed))
+		typed = append(typed, s.payload...)
+
+		ev := feedCompletedCommand(t, p, mux, 0, "/home/learner")
+		if ev.UsedTab != s.wantTab {
+			t.Errorf("%s: UsedTab = %v, want %v", s.name, ev.UsedTab, s.wantTab)
+		}
+		if ev.Raw != "" {
+			t.Errorf("%s: Raw = %q, want empty: Mux stays a byte pump and never fills Raw", s.name, ev.Raw)
+		}
+	}
+
+	// The whole recorded stream must have reached the sandbox unchanged:
+	// nothing added, nothing dropped, nothing reordered, Ctrl-C included.
+	if got := p.writesSnapshot(); string(got) != string(typed) {
+		t.Errorf("fake PTY write side = %q, want %q byte for byte", got, typed)
+	}
+}
+
+func TestMux_TabTap_FlagIsClearedForTheNextCommand(t *testing.T) {
+	p, mux, inW, _ := newTestMux(t)
+	done := runAsync(mux, context.Background())
+	t.Cleanup(func() {
+		p.triggerWait(nil)
+		<-done
+	})
+
+	typeStdin(t, p, inW, []byte("ec\tho hi\r"), 0)
+	if ev := feedCompletedCommand(t, p, mux, 0, "/home/learner"); !ev.UsedTab {
+		t.Fatal("first command UsedTab = false, want true")
+	}
+
+	// No keystroke at all before the second command's markers: a tab from
+	// the previous window must not carry over.
+	if ev := feedCompletedCommand(t, p, mux, 0, "/home/learner"); ev.UsedTab {
+		t.Error("second command UsedTab = true, want false: the flag must be cleared per command")
+	}
+}
+
+func TestMux_TabTap_TabInsideAFullScreenApplicationIsStillForwardedVerbatim(t *testing.T) {
+	p, mux, inW, _ := newTestMux(t)
+	done := runAsync(mux, context.Background())
+	t.Cleanup(func() {
+		p.triggerWait(nil)
+		<-done
+	})
+
+	// A vim-shaped burst: escape sequences, a literal tab being inserted
+	// into a file, and a Ctrl-C, in one write.
+	payload := []byte{0x1b, '[', 'A', 'i', 0x09, 'x', 0x09, 0x1b, 0x03, ':', 'w', 'q', '\r'}
+	typeStdin(t, p, inW, payload, 0)
+
+	if got := p.writesSnapshot(); string(got) != string(payload) {
+		t.Errorf("fake PTY write side = %v, want %v byte for byte", got, payload)
+	}
+}
