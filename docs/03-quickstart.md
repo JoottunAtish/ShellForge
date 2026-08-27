@@ -54,7 +54,7 @@ off, arrives with them.
 | `shellforge author test --all` | Run every level through the golden contract |
 | `shellforge doctor` | Not built yet. Checks your machine |
 | `shellforge play` | Not built yet. Start, or resume where you left off |
-| `shellforge map` | Not built yet. The campaign and what is still locked |
+| `shellforge map` | The campaign as a tree of passed, available, and locked levels. `--ascii` forces plain output, and `NO_COLOR` is honoured too |
 | `shellforge stats` | Not built yet. XP, rank, streak, achievements |
 | `shellforge skip` | Not built yet. Give up on a level and move on |
 | `shellforge sandbox status` | Check whether the sandbox is provisioned and running |
