@@ -10,6 +10,7 @@ package docker
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -62,6 +63,15 @@ const sandboxLabel = "shellforge.sandbox"
 // The trap is so `docker stop` gets a clean exit instead of having to
 // escalate to SIGKILL after ten seconds.
 const sandboxInit = "trap 'exit 0' TERM INT; while :; do sleep infinity & wait $!; done"
+
+// containerInspectFormat asks one `docker inspect` for everything
+// ensureContainerRunning needs to choose between reusing a container and
+// replacing it. The JSON argv is last on purpose: a separator byte inside it
+// then cannot split a field, because SplitN stops counting.
+const containerInspectFormat = `{{.State.Running}}|{{index .Config.Labels "` + sandboxLabel + `"}}|{{.Image}}|{{json .Config.Cmd}}`
+
+// containerInspectFields is how many fields containerInspectFormat produces.
+const containerInspectFields = 4
 
 // containerfilePath and containerfileContext are where Provision builds the
 // image from, relative to the repository root. This matches `make image`.
@@ -212,89 +222,216 @@ func (rt *dockerRuntime) ensureImage(ctx context.Context, image string) error {
 }
 
 func (rt *dockerRuntime) ensureContainerRunning(ctx context.Context, image string) error {
-	exists, running, hasLabel, err := rt.inspectContainer(ctx)
+	st, err := rt.inspectContainer(ctx)
 	if err != nil {
 		return err
 	}
 
-	switch {
-	case !exists:
-		_, stderr, code, err := rt.run.run(ctx, []string{
-			"docker", "run", "-d",
-			"--name", rt.name,
-			"--label", sandboxLabel + "=1",
-			"--network", "none",
-			"--cap-drop", "ALL",
-			// PushFiles hands a file to "learner" after writing it as
-			// root, and chown needs CAP_CHOWN once every capability is
-			// dropped. FOWNER covers the chmod of a file a previous push
-			// already handed away. This is the security skill's "drop all
-			// capabilities, add back only what a level provably needs",
-			// applied to a need every level has rather than a specific
-			// one, which is as provable as this gets.
-			//
-			// DAC_OVERRIDE is deliberately NOT here. An earlier revision
-			// needed it because the staged-tree push left the copied
-			// files owned by an arbitrary host uid that root did not own.
-			// buildPushTar writes every entry as uid 0 instead, so root
-			// owns what it is about to chmod and chown, and the
-			// capability that would let it override permissions
-			// altogether is not required.
-			"--cap-add", "CHOWN",
-			"--cap-add", "FOWNER",
-			"--security-opt", "no-new-privileges",
-			"--", image, "bash", "-c", sandboxInit,
-		}, nil)
-		if err != nil {
-			return rt.classifyFailure(ctx, "start the sandbox container", err, stderr)
-		}
-		if code != 0 {
-			return rt.classifyFailure(ctx, "start the sandbox container", fmt.Errorf("docker run exited %d: %s", code, stderr), stderr)
-		}
-		return nil
-	case !hasLabel:
+	if !st.exists {
+		return rt.createContainer(ctx, image)
+	}
+	if !st.hasLabel {
 		return fmt.Errorf("docker: refusing to reuse container %q: it does not carry the %s label, so it was not created by Shellforge", rt.name, sandboxLabel)
-	case running:
-		return nil
-	default:
-		_, stderr, code, err := rt.run.run(ctx, []string{"docker", "start", "--", rt.name}, nil)
-		if err != nil {
-			return rt.classifyFailure(ctx, "start the sandbox container", err, stderr)
+	}
+
+	// The container is ours, which is the only reason the next step is
+	// allowed to remove it. Reuse is correct only when it was built from the
+	// image we would build from today and started with the argv we would
+	// start with today. Neither is implied by the name: `make image`
+	// rebuilds a tag in place, so a container created weeks ago keeps the
+	// old layers under the same name, and a change to sandboxInit leaves an
+	// old PID 1 running under the new binary. Both were real: the Day 5
+	// content run reported three phantom failures against a stale container,
+	// because the group membership the image had just gained and the PID 1
+	// that had just learned to reap were both absent from the one being
+	// reused.
+	stale, err := rt.containerIsStale(ctx, image, st)
+	if err != nil {
+		return err
+	}
+	if stale {
+		if err := rt.removeContainer(ctx); err != nil {
+			return err
 		}
-		if code != 0 {
-			return rt.classifyFailure(ctx, "start the sandbox container", fmt.Errorf("docker start exited %d: %s", code, stderr), stderr)
-		}
+		return rt.createContainer(ctx, image)
+	}
+
+	if st.running {
 		return nil
 	}
+	_, stderr, code, err := rt.run.run(ctx, []string{"docker", "start", "--", rt.name}, nil)
+	if err != nil {
+		return rt.classifyFailure(ctx, "start the sandbox container", err, stderr)
+	}
+	if code != 0 {
+		return rt.classifyFailure(ctx, "start the sandbox container", fmt.Errorf("docker start exited %d: %s", code, stderr), stderr)
+	}
+	return nil
 }
 
-// inspectContainer reports whether rt.name exists, whether it is running,
-// and whether it carries the Shellforge marker label. A container that does
-// not exist is reported as exists=false with a nil error: that is not a
-// failure, it is the common case Provision and Status both need to handle
-// without treating "not found" as an environment error.
-func (rt *dockerRuntime) inspectContainer(ctx context.Context) (exists, running, hasLabel bool, err error) {
+// containerIsStale reports whether an existing container of ours differs
+// from the one createContainer would produce now.
+//
+// It fails closed. A container whose image id or argv cannot be read back is
+// not provably current, so it is reported stale and recreated rather than
+// reused. That costs a rebuild in the worst case; reusing a container that
+// does not match the code running against it costs a debugging session
+// chasing a bug that was fixed weeks ago.
+func (rt *dockerRuntime) containerIsStale(ctx context.Context, image string, st containerState) (bool, error) {
+	if !equalArgv(st.cmd, sandboxCommand()) {
+		return true, nil
+	}
+
+	stdout, stderr, code, err := rt.run.run(ctx, []string{
+		"docker", "image", "inspect", "--format", "{{.Id}}", "--", image,
+	}, nil)
+	if err != nil {
+		return false, rt.classifyFailure(ctx, "inspect the sandbox image", err, stderr)
+	}
+	if code != 0 {
+		// The tag has gone missing between ensureImage and here. Treat the
+		// container as stale rather than erroring: the next createContainer
+		// reports the real problem, with docker's own message.
+		return true, nil
+	}
+
+	want := string(bytes.TrimSpace(stdout))
+	return want == "" || want != st.imageID, nil
+}
+
+// removeContainer deletes the container this Runtime owns. Every caller must
+// have established that it carries sandboxLabel first: the label is the
+// marker proving Shellforge created it, and nothing else licenses a `docker
+// rm -f` against a name that could collide with something a user built.
+func (rt *dockerRuntime) removeContainer(ctx context.Context) error {
+	if rt.name == "" {
+		return errors.New("docker: refusing to remove the sandbox container: container name is empty")
+	}
+	_, stderr, code, err := rt.run.run(ctx, []string{"docker", "rm", "-f", "--", rt.name}, nil)
+	if err != nil {
+		return rt.classifyFailure(ctx, "replace the stale sandbox container", err, stderr)
+	}
+	if code != 0 {
+		return rt.classifyFailure(ctx, "replace the stale sandbox container", fmt.Errorf("docker rm exited %d: %s", code, stderr), stderr)
+	}
+	return nil
+}
+
+func (rt *dockerRuntime) createContainer(ctx context.Context, image string) error {
+	argv := append([]string{
+		"docker", "run", "-d",
+		"--name", rt.name,
+		"--label", sandboxLabel + "=1",
+		"--network", "none",
+		"--cap-drop", "ALL",
+		// PushFiles hands a file to "learner" after writing it as
+		// root, and chown needs CAP_CHOWN once every capability is
+		// dropped. FOWNER covers the chmod of a file a previous push
+		// already handed away. This is the security skill's "drop all
+		// capabilities, add back only what a level provably needs",
+		// applied to a need every level has rather than a specific
+		// one, which is as provable as this gets.
+		//
+		// DAC_OVERRIDE is deliberately NOT here. An earlier revision
+		// needed it because the staged-tree push left the copied
+		// files owned by an arbitrary host uid that root did not own.
+		// buildPushTar writes every entry as uid 0 instead, so root
+		// owns what it is about to chmod and chown, and the
+		// capability that would let it override permissions
+		// altogether is not required.
+		"--cap-add", "CHOWN",
+		"--cap-add", "FOWNER",
+		"--security-opt", "no-new-privileges",
+		"--", image,
+	}, sandboxCommand()...)
+
+	_, stderr, code, err := rt.run.run(ctx, argv, nil)
+	if err != nil {
+		return rt.classifyFailure(ctx, "start the sandbox container", err, stderr)
+	}
+	if code != 0 {
+		return rt.classifyFailure(ctx, "start the sandbox container", fmt.Errorf("docker run exited %d: %s", code, stderr), stderr)
+	}
+	return nil
+}
+
+// sandboxCommand is the argv PID 1 runs. It is a function rather than a
+// package variable so that no caller can mutate the slice the staleness
+// comparison depends on.
+func sandboxCommand() []string { return []string{"bash", "-c", sandboxInit} }
+
+// containerState is what one `docker inspect` of rt.name reports.
+type containerState struct {
+	// exists is false when docker has no container by that name. That is
+	// not a failure: it is the common case Provision and Status both need
+	// to handle without treating "not found" as an environment error.
+	exists bool
+	// running mirrors .State.Running.
+	running bool
+	// hasLabel reports the Shellforge marker label. It is the only thing
+	// that licenses removing the container, so nothing may act on the two
+	// fields below before this one has been checked.
+	hasLabel bool
+	// imageID is the id of the image the container was created from, not
+	// the tag it was named with. A tag is rebuilt in place; an id is not,
+	// which is what makes this the honest question to ask.
+	imageID string
+	// cmd is the container's argv. It is nil when docker reports it as
+	// null, or as anything that is not a JSON array of strings, which
+	// containerIsStale reads as "not provably current".
+	cmd []string
+}
+
+// inspectContainer reports the state of rt.name in a single docker call.
+func (rt *dockerRuntime) inspectContainer(ctx context.Context) (containerState, error) {
 	stdout, stderr, code, runErr := rt.run.run(ctx, []string{
 		"docker", "inspect",
-		"--format", `{{.State.Running}}|{{index .Config.Labels "` + sandboxLabel + `"}}`,
+		"--format", containerInspectFormat,
 		"--", rt.name,
 	}, nil)
 	if runErr != nil {
-		return false, false, false, rt.classifyFailure(ctx, "inspect the sandbox container", runErr, stderr)
+		return containerState{}, rt.classifyFailure(ctx, "inspect the sandbox container", runErr, stderr)
 	}
 	if code != 0 {
 		// docker inspect exits 1 with "No such object" when the target does
 		// not exist. That is the expected shape of "not provisioned", not
 		// an environment failure, so it is not run through classifyFailure.
-		return false, false, false, nil
+		return containerState{}, nil
 	}
 
 	out := bytes.TrimSpace(stdout)
-	parts := bytes.SplitN(out, []byte("|"), 2)
-	if len(parts) != 2 {
-		return false, false, false, fmt.Errorf("docker: unexpected `docker inspect` output for %q: %q", rt.name, out)
+	parts := bytes.SplitN(out, []byte("|"), containerInspectFields)
+	if len(parts) != containerInspectFields {
+		return containerState{}, fmt.Errorf("docker: unexpected `docker inspect` output for %q: %q", rt.name, out)
 	}
-	return true, string(parts[0]) == "true", string(parts[1]) == "1", nil
+
+	st := containerState{
+		exists:   true,
+		running:  string(parts[0]) == "true",
+		hasLabel: string(parts[1]) == "1",
+		imageID:  string(bytes.TrimSpace(parts[2])),
+	}
+	// An argv that will not unmarshal leaves cmd nil, which reads as stale.
+	// Refusing to load the runtime over it would be worse: the recovery is
+	// a container rebuild either way, and only one of those two options can
+	// be taken without the learner doing anything.
+	if err := json.Unmarshal(bytes.TrimSpace(parts[3]), &st.cmd); err != nil {
+		st.cmd = nil
+	}
+	return st, nil
+}
+
+// equalArgv reports whether two argv slices are element-wise identical.
+func equalArgv(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // Destroy removes the container this Runtime owns. It refuses when the name
@@ -307,14 +444,14 @@ func (rt *dockerRuntime) Destroy(ctx context.Context) error {
 		return errors.New("docker: refusing to destroy: container name is empty")
 	}
 
-	exists, _, hasLabel, err := rt.inspectContainer(ctx)
+	st, err := rt.inspectContainer(ctx)
 	if err != nil {
 		return err
 	}
-	if !exists {
+	if !st.exists {
 		return nil
 	}
-	if !hasLabel {
+	if !st.hasLabel {
 		return fmt.Errorf("docker: refusing to remove container %q: it does not carry the %s label, so it was not created by Shellforge", rt.name, sandboxLabel)
 	}
 
@@ -331,16 +468,16 @@ func (rt *dockerRuntime) Destroy(ctx context.Context) error {
 // Status reports whether the container exists and is running. Provisioned
 // mirrors "exists", per the interface's Status doc.
 func (rt *dockerRuntime) Status(ctx context.Context) (runtime.Status, error) {
-	exists, running, _, err := rt.inspectContainer(ctx)
+	st, err := rt.inspectContainer(ctx)
 	if err != nil {
 		return runtime.Status{}, err
 	}
-	if !exists {
+	if !st.exists {
 		return runtime.Status{Backend: "docker"}, nil
 	}
 	return runtime.Status{
 		Provisioned: true,
-		Running:     running,
+		Running:     st.running,
 		Backend:     "docker",
 		Detail:      rt.name,
 	}, nil

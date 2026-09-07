@@ -422,7 +422,13 @@ Day 5 made that mapping concrete, and it is recorded here so it is decided once 
 | `disk_usage_under` | boss-final | `script`, comparing `stat -c %s` against a byte threshold |
 | `command_count_under` | pipe-03 | Nothing. Dropped rather than emulated: `par_commands` already drives the efficiency bonus, which is the same intent expressed through scoring rather than through a check |
 
-**`env_var` and `cwd_is` cannot be used by a shipped level today.** Both read the snapshot `instrument.bash` writes on every prompt in the learner's interactive shell. The golden test harness never starts one: it applies a level's `solution` through `bash -lc` and then runs the checks. So a level using either type reports `StatusError` under `shellforge author test` while working correctly for a real learner, and the golden contract fails it. env-01 was written around this, asserting persistence through a `script` check that opens a fresh shell instead. The fix belongs in the harness rather than in a level, and until it lands, neither type belongs in the pack.
+**`env_var` works. `cwd_is` still cannot be used by a shipped level.** Both read the snapshot `instrument.bash` writes on every prompt in the learner's interactive shell, and the golden harness starts no interactive shell of its own: it applies a level's `solution` through `bash -lc` and then runs the checks.
+
+For `env_var` the harness now closes that gap itself. Before each check phase it writes the same `env -0` snapshot from an interactive login shell, so the type reads real state under `shellforge author test` and env-01 asserts persistence with `env_var` rather than working around it. The shell is interactive and not merely a login shell on purpose: Debian's stock `.bashrc` returns early for a non-interactive shell, so `bash -lc` would miss exactly the persisted variable the level is about.
+
+`cwd_is` cannot be rescued the same way, and the validator warns on it. It asks where the learner's shell is, and the harness has no shell that outlives a single `Exec`: a `cd` in the solution has nothing to persist in, so `PWD` in the snapshot is always the directory the harness ran from. A level using it works for a real learner and is unverifiable before it ships, which is the same thing as unverified.
+
+Two bugs sat behind the original diagnosis and both are fixed. The harness never wrote a snapshot at all, and `Snapshots.envSnapshotPath` built this container path with `filepath.Join`, so on a Windows host it produced backslashes that no `cat` in the sandbox could open. The second one made both types fail on Windows regardless of the harness, and CI would never have caught it, because the golden job runs on Linux where `filepath.Join` is already correct.
 
 ---
 

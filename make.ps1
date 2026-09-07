@@ -36,6 +36,11 @@ $Pkg     = './cmd/shellforge'
 $BinDir  = 'bin'
 $Image   = 'shellforge-sandbox'
 $Tag     = 'dev'
+# The image `author test` provisions. Deliberately not $Image: the golden
+# harness tears down every level it touches, and doing that to a container a
+# learner has a level open in is not acceptable. Keep in sync with
+# goldenSandboxImage in cmd/shellforge/author_test_cmd.go.
+$GoldenImage = 'shellforge-authortest'
 
 function Get-GitValue([string[]]$GitArgs, [string]$Fallback) {
     try {
@@ -121,6 +126,7 @@ function Show-Help {
         'rootfs'   = 'Export the WSL rootfs tarball'
         'run'      = 'Play one level (-Level <id>)'
         'validate' = 'Validate the content pack'
+        'golden-image' = 'Tag the sandbox image as the one author test provisions'
         'golden'    = 'Run the golden test for every level, through the CLI'
         'golden-go' = 'The same contract as a Go test. Needs a Linux Docker daemon'
         'tools'    = 'Report expected toolchain versions'
@@ -243,12 +249,30 @@ switch ($Target.ToLowerInvariant()) {
         & "$BinDir\$Binary" author validate packs/core-linux-basics
     }
 
+    'golden-image' {
+        $engine = Get-ContainerEngine
+        Invoke-Step "image ($engine)" { & $engine build -f images/Containerfile -t "${Image}:${Tag}" images/ }
+        Invoke-Step 'tag' { & $engine tag "${Image}:${Tag}" "${GoldenImage}:latest" }
+    }
+
+    # golden rebuilds and retags the image first, because nothing else keeps
+    # that tag current. `shellforge author test` builds it from the
+    # Containerfile when the tag is missing, but not when it merely holds an
+    # old build, so a local golden run used to test whatever image happened to
+    # be sitting under that name. On the Day 5 content run that was a three
+    # week old one, and it reported three failures that did not exist.
     'golden' {
         Invoke-Step 'build' { go build -trimpath -ldflags $LdFlags -o "$BinDir\$Binary" $Pkg }
+        $engine = Get-ContainerEngine
+        Invoke-Step "image ($engine)" { & $engine build -f images/Containerfile -t "${Image}:${Tag}" images/ }
+        Invoke-Step 'tag' { & $engine tag "${Image}:${Tag}" "${GoldenImage}:latest" }
         & "$BinDir\$Binary" author test --all
     }
 
     'golden-go' {
+        $engine = Get-ContainerEngine
+        Invoke-Step "image ($engine)" { & $engine build -f images/Containerfile -t "${Image}:${Tag}" images/ }
+        Invoke-Step 'tag' { & $engine tag "${Image}:${Tag}" "${GoldenImage}:latest" }
         $env:SHELLFORGE_GOLDEN = '1'
         try {
             go test -run '^TestEveryLevelGoldenPath$|^TestPipe05RejectsNearMisses$' -timeout 30m ./cmd/shellforge/...

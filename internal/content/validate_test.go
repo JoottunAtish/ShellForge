@@ -307,7 +307,7 @@ func TestDuplicateObjectiveIDReducesTheSameWayAsVerifySpecs(t *testing.T) {
 			// bonus, whichever order they appear in, so the journal check
 			// is never refused for gating. Asserted as "no error at this
 			// field" rather than with requireNoProblem, because a legal
-			// journal check still draws the issue #88 warning there.
+			// journal check still draws the issue #129 warning there.
 			for _, p := range report.Problems {
 				if p.LevelID == "nav-01" && p.Field == "checks[1]" && p.Level == ProblemError {
 					t.Errorf("one copy of obj2 is optional: true, so the journal check must not be refused for gating: %s", p.Message)
@@ -407,7 +407,7 @@ func TestValidateJournalChecksCannotGatePassing(t *testing.T) {
 
 			report := validateFixture(t, fixturePack("", lvl))
 
-			// Legal, but this build wires no runtime journal yet (issue #88),
+			// Legal, but this build wires no runtime journal yet (issue #129),
 			// so the check is a warning rather than a clean pass: it verifies
 			// nothing until then, and that gap must stay visible to the
 			// author rather than passing silently.
@@ -458,7 +458,7 @@ func TestValidateGatingReadsEachObjectivesOwnOptionalFlag(t *testing.T) {
 }
 
 // TestValidateJournalChecksWarnTheirEmptyOutcome is the regression test for
-// the wiring gap issue #88 tracks: no runtime session in this build supplies
+// the wiring gap issue #129 tracks: no runtime session in this build supplies
 // a real verify.JournalReader, so a legal journal check degrades into a wrong
 // answer rather than an error. command_matched can never pass and
 // command_not_matched can never fire; the validator must say so rather than

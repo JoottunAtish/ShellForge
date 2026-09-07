@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"strings"
@@ -133,7 +134,7 @@ func TestDestroyRefusesEmptyName(t *testing.T) {
 // label: a name collision with something Shellforge did not create.
 func TestDestroyRefusesContainerWithoutMarker(t *testing.T) {
 	fake := &fakeRunner{results: []fakeResult{
-		{stdout: []byte("true|<no value>"), code: 0}, // docker inspect: exists, running, no label
+		{stdout: []byte(`true|<no value>|sha256:img|["bash","-c",""]`), code: 0}, // docker inspect: exists, running, no label
 	}}
 	rt := &dockerRuntime{name: "shellforge-sandbox", image: "shellforge-sandbox", run: fake}
 
@@ -154,7 +155,7 @@ func TestProvisionArgvConstruction(t *testing.T) {
 	fake := &fakeRunner{results: []fakeResult{
 		{code: 1}, // docker image inspect: miss
 		{code: 0}, // docker build
-		{stdout: []byte("false|<no value>"), code: 1}, // docker inspect (container): not found
+		{code: 1}, // docker inspect (container): not found
 		{code: 0}, // docker run
 	}}
 	rt := &dockerRuntime{name: "shellforge-sandbox", image: "shellforge-sandbox", run: fake}
@@ -175,18 +176,181 @@ func TestProvisionArgvConstruction(t *testing.T) {
 	want := [][]string{
 		{"docker", "image", "inspect", "--", "shellforge-sandbox"},
 		{"docker", "build", "-f", containerfile, "-t", "shellforge-sandbox", "--", buildContext},
-		{"docker", "inspect", "--format", `{{.State.Running}}|{{index .Config.Labels "shellforge.sandbox"}}`, "--", "shellforge-sandbox"},
+		{"docker", "inspect", "--format", containerInspectFormat, "--", "shellforge-sandbox"},
 		{"docker", "run", "-d", "--name", "shellforge-sandbox", "--label", "shellforge.sandbox=1", "--network", "none", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "FOWNER", "--security-opt", "no-new-privileges", "--", "shellforge-sandbox", "bash", "-c", sandboxInit},
 	}
 	assertArgvSequence(t, "Provision", fake.calls, want)
+}
+
+// currentImageID is the image id the fake reports for both the container and
+// the tag in the reuse tests below, so the two agree and the container reads
+// as current.
+const currentImageID = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+
+// inspectStdout builds the four-field `docker inspect` output for a container
+// that exists, is running, and carries the marker label.
+func inspectStdout(imageID string, cmd []string) []byte {
+	encoded, err := json.Marshal(cmd)
+	if err != nil {
+		panic(err)
+	}
+	return []byte("true|1|" + imageID + "|" + string(encoded))
+}
+
+// wantRunArgv is the docker run every creation path must produce.
+func wantRunArgv() []string {
+	return append([]string{
+		"docker", "run", "-d",
+		"--name", "shellforge-sandbox",
+		"--label", "shellforge.sandbox=1",
+		"--network", "none",
+		"--cap-drop", "ALL",
+		"--cap-add", "CHOWN",
+		"--cap-add", "FOWNER",
+		"--security-opt", "no-new-privileges",
+		"--", "shellforge-sandbox",
+	}, sandboxCommand()...)
+}
+
+// TestProvisionReusesACurrentContainer asserts the cheap path: a container
+// that is ours, running, built from the image the tag points at now, and
+// started with the argv sandboxCommand produces now, is left alone. No
+// removal and no re-creation, and no work beyond the two inspects it takes to
+// establish all of that.
+func TestProvisionReusesACurrentContainer(t *testing.T) {
+	fake := &fakeRunner{results: []fakeResult{
+		{code: 0}, // docker image inspect: hit
+		{stdout: inspectStdout(currentImageID, sandboxCommand()), code: 0}, // ours, running, current
+		{stdout: []byte(currentImageID + "\n"), code: 0},                   // docker image inspect --format {{.Id}}
+	}}
+	rt := &dockerRuntime{name: "shellforge-sandbox", image: "shellforge-sandbox", run: fake}
+
+	if err := rt.Provision(context.Background(), runtime.ImageSpec{Name: "shellforge-sandbox"}); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+
+	want := [][]string{
+		{"docker", "image", "inspect", "--", "shellforge-sandbox"},
+		{"docker", "inspect", "--format", containerInspectFormat, "--", "shellforge-sandbox"},
+		{"docker", "image", "inspect", "--format", "{{.Id}}", "--", "shellforge-sandbox"},
+	}
+	assertArgvSequence(t, "Provision", fake.calls, want)
+}
+
+// TestProvisionReplacesAContainerBuiltFromAnOlderImage is the bug the Day 5
+// content run hit. `make image` rebuilds a tag in place, so a container
+// created from the previous build keeps the old layers under the same name.
+// Reusing it runs the learner against an image that predates the fix being
+// tested, which is how a green run and a broken sandbox coexist.
+func TestProvisionReplacesAContainerBuiltFromAnOlderImage(t *testing.T) {
+	const olderImageID = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+
+	fake := &fakeRunner{results: []fakeResult{
+		{code: 0}, // docker image inspect: hit
+		{stdout: inspectStdout(olderImageID, sandboxCommand()), code: 0}, // ours, but stale layers
+		{stdout: []byte(currentImageID + "\n"), code: 0},                 // docker image inspect --format {{.Id}}
+		{code: 0}, // docker rm -f
+		{code: 0}, // docker run
+	}}
+	rt := &dockerRuntime{name: "shellforge-sandbox", image: "shellforge-sandbox", run: fake}
+
+	if err := rt.Provision(context.Background(), runtime.ImageSpec{Name: "shellforge-sandbox"}); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+
+	want := [][]string{
+		{"docker", "image", "inspect", "--", "shellforge-sandbox"},
+		{"docker", "inspect", "--format", containerInspectFormat, "--", "shellforge-sandbox"},
+		{"docker", "image", "inspect", "--format", "{{.Id}}", "--", "shellforge-sandbox"},
+		{"docker", "rm", "-f", "--", "shellforge-sandbox"},
+		wantRunArgv(),
+	}
+	assertArgvSequence(t, "Provision", fake.calls, want)
+}
+
+// TestProvisionReplacesAContainerRunningAnOlderInit covers the other half:
+// the image is current but PID 1 is not. A container started before
+// sandboxInit learned to reap keeps that PID 1 for its whole life, so the
+// zombies the new init exists to prevent come back under a binary that
+// contains the fix.
+//
+// The argv is compared before the image id is asked for at all, so a stale
+// init costs one docker call fewer than a stale image.
+func TestProvisionReplacesAContainerRunningAnOlderInit(t *testing.T) {
+	fake := &fakeRunner{results: []fakeResult{
+		{code: 0}, // docker image inspect: hit
+		{stdout: inspectStdout(currentImageID, []string{"sleep", "infinity"}), code: 0}, // the PID 1 that never reaped
+		{code: 0}, // docker rm -f
+		{code: 0}, // docker run
+	}}
+	rt := &dockerRuntime{name: "shellforge-sandbox", image: "shellforge-sandbox", run: fake}
+
+	if err := rt.Provision(context.Background(), runtime.ImageSpec{Name: "shellforge-sandbox"}); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+
+	want := [][]string{
+		{"docker", "image", "inspect", "--", "shellforge-sandbox"},
+		{"docker", "inspect", "--format", containerInspectFormat, "--", "shellforge-sandbox"},
+		{"docker", "rm", "-f", "--", "shellforge-sandbox"},
+		wantRunArgv(),
+	}
+	assertArgvSequence(t, "Provision", fake.calls, want)
+}
+
+// TestProvisionNeverRemovesAnUnmarkedContainer is the refusal that guards
+// every path above. Staleness is only ever assessed for a container carrying
+// the Shellforge label, so a name collision with something a user built is
+// refused rather than replaced. Getting that order wrong would turn a helpful
+// rebuild into `docker rm -f` on somebody else's container.
+func TestProvisionNeverRemovesAnUnmarkedContainer(t *testing.T) {
+	fake := &fakeRunner{results: []fakeResult{
+		{code: 0}, // docker image inspect: hit
+		{stdout: []byte("true|<no value>|" + currentImageID + `|["sleep","infinity"]`), code: 0},
+	}}
+	rt := &dockerRuntime{name: "shellforge-sandbox", image: "shellforge-sandbox", run: fake}
+
+	if err := rt.Provision(context.Background(), runtime.ImageSpec{Name: "shellforge-sandbox"}); err == nil {
+		t.Fatal("Provision over an unmarked container = nil error, want a refusal")
+	}
+	for _, call := range fake.calls {
+		if len(call) >= 2 && (call[1] == "rm" || call[1] == "run") {
+			t.Errorf("Provision over an unmarked container ran %v, want neither a rm nor a run", call)
+		}
+	}
+}
+
+// TestProvisionReplacesAContainerWithAnUnreadableCommand pins the fail closed
+// direction. A container whose argv docker will not report as a JSON array of
+// strings is not provably current, so it is replaced rather than trusted.
+// Refusing to load instead would leave the learner with no way forward that a
+// rebuild does not already provide.
+func TestProvisionReplacesAContainerWithAnUnreadableCommand(t *testing.T) {
+	fake := &fakeRunner{results: []fakeResult{
+		{code: 0}, // docker image inspect: hit
+		{stdout: []byte("true|1|" + currentImageID + "|null"), code: 0},
+		{code: 0}, // docker rm -f
+		{code: 0}, // docker run
+	}}
+	rt := &dockerRuntime{name: "shellforge-sandbox", image: "shellforge-sandbox", run: fake}
+
+	if err := rt.Provision(context.Background(), runtime.ImageSpec{Name: "shellforge-sandbox"}); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if len(fake.calls) != 4 {
+		t.Fatalf("Provision made %d docker calls, want 4 (image inspect, container inspect, rm, run): %v", len(fake.calls), fake.calls)
+	}
+	if !equalArgv(fake.calls[3], wantRunArgv()) {
+		t.Errorf("run argv = %v, want %v", fake.calls[3], wantRunArgv())
+	}
 }
 
 // TestDestroyArgvConstruction asserts the exact argv for a Destroy that
 // finds a marked, running container and removes it.
 func TestDestroyArgvConstruction(t *testing.T) {
 	fake := &fakeRunner{results: []fakeResult{
-		{stdout: []byte("true|1"), code: 0}, // docker inspect: exists, running, marked
-		{code: 0},                           // docker rm -f
+		{stdout: []byte(`true|1|sha256:img|["bash","-c","x"]`), code: 0}, // docker inspect: exists, running, marked
+		{code: 0}, // docker rm -f
 	}}
 	rt := &dockerRuntime{name: "shellforge-sandbox", image: "shellforge-sandbox", run: fake}
 
@@ -195,7 +359,7 @@ func TestDestroyArgvConstruction(t *testing.T) {
 	}
 
 	want := [][]string{
-		{"docker", "inspect", "--format", `{{.State.Running}}|{{index .Config.Labels "shellforge.sandbox"}}`, "--", "shellforge-sandbox"},
+		{"docker", "inspect", "--format", containerInspectFormat, "--", "shellforge-sandbox"},
 		{"docker", "rm", "-f", "--", "shellforge-sandbox"},
 	}
 	assertArgvSequence(t, "Destroy", fake.calls, want)
@@ -613,16 +777,4 @@ func assertArgvSequence(t *testing.T, op string, got, want [][]string) {
 			t.Errorf("%s invocation %d:\ngot:  %v\nwant: %v", op, i, got[i], want[i])
 		}
 	}
-}
-
-func equalArgv(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }

@@ -5211,13 +5211,34 @@ been right to fail it.
 **Two engine limitations found by writing against them, both recorded rather
 than worked around.**
 
-`env_var` and `cwd_is` cannot be used by any shipped level today. Both read
+`env_var` works. `cwd_is` still cannot be used by any shipped level. Both read
 the snapshot `instrument.bash` writes on a prompt in the learner's interactive
-shell, and the golden harness never starts one: it applies the solution through
-`bash -lc` and runs the checks. A level using either type reports StatusError
-under `author test` while working correctly for a real learner. env-01 was
-written around it, asserting persistence through a `script` check that opens a
-fresh interactive shell. The fix belongs in the harness.
+shell, and the golden harness starts no interactive shell of its own: it
+applies the solution through `bash -lc` and runs the checks.
+
+Playing the branch found two bugs behind that one sentence, not one. The
+harness never wrote a snapshot at all, and `Snapshots.envSnapshotPath` built a
+container path with `filepath.Join`, which on a Windows host produced
+backslashes no `cat` in the sandbox could open. The second one broke both types
+on Windows regardless of the harness, and CI could not have caught it: the
+golden job runs on Linux, where `filepath.Join` is already right. It now uses
+`path.Join`, with a unit test that fails on either platform.
+
+The harness now writes the snapshot itself, from an interactive login shell,
+before each check phase rather than once. Before each, because a snapshot left
+behind by the previous level made env-01's objective pass at pre_check, which
+the contract correctly reports as a check that tests nothing. Interactive and
+not merely login, because Debian's stock `.bashrc` returns early for a
+non-interactive shell, so `bash -lc` would miss exactly the persisted variable
+the level is about. env-01's `env-persists` objective is now an `env_var`
+check, which is what the curriculum asked for, rather than the `script` check
+it was written around.
+
+`cwd_is` cannot be rescued the same way and the validator now warns on it. It
+asks where the learner's shell is, and the harness has no shell that outlives a
+single `Exec`, so a `cd` in a solution has nothing to persist in and `PWD` is
+always the directory the harness ran from. A level using it would be
+unverifiable before shipping, which is the same thing as unverified.
 
 Journal checks still verify nothing under `shellforge run`. `game.Session`
 accepts a journal and `journal.Journal` implements `Commands`, but
@@ -5281,6 +5302,32 @@ Wizard was set at 2600, so a learner who passed every level on the first try
 with no hints finished 20 XP short of the last rank in the game. Wizard is now
 2400. Scoring is #125 and may add bonuses later; tuning to exactly 2580 would
 still be wrong, because hint costs subtract.
+
+**Played on a real Docker daemon, and what it cost.** `author test --all` ran
+end to end for the first time on 2026-09-07 and found one real level defect:
+proc-01 left a stray `sleep 5` after teardown. Both background scripts looped
+on a plain `sleep`, which is a separate process that `pkill -f heartbeat.sh`
+does not match, so it was orphaned to PID 1 and outlived the script by up to
+five seconds. atlas-indexer.sh had the same defect with a one second window,
+which is worse: it wins that race most of the time and would have flaked in CI
+later rather than failing now. Both scripts now background the sleep and trap
+TERM and INT, killing the child and waiting for it before exiting.
+
+Three other failures in that first run were phantoms, and chasing them turned
+up four gaps worth more than the levels they hid. `ensureContainerRunning`
+reused a container three weeks old without checking that its image or its argv
+matched what the code wanted, so neither the `logistics` group nor the reaping
+PID 1 was in play; it now compares the container's image id against the tag and
+its argv against `sandboxCommand`, and replaces it when either has moved, which
+it is only ever allowed to do for a container carrying the Shellforge label.
+Nothing outside `ci.yml` tagged `shellforge-authortest`, so a local `make
+golden` tested whatever image happened to hold that tag; `golden` and
+`golden-go` now depend on a `golden-image` target that rebuilds and retags.
+The validator's journal warning named issue #88, which merged; the real blocker
+is #129. And nothing tested the rank ladder at all, which is how a top rank
+20 XP above what all 25 levels award together shipped in the first place: the
+validator now warns when the last rank is out of reach, and the embedded pack
+is held to it by a test.
 
 **Not done, and carried rather than cut:** nobody has played the campaign start
 to finish in one sitting. It is the one Day 5 exit criterion still open, it

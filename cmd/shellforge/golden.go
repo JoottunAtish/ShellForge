@@ -171,6 +171,7 @@ func runGoldenLevel(ctx context.Context, h goldenHarness, level *content.Level) 
 	// still requires at least one required objective to actually fail. A level
 	// cannot mark everything and quiet the gate.
 	start = time.Now()
+	captureShellSnapshot(ctx, h.sess)
 	before, err := session.Check(ctx)
 	stopwatch(stagePreCheck, start)
 	if err != nil {
@@ -236,6 +237,7 @@ func runGoldenLevel(ctx context.Context, h goldenHarness, level *content.Level) 
 	// a loophole: a level whose only interesting assertion is a journal check
 	// is not covered here at all.
 	start = time.Now()
+	captureShellSnapshot(ctx, h.sess)
 	after, err := session.Check(ctx)
 	stopwatch(stagePostCheck, start)
 	if err != nil {
@@ -266,6 +268,46 @@ func runGoldenLevel(ctx context.Context, h goldenHarness, level *content.Level) 
 	}
 
 	return goldenReport{LevelID: level.ID, OK: true, Timings: timings}
+}
+
+// snapshotScript writes the file instrument.bash writes on every prompt.
+// Keep it in step with images/rc/instrument.bash, which produces the same
+// file with the same `env -0`.
+const snapshotScript = `mkdir -p "$SF_STATE" && env -0 > "$SF_STATE/env.snapshot"`
+
+// captureShellSnapshot writes the env snapshot instrument.bash would have
+// written, so that an env_var check has something to read.
+//
+// The harness has no persistent interactive shell. It applies a solution
+// through one `bash -lc` and then runs the checks, so nothing ever triggers
+// the prompt hook that writes $SF_STATE/env.snapshot. Until this existed, a
+// level using env_var reported StatusError under `author test` while working
+// correctly for a real learner, which made the type unusable by any shipped
+// level: the golden contract failed it for a harness gap.
+//
+// The shell is interactive, not merely a login shell, because that is the
+// shell a learner has and it is the only kind that reads ~/.bashrc all the
+// way through: Debian's stock .bashrc returns early for a non-interactive
+// shell, so `bash -lc` would miss exactly the persisted variable a level
+// like env-01 is about.
+//
+// This does not make cwd_is usable. PWD here is the directory the harness
+// runs from rather than one the learner navigated to, because no shell
+// survives between the solution and the checks for a cd to persist in. The
+// validator warns on cwd_is for that reason.
+//
+// Best effort by design, and deliberately not fatal. A level using neither
+// type does not care whether this worked, and one that does degrades to the
+// StatusError it reported before this existed, with the same non-blaming
+// message, rather than failing a run for a reason that is not about the
+// level.
+func captureShellSnapshot(ctx context.Context, sess runtime.Session) {
+	_, _ = sess.Exec(ctx, []string{"bash", "-lic", snapshotScript}, runtime.ExecOpts{
+		User:    sandboxUser,
+		WorkDir: sandboxHome,
+		Env:     map[string]string{"SF_STATE": setupStateDir()},
+		Timeout: solutionTimeout,
+	})
 }
 
 // applySolution runs the level's solution the way a learner would.

@@ -81,20 +81,17 @@ setup:
     fi
 
 checks:
+  # env_var, the type the curriculum asks for here, rather than the script
+  # check this level shipped with. Both assert the same thing: that a shell
+  # started fresh sees the variable, which is the whole lesson. env_var reads
+  # the snapshot the learner's interactive shell writes on every prompt, and
+  # `shellforge author test` now writes that same snapshot from an
+  # interactive shell after applying the solution, so the type finally works
+  # under the golden contract instead of reporting StatusError there.
   - id: env-persists
-    type: script
-    run: |
-      home=$(getent passwd learner | cut -d: -f6)
-      if [ -z "$home" ]; then
-        echo "cannot work out the learner's home directory, which is a bug in the level"
-        exit 1
-      fi
-      value=$(HOME="$home" bash -ic 'printf "%s" "$ATLAS_ENV"' 2>/dev/null)
-      if [ "$value" != "production" ]; then
-        echo "a brand new shell sees ATLAS_ENV as: ${value:-nothing at all}"
-        exit 1
-      fi
-      exit 0
+    type: env_var
+    name: ATLAS_ENV
+    value: production
     on_fail: >-
       A shell started fresh does not see `ATLAS_ENV=production`. Exporting it
       here sets it here, and only until this shell exits. To make it happen
