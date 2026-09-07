@@ -14,10 +14,14 @@ import (
 
 	"github.com/JoottunAtish/ShellForge/internal/content"
 	"github.com/JoottunAtish/ShellForge/internal/game"
+	"github.com/JoottunAtish/ShellForge/internal/game/achievements"
+	"github.com/JoottunAtish/ShellForge/internal/game/bus"
+	"github.com/JoottunAtish/ShellForge/internal/journal"
 	"github.com/JoottunAtish/ShellForge/internal/platform/ux"
 	"github.com/JoottunAtish/ShellForge/internal/pty"
 	"github.com/JoottunAtish/ShellForge/internal/runtime"
 	"github.com/JoottunAtish/ShellForge/internal/sandbox"
+	"github.com/JoottunAtish/ShellForge/internal/store"
 	"github.com/JoottunAtish/ShellForge/internal/verify"
 	"github.com/JoottunAtish/ShellForge/packs"
 )
@@ -169,7 +173,7 @@ func cmdRun(ctx context.Context, args []string) error {
 	if err := checkInteractiveShellSupported(opts.levelID); err != nil {
 		return err
 	}
-	return runLevel(ctx, opts, level)
+	return runLevel(ctx, opts, pack, level)
 }
 
 // levelOrder returns the pack's level ids in campaign order.
@@ -318,11 +322,17 @@ func parseRunArgs(args []string, firstLevel string) (runOptions, error) {
 }
 
 // runLevel plays one level loaded from the pack.
-func runLevel(ctx context.Context, opts runOptions, level *content.Level) error {
-	packFS, err := packFilesystem()
+//
+// It is the shared flow `run` and `play` both go through: open the progress
+// database, open the sandbox, assemble the level, play it. `play` adds
+// level selection in front of this and nothing else, which is what stops
+// the two from drifting apart within a week.
+func runLevel(ctx context.Context, opts runOptions, pack *content.Pack, level *content.Level) error {
+	st, profile, err := openProgress(ctx)
 	if err != nil {
 		return err
 	}
+	defer st.Close()
 
 	rt, sess, cleanupSession, err := openSandbox(ctx, opts.levelID)
 	if err != nil {
@@ -331,17 +341,97 @@ func runLevel(ctx context.Context, opts runOptions, level *content.Level) error 
 	_ = rt
 	defer cleanupSession()
 
+	lvl, detach, err := buildLevel(ctx, pack, level, sess, st, profile.ID)
+	if err != nil {
+		return err
+	}
+	defer detach()
+
+	return play(ctx, opts, sess, lvl)
+}
+
+// buildLevel assembles one level in play: the session, the event bus, the
+// achievement subscribers, the orchestrator, and the journal sink that
+// feeds all of them the learner's commands.
+//
+// The returned function detaches the achievement subscribers. It is safe to
+// call more than once.
+func buildLevel(ctx context.Context, pack *content.Pack, level *content.Level, sess runtime.Session, st *store.Store, profileID int64) (*gameLevel, func(), error) {
+	packFS, err := packFilesystem()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	j := journal.New(st)
+
 	session, err := game.NewSession(game.Config{
 		Level:    level,
 		Sess:     sess,
 		PackFS:   packFS,
 		Verifier: verify.NewEngine(),
+		Journal:  j,
 	})
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 
-	return play(ctx, opts, sess, &gameLevel{session: session, level: level})
+	// A subscriber that panics must not take the learner's level with it,
+	// and what it panicked about must not reach their terminal: an event
+	// carries command text, and nothing derived from a journal read is
+	// printed. So the handler is deliberately silent.
+	b := bus.New(bus.WithErrorHandler(func(string, any, []byte) {}))
+
+	unlocks := &unlockCollector{}
+	b.Subscribe("cli.unlocks", func(_ context.Context, ev bus.Event) {
+		if a, ok := ev.(bus.AchievementUnlocked); ok {
+			unlocks.record(a.Key)
+		}
+	})
+
+	registry := achievements.New(st, pack, profileID, time.Now)
+	detach, err := registry.Attach(ctx, b)
+	if err != nil {
+		return nil, nil, ux.Fail(
+			"read which achievements you have already earned",
+			err,
+			remediationRunDoctor,
+			"")
+	}
+
+	orch, err := game.NewOrchestrator(game.OrchestratorConfig{
+		Session:   session,
+		Bus:       b,
+		Progress:  st,
+		ProfileID: profileID,
+		PackID:    pack.ID,
+	})
+	if err != nil {
+		detach()
+		return nil, nil, err
+	}
+
+	collector, err := journal.NewCollector(sess, setupStateDir())
+	if err != nil {
+		detach()
+		return nil, nil, ux.Fail(
+			"read the command journal inside the sandbox",
+			err,
+			"This is a packaging bug rather than anything you did: please run `shellforge bug-report`.",
+			"sandbox-unhealthy")
+	}
+
+	return &gameLevel{
+		orch:    orch,
+		session: session,
+		level:   level,
+		sink:    game.NewJournalSink(collector, j, b),
+		pass: &passContext{
+			pack:      pack,
+			store:     st,
+			profileID: profileID,
+			unlocks:   unlocks,
+		},
+	}, detach, nil
 }
 
 // packFilesystem returns the embedded pack, rooted AT the pack directory.

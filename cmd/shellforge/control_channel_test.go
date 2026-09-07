@@ -153,7 +153,7 @@ func TestControlChannelAnswersTheShim(t *testing.T) {
 		// The production responder, with colour off: this test compares
 		// against plain words, and a learner with NO_COLOR set gets exactly
 		// this path.
-		serveControlRequests(serveCtx, sess, &gameResponder{session: session, level: level, color: false}, reqPath, resPath)
+		serveControlRequests(serveCtx, sess, &gameResponder{checker: session, level: level, color: false}, reqPath, resPath)
 	}()
 
 	// runShim invokes the shim the way the learner's shell does: through the

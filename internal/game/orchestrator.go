@@ -908,3 +908,15 @@ func (o *Orchestrator) Reset(ctx context.Context) error {
 	})
 	return nil
 }
+
+// AttemptID returns the id of the attempt this Orchestrator opened, or zero
+// when Start has not opened one.
+//
+// It exists for the journal: records drained out of the sandbox are stamped
+// with the attempt they belong to, and the drain happens above this
+// package. Legal from every state, and never mutates.
+func (o *Orchestrator) AttemptID() int64 {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.attemptID
+}

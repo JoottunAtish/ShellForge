@@ -32,9 +32,13 @@ the game's own files.
 
 That is the point.
 
-Each level's world lives in one directory. `reset` deletes it and rebuilds it in
-under a second. `sandbox rebuild` recreates the whole sandbox from the pristine
-image. `rm -rf /` inside the sandbox destroys the sandbox and nothing else.
+Each level's world lives in one directory. Typing `reset` at the prompt deletes it
+and rebuilds it in under a second: `reset` on its own tells you what it would
+delete, and `reset --yes` does it. It only ever touches the level's own directory,
+so a file you saved elsewhere in your sandbox home survives.
+
+`shellforge sandbox rebuild` recreates the whole sandbox from the pristine image.
+`rm -rf /` inside the sandbox destroys the sandbox and nothing else.
 
 ## 4. What is stored, and where?
 
@@ -149,6 +153,9 @@ Three independent things have to hold, and all three are checked in CI:
 1. **Isolation.** No host mounts except one read-only directory, no network by
    default, never `--privileged`, and a non-root user.
 2. **Reset.** Every level's world lives under one directory, and reset is a delete
-   and a rebuild. No snapshot restore that might half-work.
+   and a rebuild. No snapshot restore that might half-work. The deletion runs
+   inside the sandbox, as the learner, through one validated helper that refuses
+   any path outside that directory, and there is a refusal test for every way a
+   path could go wrong.
 3. **Determinism.** Setup never touches the network. The same level produces
    byte-identical starting state on every machine, every time.

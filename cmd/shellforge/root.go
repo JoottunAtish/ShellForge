@@ -85,20 +85,17 @@ func NewRootCommand(v VersionInfo) *cobra.Command {
 		// bounded timeout, instead of reporting warn unconditionally.
 		newDoctorCommand(sandbox.NewProber()),
 		newInitCommand(defaultResolver),
-		stubCommand("shellforge play", "play [level-id]", groupPlaying,
-			"Start, or resume at the next level", "Day 4"),
+		newPlayCommand(),
 		newRunCommand(),
-		stubCommand("shellforge check", "check", groupPlaying,
-			"Verify the current level", "Day 2"),
-		stubCommand("shellforge hint", "hint [--reveal]", groupPlaying,
-			"Reveal the next hint, after showing what it costs", "Day 4"),
-		stubCommand("shellforge reset", "reset [level-id|--all]", groupPlaying,
-			"Rebuild the current level world from scratch", "Day 2"),
-		stubCommand("shellforge skip", "skip", groupPlaying,
-			"Mark the current level skipped and move on", "Day 4"),
+		inLevelCommand("check", "check", groupPlaying,
+			"Verify the current level"),
+		inLevelCommand("hint", "hint [--reveal] [--yes]", groupPlaying,
+			"Reveal the next hint, after showing what it costs"),
+		inLevelCommand("reset", "reset [--yes]", groupPlaying,
+			"Rebuild the current level world from scratch"),
+		newSkipCommand(),
 		newMapCommand(),
-		stubCommand("shellforge stats", "stats", groupProgress,
-			"Show XP, rank, streak, and achievements", "Day 4"),
+		newStatsCommand(),
 		newSandboxCommand(defaultResolver),
 		stubCommand("shellforge bug-report", "bug-report", groupManage,
 			"Bundle diagnostics for a GitHub issue, with the journal redacted", "Day 6"),
@@ -142,6 +139,32 @@ func newAuthorCommand() *cobra.Command {
 			"Capture a golden recording for one level", "Day 2"),
 	)
 	return author
+}
+
+// inLevelCommand returns a *cobra.Command for a verb that is real but is
+// typed INSIDE a level rather than on the host.
+//
+// `check`, `hint` and `reset` all work: a learner types them at the prompt
+// in their sandbox, the shim in images/bin carries them over the control
+// channel, and the host answers. Typed here they have no level to act on.
+// Registering them anyway keeps `shellforge help` an honest map of the
+// product, and the message says where the verb actually lives rather than
+// claiming it does not exist.
+func inLevelCommand(name, usage, group, short string) *cobra.Command {
+	return &cobra.Command{
+		Use:     usage,
+		GroupID: group,
+		Short:   short,
+		Args:    cobra.ArbitraryArgs,
+		RunE: func(*cobra.Command, []string) error {
+			return ux.Fail(
+				fmt.Sprintf("run `%s` out here, where there is no level in play", name),
+				nil,
+				fmt.Sprintf("`%s` is a command you type inside a level, not on your own shell. Run `shellforge play` to start one, then type `%s` at the prompt in your sandbox.", name, name),
+				"",
+			)
+		},
+	}
 }
 
 // stubCommand returns a *cobra.Command for a verb the build plan has not
