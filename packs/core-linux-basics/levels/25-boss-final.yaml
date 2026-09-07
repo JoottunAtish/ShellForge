@@ -8,7 +8,7 @@ difficulty: 5
 xp: 300
 par_commands: 15
 estimated_minutes: 30
-concepts: [debugging, permissions, grep, find, cron, disk-usage, post-mortem]
+concepts: [debugging, permissions, grep, find, sed, cron, disk-usage, post-mortem]
 prerequisites: [script-01]
 tags: [must-know, debugging, destructive]
 

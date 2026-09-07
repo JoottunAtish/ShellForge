@@ -52,7 +52,7 @@ state outside its own root; nothing in this curriculum needs one.
 ### 1. `nav-01` - First Contact
 | | |
 |---|---|
-| Concepts | `pwd`, the prompt, filesystem root |
+| Concepts | `pwd`, the prompt, filesystem root, `~`, `>` |
 | XP / Difficulty / Par / Time | 40 / 1 / 2 / 3 min |
 
 **Briefing.** 08:15. You've been handed a terminal and no instructions. Before you can go anywhere, you need to know where you are.
@@ -65,7 +65,7 @@ state outside its own root; nothing in this curriculum needs one.
 ### 2. `nav-02` - Taking Inventory
 | | |
 |---|---|
-| Concepts | `ls`, `-l`, `-a`, `-h`, hidden files |
+| Concepts | `ls`, `-l`, `-a`, `-h`, hidden files, `echo`, `>` |
 | XP / Diff / Par / Time | 50 / 1 / 3 / 5 min |
 
 **Briefing.** Kofi left files everywhere, including some he didn't want you to see immediately.
@@ -77,7 +77,7 @@ state outside its own root; nothing in this curriculum needs one.
 ### 3. `nav-03` - Getting Around
 | | |
 |---|---|
-| Concepts | `cd`, absolute vs relative, `..`, `~`, `-`, `tree` |
+| Concepts | `cd`, absolute vs relative, `..`, `~`, `-`, `tree`, `>` |
 | XP / Diff / Par / Time | 60 / 2 / 5 / 6 min |
 
 **Briefing.** The warehouse records live four directories deep. Kofi's note says "third bay, second aisle". Go find it.
@@ -90,7 +90,7 @@ state outside its own root; nothing in this curriculum needs one.
 ### 4. `nav-04` - The Manual  🔶 *Act I boss*
 | | |
 |---|---|
-| Concepts | `man`, `--help`, `apropos`, self-sufficiency |
+| Concepts | `man`, `--help`, `apropos`, self-sufficiency, `echo`, `>` |
 | XP / Diff / Par / Time | 90 / 2 / 4 / 8 min |
 
 **Briefing.** Kofi's last note: *"I'm not going to teach you every command. Learn to read the manual and you'll never need me."*
@@ -208,7 +208,7 @@ Concepts: `find`, `-name`, `-type`, `-size`, `-mtime`. **100 XP / D4 / par 5 / 1
 **Teaching note.** Setup must set mtimes explicitly with `touch -d` so the level is deterministic regardless of when it's played.
 
 ### 18. `find-04` - Search and Destroy  🔶 *Act IV boss*
-Concepts: `find -exec`, `find | xargs`, combining search with action. **160 XP / D4 / par 5 / 15 min.**
+Concepts: `find -exec`, `find | xargs`, `$( )` command substitution, combining search with action. **160 XP / D4 / par 5 / 15 min.**
 **Objectives.** Delete every `.tmp` file anywhere under `data/` (nested up to 5 deep); make every `.sh` file under `scripts/` executable; count how many files you touched → `touched.txt`.
 **Checks.** no `.tmp` remains anywhere · `file_mode` on 8 scripts · non-`.sh` files unchanged · count correct.
 **Teaching note.** The `-exec {} \;` syntax is genuinely hard. Hint tier 3 should show the shape: `find ... -exec cmd {} \;`.
@@ -233,7 +233,7 @@ Concepts: users, groups, `chown`, `sudo`, `id`. **110 XP / D4 / par 5 / 10 min.*
 > Rebuilt from the sudo decision above. The root-owned file is a `setup.files` entry with `owner: "root:root"`, which is the one shape the format allows, and teardown can still unlink it because unlinking needs write and execute on the parent directory rather than ownership of the file. The learner joins `logistics` at image build time, because a user may `chgrp` only to a group they already belong to and an empty group makes the objective unreachable. `group_membership` does not exist as a check type; it is a `script`.
 
 ### 21. `proc-01` - Process Control
-Concepts: `ps aux`, `kill`, signals, `&`, `jobs`, `fg`, `nohup`. **120 XP / D4 / par 6 / 12 min.**
+Concepts: `ps aux`, `pgrep`, `kill`, signals, `&`, `jobs`, `fg`, `nohup`, `$( )`. **120 XP / D4 / par 6 / 12 min.**
 **Objectives.** A runaway process `atlas-indexer` is eating CPU - find its PID, write it to `pid.txt`, and terminate it. Then start `heartbeat.sh` in the background so it survives your shell.
 **Checks.** `process_running` with `negate: true` · a `script` comparing `pid.txt` against the pid the indexer recorded · `process_running heartbeat.sh`.
 **Teaching note.** Setup launches the fake runaway process; its PID differs per attempt, so the check must resolve it dynamically - a good stress test for the `script` check type.

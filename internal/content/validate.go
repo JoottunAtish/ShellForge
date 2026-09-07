@@ -781,7 +781,7 @@ func (v *validator) validateCheckType(lvl *Level, field string, c *CheckSpec, ga
 		// error, which is worse than either check type refusing to load, so
 		// this warns instead of staying quiet.
 		v.warnf(file, id, field,
-			"%s reads the command journal, and no runtime session in this build wires a real one yet (issue #129): every command list it sees is empty. %s until then. This is harmless, since a journal check may never gate passing, but the check verifies nothing yet.",
+			"%s reads the command journal, and no runtime session in this build wires a real one yet (issue #154): every command list it sees is empty. %s until then. This is harmless, since a journal check may never gate passing, but the check verifies nothing yet.",
 			c.Type, journalNeverOutcome(c.Type))
 	case c.Type == "cwd_is":
 		// env_var used to draw this warning too. It no longer does: the

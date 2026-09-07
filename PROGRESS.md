@@ -5329,6 +5329,33 @@ is #129. And nothing tested the rank ladder at all, which is how a top rank
 validator now warns when the last rank is out of reach, and the embedded pack
 is held to it by a test.
 
+**What playing the first level found, and the audit it triggered.** The
+campaign demanded `>` in level 1 and did not teach it until level 6. nav-01
+explained it only in its third hint, which costs XP and is unreachable until
+#126 builds `hint`; nav-02 and nav-03 explained it nowhere at all and both
+require it. A beginner five minutes into a game written for people who have
+never opened a terminal had to invent an operator or find nano.
+
+An audit of all 25 levels, comparing what each solution uses against what the
+pack has declared as taught by that point, found 41 instances of the same
+shape. `~` was used by every level and taught by none. `$( )` was required at
+find-04 and proc-01 and taught nowhere. `echo`, `cat`, `pgrep` and `sed` were
+used and never declared.
+
+The order itself was not wrong, which is the useful part. Software Carpentry's
+shell-novice introduces redirection in episode 4 of 7, and Shotts introduces it
+in chapter 6, so files-02 at level 6 sits where both references put it. The
+levels were demanding it ahead of the order the pack itself declared, and the
+root cause is architectural rather than authorial: checking state rather than
+syntax means a level needs durable state to inspect, the cheapest such state is
+a file holding the answer, and that pushes redirection into level 1. Software
+Carpentry does not have the problem because a human watches the screen.
+
+nav-01 now teaches `~` and `>` in its briefing, for free, framed as how an
+answer is handed in rather than as a lesson on stdout, which files-02 and
+pipe-01 still own. Every level declares the concepts it actually uses.
+Re-running the audit reports zero. No check was touched.
+
 **Not done, and carried rather than cut:** nobody has played the campaign start
 to finish in one sitting. It is the one Day 5 exit criterion still open, it
 needs a machine with Docker, and the friction notes it produces belong in this

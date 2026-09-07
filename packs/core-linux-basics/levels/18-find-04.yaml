@@ -8,7 +8,7 @@ difficulty: 4
 xp: 160
 par_commands: 5
 estimated_minutes: 15
-concepts: [find-exec, xargs, chmod, recursive-delete]
+concepts: [find-exec, xargs, chmod, recursive-delete, command-substitution]
 prerequisites: [find-03]
 tags: [must-know, destructive]
 
@@ -211,7 +211,10 @@ hints:
     text: >-
       The second job is the same shape with a different command:
       `find scripts -name '*.sh' -exec chmod +x {} \;`. Count both sets with
-      `wc -l` before you run either of them, then add the two numbers.
+      `wc -l` before you run either of them, then add the two numbers. To keep
+      a count without writing it down, put the command in `$( )`: whatever
+      `$(find data -name '*.tmp' | wc -l)` prints becomes the value, so
+      `tmps=$(find data -name '*.tmp' -type f | wc -l)` remembers it for you.
   - cost: 55
     reveal_solution: true
 

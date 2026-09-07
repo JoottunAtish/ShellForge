@@ -7,7 +7,7 @@ difficulty: 2
 xp: 60
 par_commands: 4
 estimated_minutes: 6
-concepts: [head, tail, wc, less, redirection]
+concepts: [cat, head, tail, wc, less, redirection]
 prerequisites: [files-01]
 tags: [must-know, text-processing]
 

@@ -7,7 +7,7 @@ difficulty: 4
 xp: 120
 par_commands: 6
 estimated_minutes: 12
-concepts: [ps, kill, signals, background-jobs, nohup]
+concepts: [ps, pgrep, kill, signals, background-jobs, nohup, command-substitution]
 prerequisites: [perm-02]
 tags: [must-know]
 

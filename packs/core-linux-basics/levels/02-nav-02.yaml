@@ -7,7 +7,7 @@ difficulty: 1
 xp: 50
 par_commands: 3
 estimated_minutes: 5
-concepts: [ls, hidden-files, listing-flags]
+concepts: [ls, hidden-files, listing-flags, echo, redirection]
 prerequisites: [nav-01]
 tags: [must-know, orientation]
 
