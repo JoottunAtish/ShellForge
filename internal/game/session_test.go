@@ -38,6 +38,12 @@ type fakeVerifier struct {
 	runCalls int
 
 	result verify.LevelResult
+
+	// onRun, when set, runs once per Run call. reset_test.go uses it to
+	// observe the moment a check actually reaches the verifier, which is
+	// what proves a check waited for a reset rather than merely finishing
+	// after one.
+	onRun func()
 }
 
 func (f *fakeVerifier) Build(specs []verify.Spec) ([]verify.Check, error) {
@@ -56,6 +62,9 @@ func (f *fakeVerifier) Build(specs []verify.Spec) ([]verify.Check, error) {
 func (f *fakeVerifier) Run(_ context.Context, _ []verify.Check, env verify.Env) verify.LevelResult {
 	f.runCalls++
 	f.ranEnv = env
+	if f.onRun != nil {
+		f.onRun()
+	}
 	return f.result
 }
 
@@ -153,6 +162,23 @@ func (f *fakeSession) PullFile(context.Context, string) ([]byte, error) {
 func (f *fakeSession) Close() error {
 	f.closed = true
 	return nil
+}
+
+// removals reports how many `rm -rf` calls this fake has been asked to run,
+// which is how many times a level world has been torn down.
+func (f *fakeSession) removals() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.teardownCalls
+}
+
+// setHook replaces execHook after the fake is already in use, which is what
+// lets a test let one teardown through before arranging to hold the next
+// one open.
+func (f *fakeSession) setHook(fn func(argv []string)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.execHook = fn
 }
 
 // testLevel is a minimal valid level: one required check, one objective.

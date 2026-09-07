@@ -277,6 +277,22 @@ func TestRepublishForeverIsBoundedAndReported(t *testing.T) {
 
 // TestPublishWithNoSubscribersAllocatesNothingAndStartsNoGoroutine is
 // criterion 5.
+//
+// The goroutine half of this asserts that the count does not GROW, rather
+// than that it is unchanged, which is issue #148. An equality assertion
+// across two runtime.NumGoroutine calls is racy against the whole process:
+// the count includes background goroutines the runtime and the GC start and
+// stop on their own schedule, and under -race, on a shared CI runner, one
+// of them legitimately exiting mid-test failed this with "goroutine count
+// changed from 3 to 2". That is the opposite of what the test is looking
+// for, and it went red twice on a pull request that never touched this
+// package.
+//
+// A count that comes back lower is not evidence of anything. A count that
+// stays higher is, and that is the direction a Publish spawning goroutines
+// would move it, so it is the direction asserted. The retry gives a
+// goroutine started elsewhere and about to exit a moment to do so, so a
+// coincidence does not read as a leak.
 func TestPublishWithNoSubscribersAllocatesNothingAndStartsNoGoroutine(t *testing.T) {
 	b := New()
 	ev := Event(LevelReset{At: time.Now()})
@@ -288,13 +304,17 @@ func TestPublishWithNoSubscribersAllocatesNothingAndStartsNoGoroutine(t *testing
 		b.Publish(ctx, ev)
 	})
 
-	after := runtime.NumGoroutine()
-
 	if allocs != 0 {
 		t.Fatalf("Publish with no subscribers allocated %v times per run, want 0", allocs)
 	}
-	if before != after {
-		t.Fatalf("goroutine count changed from %d to %d, want no goroutine started", before, after)
+
+	after := runtime.NumGoroutine()
+	for i := 0; i < 50 && after > before; i++ {
+		time.Sleep(10 * time.Millisecond)
+		after = runtime.NumGoroutine()
+	}
+	if after > before {
+		t.Fatalf("goroutine count rose from %d to %d and stayed there, want Publish to start none", before, after)
 	}
 }
 

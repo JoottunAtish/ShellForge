@@ -37,7 +37,7 @@ pass. That is the difference between teaching a command and teaching a skill.
 |---|---|
 | **Real shell** | Actual `bash` in a PTY. `vim`, `less`, `htop`, job control, tab completion, Ctrl-C all work. |
 | **Real verification** | 13 check types that read filesystem state, process state, file modes, ownership and shell environment. |
-| **Really disposable** | `rm -rf /` inside the sandbox destroys nothing on your machine, and `reset` rebuilds in under a second. |
+| **Really disposable** | `rm -rf /` inside the sandbox destroys nothing on your machine, and `reset` rebuilds the level in under a second. |
 | **Really offline** | No account, no server, no telemetry. Progress is a SQLite file on your disk. |
 | **Really yours** | Levels are declarative YAML. Write your own, ship a pack. |
 
@@ -83,8 +83,10 @@ access to your files. On Windows it is a dedicated WSL distribution with Windows
 interop and drive automounting switched off, so there is no `/mnt/c` to destroy. On
 Linux it is a container with no network and no host mounts.
 
-`rm -rf /` in there destroys the sandbox and nothing else, and `shellforge reset`
-rebuilds it in under a second. Breaking things is the point.
+`rm -rf /` in there destroys the sandbox and nothing else, and typing `reset` at
+the prompt rebuilds the level in under a second. It shows you exactly what it
+would delete before it does anything, and it only ever touches the level's own
+folder. Breaking things is the point.
 
 More detail in [docs/04-how-it-works.md](docs/04-how-it-works.md).
 

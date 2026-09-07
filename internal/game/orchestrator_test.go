@@ -40,10 +40,24 @@ type fakeProgress struct {
 
 	setLevelStatusCalls int
 	setLevelStatusErr   error
+	setLevelStatusArgs  []store.LevelStatus
+
+	addHintsUsedCalls int
+	addHintsUsedTotal int
+	addHintsUsedErr   error
 
 	levelState    store.LevelState
 	levelStateOK  bool
 	levelStateErr error
+
+	// levelStateCalls counts LevelState calls, and levelStateErrAfterCalls
+	// says how many of them succeed before levelStateErr starts being
+	// returned. Start reads the row twice, once before StartAttempt for the
+	// status and hint count the learner arrived with and once after it for
+	// the attempt number, so a test that wants to fail only the second read
+	// sets this to 1.
+	levelStateCalls         int
+	levelStateErrAfterCalls int
 }
 
 // newFakeProgress returns a fakeProgress whose LevelState reads back ok, as
@@ -78,17 +92,37 @@ func (p *fakeProgress) FinishAttempt(_ context.Context, attemptID int64, a store
 	return p.finishAttemptErr
 }
 
-func (p *fakeProgress) SetLevelStatus(_ context.Context, _ int64, _, _ string, _ int, _ store.LevelStatus) error {
+func (p *fakeProgress) SetLevelStatus(_ context.Context, _ int64, _, _ string, _ int, status store.LevelStatus) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.setLevelStatusCalls++
+	p.setLevelStatusArgs = append(p.setLevelStatusArgs, status)
 	return p.setLevelStatusErr
+}
+
+// AddHintsUsed mirrors the real store: it adds to the level_state hint
+// count that Start reads back to seed the ladder, so a test can take a hint
+// and then rebuild an Orchestrator over the same fake and see the ladder
+// resume where it left off. It records the total as well as the call count,
+// because a reveal spends several tiers in one call and the difference is
+// exactly what a regression here would hide.
+func (p *fakeProgress) AddHintsUsed(_ context.Context, _ int64, _, _ string, _, n int) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.addHintsUsedCalls++
+	if p.addHintsUsedErr != nil {
+		return p.addHintsUsedErr
+	}
+	p.addHintsUsedTotal += n
+	p.levelState.HintsUsed += n
+	return nil
 }
 
 func (p *fakeProgress) LevelState(_ context.Context, _ int64, _ string, _ int) (store.LevelState, bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.levelStateErr != nil {
+	p.levelStateCalls++
+	if p.levelStateErr != nil && p.levelStateCalls > p.levelStateErrAfterCalls {
 		return store.LevelState{}, false, p.levelStateErr
 	}
 	return p.levelState, p.levelStateOK, nil
@@ -734,8 +768,13 @@ func TestCloseFinishesAnAttemptStartCouldNotComplete(t *testing.T) {
 		arrange func(*fakeProgress)
 	}{
 		{
-			name:    "the level state read fails",
-			arrange: func(p *fakeProgress) { p.levelStateErr = errors.New("database is locked") },
+			name: "the level state read fails",
+			arrange: func(p *fakeProgress) {
+				p.levelStateErr = errors.New("database is locked")
+				// The read this test is about is the one after
+				// StartAttempt, so let the one before it through.
+				p.levelStateErrAfterCalls = 1
+			},
 		},
 		{
 			name:    "the level state row is missing",

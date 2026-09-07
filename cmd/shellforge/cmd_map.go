@@ -9,12 +9,11 @@ import (
 
 	"github.com/JoottunAtish/ShellForge/internal/content"
 	"github.com/JoottunAtish/ShellForge/internal/game"
-	"github.com/JoottunAtish/ShellForge/internal/platform"
 	"github.com/JoottunAtish/ShellForge/internal/platform/ux"
-	"github.com/JoottunAtish/ShellForge/internal/store"
 )
 
-// mapProfileName is the profile `shellforge map` reads progress against.
+// progressProfileName is the profile every progress-reading verb works
+// against: `map`, `stats`, `play` and `skip` alike.
 // v0.1 is single profile only, so Store.EnsureProfile ignores this name on
 // every call after the first; it is still a named constant, not an inline
 // literal, so the day a second profile exists there is exactly one place to
@@ -22,7 +21,7 @@ import (
 // in meaning: that one names the unprivileged user inside the sandbox, this
 // one names a row in the progress database, and the two happen to share a
 // string today only because v0.1 has exactly one of each.
-const mapProfileName = "learner"
+const progressProfileName = "learner"
 
 // newMapCommand returns `shellforge map`, which prints the campaign as a
 // tree of passed, available, and locked levels. It reads the embedded pack
@@ -56,42 +55,20 @@ func runMap(ctx context.Context, out io.Writer, ascii bool) error {
 		return err // Embedded already wraps its own failure as a *ux.Error
 	}
 
-	dbPath, err := platform.DatabasePath()
+	st, profile, err := openProgress(ctx)
 	if err != nil {
-		return ux.Fail("find the progress database",
-			err,
-			"Check that your home directory is set and readable, then run: shellforge doctor",
-			"")
-	}
-
-	st, err := store.Open(ctx, dbPath)
-	if err != nil {
-		return err // Open already wraps its own failure as a *ux.Error
+		return err
 	}
 	defer st.Close()
 
-	profile, err := st.EnsureProfile(ctx, mapProfileName)
-	if err != nil {
-		return ux.Fail("read your learner profile",
-			err,
-			"Run: shellforge doctor",
-			"")
-	}
-
 	states, err := st.LevelStates(ctx, profile.ID, pack.ID)
 	if err != nil {
-		return ux.Fail("read your recorded progress",
-			err,
-			"Run: shellforge doctor",
-			"")
+		return ux.Fail("read your recorded progress", err, remediationRunDoctor, "")
 	}
 
 	nodes, err := game.Resolve(pack, states)
 	if err != nil {
-		return ux.Fail("resolve the campaign map",
-			err,
-			"The content pack has a cycle in its level prerequisites. Run: shellforge author validate packs/core-linux-basics",
-			docAnchorPackInvalid)
+		return ux.Fail("resolve the campaign map", err, remediationPackCycle, docAnchorPackInvalid)
 	}
 
 	color := ux.ColorEnabled(out) && !ascii

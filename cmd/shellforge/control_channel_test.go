@@ -153,7 +153,7 @@ func TestControlChannelAnswersTheShim(t *testing.T) {
 		// The production responder, with colour off: this test compares
 		// against plain words, and a learner with NO_COLOR set gets exactly
 		// this path.
-		serveControlRequests(serveCtx, sess, &gameResponder{session: session, level: level, color: false}, reqPath, resPath)
+		serveControlRequests(serveCtx, sess, &gameResponder{checker: session, level: level, color: false}, reqPath, resPath)
 	}()
 
 	// runShim invokes the shim the way the learner's shell does: through the
@@ -236,9 +236,14 @@ func TestControlChannelAnswersTheShim(t *testing.T) {
 		t.Errorf("on the third request, `check` said %q, want PASS:. The control loop does not survive repeated use.", got)
 	}
 
-	// A verb that is not built yet still has to answer, rather than hang.
-	if got := runShim(t, "hint"); !strings.Contains(got, "not built yet") {
-		t.Errorf("`hint` said %q, want it to say it is not built yet", got)
+	// A verb the responder cannot serve still has to answer, rather than
+	// hang. This responder is built from a game.Session with no
+	// orchestrator behind it, so there is no ladder to spend from and
+	// `hint` says so; what matters here is that a reply comes back over the
+	// channel at all. render_hint_test.go covers what `hint` does when
+	// there IS an orchestrator.
+	if got := runShim(t, "hint"); !strings.Contains(got, "hint") {
+		t.Errorf("`hint` said %q, want an answer naming the verb rather than silence", got)
 	}
 
 	// Cancelling the context must end the loop, so no `cat` is left holding

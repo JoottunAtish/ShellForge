@@ -161,15 +161,15 @@ func execCommand(t *testing.T, root *cobra.Command, args ...string) (string, err
 // #48's acceptance criteria.
 func TestUnimplementedVerbsExplainThemselves(t *testing.T) {
 	stubs := [][]string{
-		{"play"}, {"check"}, {"hint"}, {"reset"},
-		{"skip"}, {"stats"}, {"bug-report"},
+		{"bug-report"},
 		{"author", "scaffold"}, {"author", "record"},
 	}
 
 	// `author validate` was a stub when #48 wrote this list and is real as of
 	// #53. `author test` is real as of the golden harness. `doctor` is real as
 	// of #70. `init` and all four sandbox subcommands are real as of #71.
-	// `map` is real as of #124. All of these are deliberately absent above
+	// `map` is real as of #124, and `play`, `skip` and `stats` are real as
+	// of the Day 4 game core. All of these are deliberately absent above
 	// rather than deleted from the documented set: author_test.go covers
 	// validate, author_test_cmd_test.go covers test, cmd_doctor_test.go
 	// covers doctor, cmd_init_test.go and cmd_sandbox_test.go cover init and
@@ -177,6 +177,13 @@ func TestUnimplementedVerbsExplainThemselves(t *testing.T) {
 	// still errors without arguments or on a broken machine, but it errors
 	// about that rather than about not existing, so it does not belong in
 	// this list.
+	//
+	// `check`, `hint` and `reset` are also absent, and are a different case
+	// again: all three are real, and none of them is a host verb. A learner
+	// types them at the prompt INSIDE a level, where the shim carries them
+	// over the control channel. Typed on the host they have no level to act
+	// on, which is not the same thing as not existing, so they get their own
+	// assertion below rather than a message claiming they are unbuilt.
 
 	for _, args := range stubs {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
@@ -188,6 +195,64 @@ func TestUnimplementedVerbsExplainThemselves(t *testing.T) {
 			assertUserFacing(t, err)
 			if !strings.Contains(err.Error(), "not built yet") {
 				t.Errorf("error should say the verb is not built yet, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestInLevelVerbsSayWhereTheyLive covers the three verbs that are real but
+// belong at the prompt inside a level rather than on the host: typed here
+// they must say so and point at `shellforge play`, not claim they do not
+// exist.
+func TestInLevelVerbsSayWhereTheyLive(t *testing.T) {
+	for _, verb := range []string{"check", "hint", "reset"} {
+		t.Run(verb, func(t *testing.T) {
+			root := NewRootCommand(VersionInfo{})
+			_, err := execCommand(t, root, verb)
+			if err == nil {
+				t.Fatalf("shellforge %s: expected an error, there is no level in play", verb)
+			}
+			assertUserFacing(t, err)
+
+			remediation := remediationOf(t, err)
+			if !strings.Contains(remediation, "inside a level") {
+				t.Errorf("the message does not say where the verb lives: %s", remediation)
+			}
+			if !strings.Contains(remediation, "shellforge play") {
+				t.Errorf("the message does not name the command that starts a level: %s", remediation)
+			}
+			if strings.Contains(err.Error(), "not built yet") {
+				t.Errorf("the message claims a real verb is unbuilt: %v", err)
+			}
+		})
+	}
+}
+
+// The flags these verbs advertise belong inside a level, and cobra knows
+// none of them. Leaving flag parsing on turned `shellforge hint --reveal`,
+// which is that command's own usage line, into "unknown flag" instead of
+// the guidance the command exists to print.
+func TestInLevelVerbsDoNotChokeOnTheirOwnFlags(t *testing.T) {
+	cases := [][]string{
+		{"hint", "--reveal"},
+		{"hint", "--yes"},
+		{"hint", "--reveal", "--yes"},
+		{"reset", "--yes"},
+	}
+
+	for _, args := range cases {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			root := NewRootCommand(VersionInfo{})
+			_, err := execCommand(t, root, args...)
+			if err == nil {
+				t.Fatalf("shellforge %s: expected an error, there is no level in play", strings.Join(args, " "))
+			}
+			assertUserFacing(t, err)
+			if strings.Contains(err.Error(), "unknown flag") {
+				t.Errorf("cobra rejected the verb's own advertised flag instead of explaining where the verb lives: %v", err)
+			}
+			if !strings.Contains(remediationOf(t, err), "shellforge play") {
+				t.Errorf("the message does not name the command that starts a level: %s", remediationOf(t, err))
 			}
 		})
 	}

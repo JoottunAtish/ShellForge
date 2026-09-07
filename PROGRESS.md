@@ -5,8 +5,9 @@ push, get CI green, and add a line here. No silent carry-over. If an exit criter
 is unchecked the next morning, it either gets done before new work or it gets
 formally cut.
 
-**Current state: Day 2 complete on Linux, and now exercised against a real container in CI. `shellforge run <level-id>` plays any of the nine written levels from the embedded YAML pack with zero Go changes between them: it renders the briefing, prints the objective checklist, hands over a real instrumented bash, and answers `check` with authored results through the existing control FIFO. The verification engine, composition nodes, result assembly and the golden test contract are all built and unit tested. The golden contract has run against all nine levels in CI's Sandbox image job, which is the first thing to actually play a level, and finding real bugs is exactly what it did: two levels whose setup script silently never created a directory, one level whose expected answer disagreed with the directory the shell started in, and one whose five timestamp commands could each have failed unnoticed. All four are fixed. Still NOT verified from a developer machine: every Docker-gated test, because the environment that built this had no Docker socket, so CI rather than a person is the witness for anything end to end. Scoring, XP, hints, `reset`, `map`, `stats`, `play` and journal wiring are all Day 4 and deliberately absent. Windows still plays from inside WSL until Day 3.**
+**Current state: Day 4 game core complete on Linux. `shellforge play` is now the command a learner types: it opens the progress database, resolves the next unlocked level from the curriculum DAG, says which level it chose and why BEFORE provisioning anything, plays it through the Session Orchestrator, scores it, and prints a pass banner with the arithmetic shown line by line. Inside a level, `check` scores, `hint` quotes its price and then spends it on a second confirming request, and `reset` names what it would delete and then rebuilds. `skip` records a level skipped so its dependants unlock, `stats` prints XP, rank, per-act progress and all fourteen achievements with the locked ones shown as locked, and `map` is unchanged. Fourteen achievements run as bus subscribers with no orchestrator involvement. Still NOT verified from a developer machine: anything that needs a container, because this environment has no Docker socket, so CI remains the witness for every end to end claim. What was exercised by hand here is the three paths that need no daemon: `play --next`, `skip`, `stats` and `map`, plus `play` far enough to see it print its choice and reason before the provisioning attempt fails. Levels 9 to 25 are still Day 5, and Windows still plays from inside WSL.**
 
+---
 ---
 
 ## What actually works today
@@ -19,21 +20,21 @@ formally cut.
 | `go test ./...` | Green |
 | Layer dependency enforcement | Done, and verified to fail on a deliberate violation |
 | Punctuation gate | Done, and verified to fail on a deliberate violation |
-| CLI dispatcher | `cmd/shellforge` runs on `spf13/cobra` as of #48, not the hand-rolled dispatcher. Fourteen verbs registered (`doctor` `init` `play` `run` `check` `hint` `reset` `skip` `map` `stats` `sandbox` `bug-report` `author` `version`). As of issue #71, `init` and the whole `sandbox` group are real rather than stubs: `init` resolves a backend through `internal/sandbox.Resolve`, prints which one it picked and why, and provisions it; `sandbox` is `status`, `shell`, `rebuild`, `destroy` (`build` is gone: `Provision` already builds the image or distribution, so it had no behaviour distinct from `init`), each real. `run`'s own sandbox resolution now goes through the same `internal/sandbox.Resolve` path as `init`, dropping its direct `internal/runtime/docker` import. `doctor` (issue #70) is wired to a real `sandbox.NewProber()` instead of `nil`, so `sandbox_health` reports real state instead of an unconditional `Warn`. Issue #124 makes `map` real: it loads the embedded pack, opens the progress database, and prints the campaign as a tree, with no runtime resolved and no sandbox touched. `version`, `help`, `run <level-id>`, `author validate`, `author test`, `doctor`, `init`, `map`, and the four `sandbox` subcommands all work; every other verb still fails through `ux.Fail` with a remediation. Acceptance criterion 11 of #71 (an interactive `sandbox shell` on Windows) is deliberately not delivered: see the Day 3 entry below. **The whole `cmd/shellforge` package was untracked by git until #11**: `.gitignore`'s unanchored `shellforge` pattern matched the directory, so it was never committed and CI never compiled or tested it. |
-| `shellforge run <level-id>` | Works on Linux for any level in the pack, with zero Go changes between levels. Loads from the embedded YAML, renders the briefing through glamour, prints the objective checklist, provisions, materializes the level, hands over a real instrumented bash, serves `check` over the existing FIFO control channel, and tears the level world down on every exit path through one cleanup function. An unknown id fails through `ux.Fail` naming the ids that exist. Refuses on a Windows host with the `windows-needs-wsl` anchor. **Never run against a real container from a developer machine**: no Docker socket here, so every end-to-end claim rests on unit tests plus CI's golden run. The learner's shell starts in `/home/learner`, not the level root, which is what a login shell does and what nav-01 teaches. |
+| CLI dispatcher | `cmd/shellforge` runs on `spf13/cobra` as of #48, not the hand-rolled dispatcher. Fourteen verbs registered (`doctor` `init` `play` `run` `check` `hint` `reset` `skip` `map` `stats` `sandbox` `bug-report` `author` `version`). As of issue #71, `init` and the whole `sandbox` group are real rather than stubs: `init` resolves a backend through `internal/sandbox.Resolve`, prints which one it picked and why, and provisions it; `sandbox` is `status`, `shell`, `rebuild`, `destroy` (`build` is gone: `Provision` already builds the image or distribution, so it had no behaviour distinct from `init`), each real. `run`'s own sandbox resolution now goes through the same `internal/sandbox.Resolve` path as `init`, dropping its direct `internal/runtime/docker` import. `doctor` (issue #70) is wired to a real `sandbox.NewProber()` instead of `nil`, so `sandbox_health` reports real state instead of an unconditional `Warn`. Issue #124 makes `map` real: it loads the embedded pack, opens the progress database, and prints the campaign as a tree, with no runtime resolved and no sandbox touched. `version`, `help`, `play`, `run <level-id>`, `skip`, `map`, `stats`, `author validate`, `author test`, `doctor`, `init`, and the four `sandbox` subcommands all work. Two verbs remain stubs, `bug-report` and the two `author` subcommands, and they fail through `ux.Fail` with a remediation. Three more, `check`, `hint` and `reset`, are registered but are NOT host verbs and never will be: a learner types them at the prompt inside a level, where the shim carries them over the control channel, so typed on the host they say where the verb actually lives and point at `shellforge play` rather than claiming to be unbuilt. Acceptance criterion 11 of #71 (an interactive `sandbox shell` on Windows) is deliberately not delivered: see the Day 3 entry below. **The whole `cmd/shellforge` package was untracked by git until #11**: `.gitignore`'s unanchored `shellforge` pattern matched the directory, so it was never committed and CI never compiled or tested it. |
+| `shellforge run <level-id>` | Works on Linux for any level in the pack, with zero Go changes between levels. Loads from the embedded YAML, renders the briefing through glamour, prints the objective checklist, provisions, materializes the level, hands over a real instrumented bash, serves `check` over the existing FIFO control channel, and tears the level world down on every exit path through one cleanup function. An unknown id fails through `ux.Fail` naming the ids that exist. Refuses on a Windows host with the `windows-needs-wsl` anchor. **Never run against a real container from a developer machine**: no Docker socket here, so every end-to-end claim rests on unit tests plus CI's golden run. The learner's shell starts in `/home/learner`, not the level root, which is what a login shell does and what nav-01 teaches. As of the Day 4 game core it goes through `game.Orchestrator` rather than `game.Session` directly, so it opens and closes an attempt, scores, and serves `hint` and `reset` exactly as `play` does: one path, because a `run` that discarded a hint the learner had paid for would be worse than one that records it. |
 | `shellforge run demo` | Gone, as of #96. The Day 1 hardcoded level and its four files are deleted, and `demo` is now an unknown level id like any other: `run demo` reports that there is no such level and lists the ones there are. The safety coverage its tests carried moved to `cmd/shellforge/isolation_test.go`, against `pipe-05` from the real pack, and is named in the Sandbox image job's own `-run` pattern so it actually runs. |
 | `shellforge author test` | Done. Runs the `docs/LEVEL-FORMAT.md` section 7 golden contract per level and is what `make golden` calls, a target that had been calling a command that did not exist since Day 0. Refuses rather than skips without a Docker daemon, because a `make golden` reporting success having tested nothing is worse than no gate. |
 | Sandbox image | `Containerfile` written, and built by CI's Sandbox image job on every run. Not built on a developer machine here: no Docker socket in this environment. |
 | Shell instrumentation | `instrument.bash` written, and exercised by every learner shell CI's golden run provisions, including the missing-SF_STATE recovery path added in this PR. Not exercised on a developer machine here, for the same reason. |
 | Content pack | `pack.yaml` with six acts declared, and nine levels written: `nav-01` to `nav-04`, `files-01` to `files-04` (issue #54), and `pipe-05`. They validate clean, are embedded via `packs/packs.go`, and are all reachable from `shellforge run`. `pipe-05` is out of curriculum order on purpose: it is the engine's reference fixture, the level `docs/LEVEL-FORMAT.md` section 6 is written against, and the first whose world comes from committed assets rather than inline content. The golden contract has run all nine against a real container in CI's Sandbox image job, which found and fixed four real bugs (see the current-state line above); no developer machine here has a Docker socket, so CI rather than a person is the witness. Levels 9 to 25 are Day 5. |
 | Level assets | First three committed: `assets/app-1.log`, `app-2.log`, `billing.log`, for pipe-05. They were produced by a deterministic generator rather than hand written, so their numbers came from code that already had consistency tests; that generator lived in `internal/sandbox/demo_level.go` and was deleted with it under #96, which changes nothing about the committed bytes. The durable guarantee always was `internal/content/pipe05_assets_test.go`, not the generator: five tests count the answers out of the committed bytes the way the level's solution counts them, including one that catches a noise line matching `error` case-insensitively without being an ERROR record. |
-| `internal/game` | A thin `Session`: load, setup, brief, check, teardown, and nothing else. It declares its own `Verifier` interface so it is testable with a two-method fake, borrows the `runtime.Session` it is given and never closes it, and holds the only `content.CheckSpec` to `verify.Spec` conversion, which has to sit above both peers. The event bus exists as `internal/game/bus`: a synchronous, typed, in-memory dispatcher for the seven domain events, standard library only, with panics contained per subscriber and nested publishes drained in order under a bounded dispatch depth. Issue #122 adds the Session Orchestrator, `orchestrator.go` and `state.go`: a ten-state machine (`State` plus an unexported `legalTransition` table) wrapped around one `*Session`, with exactly three public verbs, `Start`, `Check`, `Close`, plus the two pure reads `State` and `Passed`. One `sync.Mutex` guards `state`/`closed`/`passed`/`attemptID`/`checkCount`/`startDone` and never spans a call that leaves the package: not the three sandbox calls (`Session.Setup`, `Session.Check`, `Session.Teardown`), not a `Progress` call, and not a `bus.Publish`, so a subscriber may call back into the same Orchestrator from inside its handler without deadlocking against it, while `Close` waits on an in-flight `Start`'s `startDone` channel before tearing anything down, so that a teardown is always the last thing to touch the level's world even when the learner interrupts a run mid-`Setup`; `Close` always attempts both `Session.Teardown` and a matching `Progress.FinishAttempt` and combines their errors with `errors.Join`, and is safe to call more than once, from any state, concurrently with an in-flight `Check`. `Start` opens a `store.Attempt` through a new `Progress` interface (a four-method subset of `*store.Store`, declared here the same way `Verifier` is), reads the attempt count back with `LevelState`, and publishes `LevelStarted`; `Check` publishes `CheckRun` on every call and `LevelPassed` exactly once, on the first fully passing check, marking the level passed in the store at that moment rather than waiting for `Close`. `StateProvisioning`, `StateBriefing`, and `StateHinting` are declared and legal edges exist in `legalTransition` for `StateHinting`, but no exported method enters or exits any of the three this ticket: no sandbox provisioning, no briefing rendering, and no hint ladder here. No scoring beyond the zero values `LevelPassed` already carries, no reset, no next-level selection, no CLI wiring: `cmd/shellforge/cmd_run.go` is untouched and `shellforge run` still calls `Session` directly, not the Orchestrator. Known and deliberately deferred, so a future reader does not rediscover it as a surprise: replaying a level that was already passed and then abandoning it downgrades that level's stored status from `passed` back to `in_progress`, because `store.StartAttempt` resets the status on every new attempt and `store.FinishAttempt`'s non-passed branch writes `in_progress` again, and preserving a best-known status across re-attempts is orchestrator policy that belongs with scoring, which this ticket puts out of scope. Issue #124 adds `curriculum.go`: `Availability`, `Node`, `Resolve(pack, states) ([]Node, error)`, and `Next(nodes) (Node, bool)`. `Resolve` is a pure function, no database handle and no context, joining `Pack.Order` with a `map[string]store.LevelState` to say what each level's unlock state is; a nil `states` map behaves exactly like an empty one. Not wired into the Orchestrator or `Session`: nothing here changes what `run` or `check` do, this is read-only join logic for `map` alone. |
+| `internal/game` | A thin `Session`: load, setup, brief, check, teardown, and nothing else. It declares its own `Verifier` interface so it is testable with a two-method fake, borrows the `runtime.Session` it is given and never closes it, and holds the only `content.CheckSpec` to `verify.Spec` conversion, which has to sit above both peers. The event bus exists as `internal/game/bus`: a synchronous, typed, in-memory dispatcher for the seven domain events, standard library only, with panics contained per subscriber and nested publishes drained in order under a bounded dispatch depth. Issue #122 adds the Session Orchestrator, `orchestrator.go` and `state.go`: a ten-state machine (`State` plus an unexported `legalTransition` table) wrapped around one `*Session`, with exactly three public verbs, `Start`, `Check`, `Close`, plus the two pure reads `State` and `Passed`. One `sync.Mutex` guards `state`/`closed`/`passed`/`attemptID`/`checkCount`/`startDone` and never spans a call that leaves the package: not the three sandbox calls (`Session.Setup`, `Session.Check`, `Session.Teardown`), not a `Progress` call, and not a `bus.Publish`, so a subscriber may call back into the same Orchestrator from inside its handler without deadlocking against it, while `Close` waits on an in-flight `Start`'s `startDone` channel before tearing anything down, so that a teardown is always the last thing to touch the level's world even when the learner interrupts a run mid-`Setup`; `Close` always attempts both `Session.Teardown` and a matching `Progress.FinishAttempt` and combines their errors with `errors.Join`, and is safe to call more than once, from any state, concurrently with an in-flight `Check`. `Start` opens a `store.Attempt` through a new `Progress` interface (a four-method subset of `*store.Store`, declared here the same way `Verifier` is), reads the attempt count back with `LevelState`, and publishes `LevelStarted`; `Check` publishes `CheckRun` on every call and `LevelPassed` exactly once, on the first fully passing check, marking the level passed in the store at that moment rather than waiting for `Close`. `StateProvisioning`, `StateBriefing`, and `StateHinting` are declared and legal edges exist in `legalTransition` for `StateHinting`, but no exported method enters or exits any of the three this ticket: no sandbox provisioning, no briefing rendering, and no hint ladder here. No scoring beyond the zero values `LevelPassed` already carries, no reset, no next-level selection, no CLI wiring: `cmd/shellforge/cmd_run.go` is untouched and `shellforge run` still calls `Session` directly, not the Orchestrator. Known and deliberately deferred, so a future reader does not rediscover it as a surprise: replaying a level that was already passed and then abandoning it downgrades that level's stored status from `passed` back to `in_progress`, because `store.StartAttempt` resets the status on every new attempt and `store.FinishAttempt`'s non-passed branch writes `in_progress` again, and preserving a best-known status across re-attempts is orchestrator policy that belongs with scoring, which this ticket puts out of scope. Issue #124 adds `curriculum.go`: `Availability`, `Node`, `Resolve(pack, states) ([]Node, error)`, and `Next(nodes) (Node, bool)`. `Resolve` is a pure function, no database handle and no context, joining `Pack.Order` with a `map[string]store.LevelState` to say what each level's unlock state is; a nil `states` map behaves exactly like an empty one. Not wired into the Orchestrator or `Session`: nothing here changes what `run` or `check` do, this is read-only join logic for `map` alone. The Day 4 game core adds the rest: `internal/game/score` (the formula, pure, standard library only), `hints.go` (the ladder, plus `PeekHint` and `TakeHint` on the Orchestrator), `Orchestrator.Reset` under a second mutex so a check arriving mid-reset waits, `rank.go` (`RankFor`), and `internal/game/achievements` (fourteen keys, each its own bus subscriber, no orchestrator involvement). The Orchestrator now also subscribes to `CommandExecuted` on its own bus to count the learner's commands, filtered to its own attempt, which is what makes the efficiency bonus real. The known downgrade defect recorded above is fixed: replaying a passed level and abandoning it no longer takes the pass back. |
 | Pack loading and validation | Done in `internal/content` (issue #53). `LoadPack`, `Embedded`, `Pack.Level`, `Pack.Order`, and `Validate` with a `TypeChecker` the caller supplies, so `internal/content` and `internal/verify` stay peers rather than one importing the other. `shellforge author validate <pack>` reports every problem one per line and supports `--json`. A legal `command_matched` or `command_not_matched` check now gets a warning naming issue #88: no runtime session wires a real journal yet, so the check verifies nothing until then, and the validator says so rather than staying quiet. |
 | Level setup and teardown runner | Done in `internal/content/setup` (issue #50). `Runner.Setup`, `Teardown`, and `IsSetUp` materialize and remove a level's world inside the sandbox: teardown-first idempotency, a `loglines` content generator behind a registered kind, CRLF stripping on the host side before a `runtime.FileEntry` is built, rollback on any failure via `context.WithoutCancel`, and a `SETUP_OK` sentinel written under the state directory rather than the level root. Not wired into the game orchestrator or the CLI: no caller constructs a `Runner` yet outside its own tests. That wiring, plus the pack loader and validator that produce a real `content.Level`, is #52, #53, and #54. |
 | Runtimes | `Runtime` and `Session` interfaces plus their value types and sentinel errors are defined in `internal/runtime`, the reusable contract suite is in `internal/runtime/runtimetest`, and `internal/runtime/docker` implements both by shelling out to the `docker` CLI. The contract suite is green against it on Windows with Docker Desktop's Linux engine, except one subtest documented below. `internal/runtime/wsl` (issue #69) now implements both by shelling out to `wsl.exe`: `New`, `Provision`, `Destroy`, `Status`, `StartSession`, `Capabilities`, and a `Session` with `Exec`, `Attach`, `PushFiles`, `PullFile`. The UTF-16LE decoder, the seven install directory refusals, both Destroy name refusals, the marker check, the enumerate-and-diff guard, the digest and name-collision refusals, and every argv construction are asserted and green on Linux CI. The contract suite wired against it (`TestWslContract`) skips everywhere this run and CI can reach: no `wsl.exe`, no Windows, and no WSL2 on either CI leg. A human on real Windows 11 with WSL2 still owes the thirteen contract assertions passing for real, the hardening probes seeing a genuinely imported distribution, and the install directory (`.vhdx` included) actually gone after `Destroy`, confirmed in Explorer. See the Day 3 entry below for the full list of what is asserted in code versus what still needs that human. |
 | PTY multiplexer and OSC parser | Both done. Parser: streaming OSC 133 and OSC 7 state machine, fuzzed, with a recorded vim session passing through byte-identical. Multiplexer (`internal/pty/mux.go`): host stdin forwarded to the sandbox verbatim including Ctrl-C, host terminal raw mode restored across every exit path including a panic, initial resize plus SIGWINCH on unix, and CommandEvent assembly from the marker stream. Issue #123 adds `CommandEvent.UsedTab`, fed by a `tabTap` reader that wraps host stdin inside `Run`'s existing `io.Copy`: it flags byte `0x09` as it passes and forwards every byte unchanged, and `onOSCEvent`'s `PreExec` case swaps the flag into the new pending event and clears it in the same atomic step. The flag is deliberately imprecise (a Tab typed into `vim` counts) and is achievement evidence only, never scoring input. `CommandEvent.Raw` is still always empty, and that is now a decision rather than a gap: command text reaches the host through `journal.tsv`, read by `journal.Collector`, because filling `Raw` here would mean handing `Mux` a `runtime.Session` and it stays a byte pump. Windows resize watching (issue #68) polls `GetConsoleScreenBufferInfo` through the same injectable `getSize`/`resize` fields the unix watcher uses, every 250ms by default, and forwards a change the same way SIGWINCH does on unix. |
 | Verification engine | Done in `internal/verify` (issue #52). `Engine`, `NewEngine`, `WithCheckTimeout`, `WithLevelTimeout`, `Build` and `Run`, the `any_of`/`all_of`/`not` composition nodes, and `LevelResult` matching `docs/LEVEL-FORMAT.md` section 5 field for field. Checks are built once at level load and run on every `check`. 262 tests and subtests. The hermetic half of the purity guarantee is `internal/verify/purity_test.go`, which asserts every check type runs only read-only commands; the filesystem-hash half is in the golden harness and needs Docker. |
-| Progress database | `internal/store` (schema, migrations) and `internal/journal` (the command journal) are both built and unit tested, per #51. Issue #120 adds `002_progression.sql` and `progress.go`: six new tables (`profile`, `pack`, `level_state`, `attempt`, `concept_mastery`, `achievement`) and a set of `*Store` methods, all unit tested, none wired into `cmd/shellforge`, `internal/game`, or `internal/pty` yet. `EnsureProfile` creates and returns the database's single profile row, ignoring `name` on every call after the first. `LevelState` and `LevelStates` read `level_state`, reporting a row's staleness and zeroing `BestScore` when the caller's `levelVersion` does not match what is stored, while leaving `Attempts` and `HintsUsed` as recorded. `SetLevelStatus` and `StartAttempt` upsert `level_state`; `attempts` is incremented only by `StartAttempt`. `FinishAttempt` closes an `attempt` row exactly once (`ErrNoSuchAttempt`, `ErrAttemptClosed` otherwise) and folds its counters into `level_state`: `best_score` never falls, `first_passed_at` is kept from the first pass rather than the highest score, and a level never passed reads back as `time.Time`'s zero value, not the unix epoch. `TotalXP` sums `best_score` per pack. `TestConcurrentWritesFromTwoStoreHandles` runs clean under `-race` with two `*Store` handles over one file. Two deliberate deviations from ARCHITECTURE 4.11, both called out in `002_progression.sql`'s own header: `level_state.level_version` is new, and `profile.name` is `UNIQUE` so `EnsureProfile` stays a single row. `concept_mastery` and `achievement` are created by this migration but have no Go accessors yet; nothing in this package writes to them. No Docker was needed for any of this, since it is all pure SQLite; `govulncheck` and `gosec` were not run locally, since neither is installed here, and both are left to CI. Nothing calls `store.Open` outside tests: not wired into `cmd/shellforge`, `internal/game`, or `internal/pty`. Issue #123 connects the three journal pieces that existed separately: `journal.Collector` (`NewCollector`, `Since`) pulls `$SF_STATE/journal.tsv` out of the sandbox through `runtime.Session.PullFile` and parses it with the existing `ReadTSV`, incrementally, bounded to 1000 records per call, degrading to zero commands when the file is absent or unreadable; `game.JournalSink.Drain` appends each record through `journal.Append` and publishes one `bus.CommandExecuted` per appended record. So the events table now receives real command text, exit codes and working directories, and `CommandExecuted.Raw` is populated on that path. Not wired into the orchestrator: that is a later Day 4 task, so nothing constructs a `Collector` or a `JournalSink` outside its own tests yet, `commands_used` is still zero everywhere a level is actually played, and `CommandEvent.Raw` on the PTY event stream is still always empty by design (see the PTY row). Issues #92 and #90 closed two `Open` classification bugs: a missing progress database file, or one whose parent directory does not exist yet, no longer reads as corrupt, and a SQLite database Shellforge did not create is refused rather than silently adopted. See the Day 3 follow-up entry below for the byte-identity measurement this forced and the fixture change it required. |
+| Progress database | `internal/store` (schema, migrations) and `internal/journal` (the command journal) are both built and unit tested, per #51. Issue #120 adds `002_progression.sql` and `progress.go`: six new tables (`profile`, `pack`, `level_state`, `attempt`, `concept_mastery`, `achievement`) and a set of `*Store` methods, all unit tested, none wired into `cmd/shellforge`, `internal/game`, or `internal/pty` yet. `EnsureProfile` creates and returns the database's single profile row, ignoring `name` on every call after the first. `LevelState` and `LevelStates` read `level_state`, reporting a row's staleness and zeroing `BestScore` when the caller's `levelVersion` does not match what is stored, while leaving `Attempts` and `HintsUsed` as recorded. `SetLevelStatus` and `StartAttempt` upsert `level_state`; `attempts` is incremented only by `StartAttempt`. `FinishAttempt` closes an `attempt` row exactly once (`ErrNoSuchAttempt`, `ErrAttemptClosed` otherwise) and folds its counters into `level_state`: `best_score` never falls, `first_passed_at` is kept from the first pass rather than the highest score, and a level never passed reads back as `time.Time`'s zero value, not the unix epoch. `TotalXP` sums `best_score` per pack. `TestConcurrentWritesFromTwoStoreHandles` runs clean under `-race` with two `*Store` handles over one file. Two deliberate deviations from ARCHITECTURE 4.11, both called out in `002_progression.sql`'s own header: `level_state.level_version` is new, and `profile.name` is `UNIQUE` so `EnsureProfile` stays a single row. `concept_mastery` and `achievement` are created by this migration but have no Go accessors yet; nothing in this package writes to them. No Docker was needed for any of this, since it is all pure SQLite; `govulncheck` and `gosec` were not run locally, since neither is installed here, and both are left to CI. The Day 4 game core adds the three achievement accessors 002 left without Go code (`Achievements`, `SaveProgress`, `Unlock`, the last returning whether this call is the one that earned it) plus `AddHintUsed`, and `store.Open` is now called by `play`, `run`, `skip`, `stats` and `map` rather than by tests alone. Issue #123 connects the three journal pieces that existed separately: `journal.Collector` (`NewCollector`, `Since`) pulls `$SF_STATE/journal.tsv` out of the sandbox through `runtime.Session.PullFile` and parses it with the existing `ReadTSV`, incrementally, bounded to 1000 records per call, degrading to zero commands when the file is absent or unreadable; `game.JournalSink.Drain` appends each record through `journal.Append` and publishes one `bus.CommandExecuted` per appended record. So the events table now receives real command text, exit codes and working directories, and `CommandExecuted.Raw` is populated on that path. Not wired into the orchestrator: that is a later Day 4 task, so nothing constructs a `Collector` or a `JournalSink` outside its own tests yet, `commands_used` is still zero everywhere a level is actually played, and `CommandEvent.Raw` on the PTY event stream is still always empty by design (see the PTY row). Issues #92 and #90 closed two `Open` classification bugs: a missing progress database file, or one whose parent directory does not exist yet, no longer reads as corrupt, and a SQLite database Shellforge did not create is refused rather than silently adopted. See the Day 3 follow-up entry below for the byte-identity measurement this forced and the fixture change it required. |
 | Documentation | Design record complete. User docs are outlines. |
 | Engineering rules | `CLAUDE.md` index plus 13 on-demand skills under `.claude/skills/` |
 | Link checker | Done, and verified to catch a broken relative link |
@@ -4582,6 +4583,223 @@ Gates run on this host: `gofmt -s -w .`, `go vet ./...`, `go test ./...`,
 installed in this environment. `govulncheck` and `gosec` are not installed
 here either and are left to CI. No container is involved, so nothing was
 skipped for want of a Docker daemon.
+
+### Day 4 follow-up, 2026-09-07: six defects from the pre-merge review
+
+A review pass over the whole branch before merge found six real defects, all
+in code this branch introduced, and all now fixed with a regression test each.
+Every one of those tests was confirmed to go red against the defect it
+describes and green again afterwards, rather than being trusted on sight.
+
+1. **A reveal recorded one hint, not the tiers it bought.** `TakeHint` called
+   the store once per take, but revealing spends every tier below it. On
+   nav-01 that charged 60 XP in memory and persisted `hints_used = 1`, so a
+   replay re-offered and re-sold tiers already paid for, and the scorer
+   subtracted a fraction of what was spent. It broke the exact invariant the
+   ladder's own comment argues for: one integer is enough to persist the
+   ladder only if tiers are always spent contiguously AND the count of them
+   reaches the store. `store.AddHintUsed` is now `AddHintsUsed` and takes a
+   count.
+
+2. **`Close` restored a pass but not a skip.** An abandoned replay of a
+   skipped level downgraded it to `in_progress`, which re-locks everything
+   the skip was unblocking and strands the learner behind a level they had
+   decided to move past. The Orchestrator now remembers the whole prior
+   status and restores either earned one.
+
+3. **`skip` did not refuse a locked level.** `play files-03` correctly
+   refused on a fresh profile while `skip files-03` marked it skipped and
+   unlocked files-04, which walks straight past every prerequisite in
+   between. The guard is now `skipRefusal`, its own function so a test
+   reaches it without a progress database, and it refuses a locked level by
+   naming the same prerequisites `play` names.
+
+4. **The journal was drained before every check and never at teardown**,
+   contrary to `JournalSink.Drain`'s own documented contract. Every command
+   after the learner's last check was lost: from the events table, from
+   `commands_used`, and from the achievements that count commands. A learner
+   who never typed `check` recorded nothing at all. `gameLevel.Teardown` now
+   drains before it closes, and the order is asserted, because Close is what
+   reads the count for the last time.
+
+5. **`hint --reveal` conflated "no reveal tier" with "already revealed".**
+   The check asked whether an ordinary tier remained, which is not the same
+   question. A level whose reveal tier sits in the middle of its ladder has
+   both a bought reveal and tiers left, and got told it had no solution to
+   reveal. `Orchestrator.HasReveal` now answers the question that was
+   actually being asked. Worth recording how this one was caught: the first
+   regression test written for it did not reproduce it, because the test
+   fake put the reveal tier last, where "bought" and "ladder finished"
+   coincide. The fake now models a mid-ladder reveal.
+
+6. **`shellforge hint --reveal` on the host answered "unknown flag".**
+   `inLevelCommand` left cobra's flag parsing on, so the command rejected the
+   flag printed in its own usage line instead of explaining where the verb
+   lives. `DisableFlagParsing` fixes it.
+
+Two things the review raised and deliberately left alone: hint costs
+persisting across replays is intended, and `tab_master` being unearnable is a
+pre-existing `TODO(v0.2)` in `journalsink.go` rather than anything this branch
+introduced.
+
+Also fixed on the way, from CI rather than the review:
+`TestControlChannelAnswersTheShim` held a second copy of a stale `hint`
+expectation. It is Docker-gated, so it skipped on this machine and on the
+Windows leg and only went red on the Linux runner, which is a reminder that a
+green local run says nothing about the gated half of the suite.
+
+### Day 4, 2026-09-07: the game core, six tickets in one branch
+
+`shellforge play` works. That is the whole point of the day, and it is the
+first time the pieces built over the last three days behave as a game rather
+than as a set of components that pass their own tests.
+
+Six issues landed together, on one branch, because four of them edit the same
+two files (`internal/game/orchestrator.go` and
+`cmd/shellforge/level_adapters.go`) and landing them separately would have
+meant four rounds of conflict on the same lines for no review benefit:
+#125 scoring, #126 the hint ladder, #127 achievements, #128 the pass banner
+and `stats`, #129 `play` and `skip`, #130 reset.
+
+What is new:
+
+- **`internal/game/score`** is the formula. One multiplicative stage, rounded
+  half away from zero exactly once, then four additive terms: efficiency at
+  or under par, first try, ten flat XP per bonus objective, and hints
+  subtracted. Pure, standard library only, takes primitives rather than a
+  `*content.Level` so the whole thing is a table test with no fixtures.
+- **`internal/game/hints.go`** is the ladder: `Next`, `Reveal`, `Take`,
+  `CostsTaken`. `Orchestrator.PeekHint` quotes, `Orchestrator.TakeHint`
+  spends, and the two are separate methods because showing and spending are
+  separate acts.
+- **`Orchestrator.Reset`** is one call to `Session.Setup` and nothing else.
+- **`internal/game/achievements`** is fourteen keys, each its own bus
+  subscriber.
+- **`internal/game/rank.go`** turns an XP total into a rank pair.
+- **`cmd/shellforge`** gains `play`, `skip`, `stats`, the pass banner, the
+  hint replies and the reset replies, and `run` now goes through the
+  orchestrator like `play` does.
+
+Decisions worth recording, because each one had two defensible answers:
+
+**Hints subtract, they do not multiply.** ARCHITECTURE 4.11 writes the hint
+penalty as `x (1 - hint_penalty)` and SESSION-PROMPTS Day 4 Session G item 5
+writes it as `- sum(hint costs taken)`. `content.Hint.Cost` is authored in XP
+as a whole number, so subtraction is the only reading the data supports; a
+multiplicative reading would have to invent a conversion from "5 XP" to some
+fraction and every authored hint would silently mean something its author did
+not write. The package doc comment names both documents and says which won,
+so the next person to read 4.11 does not conclude the code is wrong.
+
+**The award floors at zero by clamping the hint line, not the total.** #125
+requires `sum(Breakdown) == Total` in every case including the floored one,
+and the banner prints the breakdown, so the arithmetic has to add up in front
+of the learner. Clamping the total after the fact would have left a banner
+whose lines do not sum to its own answer.
+
+**Revealing the solution charges every tier it skips.** `hints_used` is one
+integer, and rebuilding the ladder from it after a restart is only sound if
+tiers are always spent contiguously from the bottom. Charging the sum is both
+what makes that true and the fairer answer: reading the ending is not cheaper
+than working up to it.
+
+**`--reveal` is refused on a level that authored no reveal tier.** #126's
+interface sketch says `Reveal` falls back to "the final tier"; its own
+acceptance criteria say `--reveal` must be refused with a clear message. The
+criteria won: printing the last ordinary hint under a banner that promised
+the solution would charge the reveal price for something that is not the
+solution.
+
+**The reset lock is a second mutex.** `o.mu` promises never to span a call
+that leaves the package, which is what lets a bus subscriber call back into
+an Orchestrator from inside its handler. A reset has to hold a lock across
+two sandbox calls. Giving that job to `o.resetMu` keeps the first promise
+intact; `Check` takes it around `Session.Check`, so a check arriving mid-reset
+waits and then verifies the rebuilt world, and a `-race` test pins the
+ordering. A reset arriving while a check is running is refused instead, naming
+`StateChecking`, rather than deleting a world a check is reading.
+
+**Reset adds no deletion.** `setup.Runner.Setup` already tears the level root
+down before rebuilding, through the validated, refusing, inside-the-sandbox
+path. So `Reset` is one `Session.Setup` call, and
+`internal/game/reset_test.go` asserts all twelve refusals again through it
+rather than trusting they hold when reached from this direction. That was
+confirmed rather than assumed: `platform.UnsafeLevelRoot` was temporarily
+made to return nil, seven of the twelve cases went red, and the guard was
+restored. The other five are caught by the state-directory containment check
+and the `readlink -m` resolution, which are separate guards.
+
+**`run` records progress too.** #129 sketches progress recording as something
+`play` adds around a `run` that does not do it. That turns out not to be
+separable: a hint costs XP, and a `run` that quietly discarded a hint the
+learner had paid for would be worse than one that records it. So both verbs
+go through `gameLevel`, which is the Orchestrator, and there is one path
+rather than two that drift.
+
+**Commands are counted off the bus, not reported by a caller.**
+`game.JournalSink` already publishes one `CommandExecuted` per record it
+drains out of `$SF_STATE/journal.tsv`, so the Orchestrator subscribes and
+counts, filtered to its own attempt. That is what makes the efficiency bonus
+real rather than always zero, and it is also what feeds `tab_master`,
+`manual_labour` and `one_liner`. The drain happens before every `check` and
+once at teardown, which is what `JournalSink.Drain`'s own doc comment already
+prescribed and nothing had yet done.
+
+**Fourteen keys, not ten.** #127 is titled "ten achievements" and then lists
+fourteen, because `act_clear_1` through `act_clear_6` is six of them. The
+table is authoritative and the title is not.
+
+**Each rule is its own bus subscriber.** The bus contains a panic per
+subscriber. One shared handler looping over the rules would lose every rule
+after the one that panicked, so the containment #127 asks for only holds if
+the subscription is per rule. A test with a deliberately panicking rule pins
+it.
+
+**`achievements.New` takes the pack**, diverging from #127's sketch: five of
+the rules are questions about the pack ("every level in this act", "at or
+under this level's par") and there is no honest way to answer them without
+it. A nil pack yields fewer achievements rather than wrong ones.
+
+Two store fixes this milestone forced:
+
+- **`AddHintUsed`** records a hint the moment the learner confirms it, so
+  abandoning a level does not refund what was spent. `FinishAttempt` folds its
+  own `HintsUsed` argument into the same column, so `Close` passes zero there
+  and says why at the call site. The cost, named rather than hidden: the
+  `attempt.hints_used` column stays zero for every attempt. Nothing reads it
+  today and it carries a `TODO(v0.2):`.
+- **A passed level is no longer downgraded** to `in_progress` by a later
+  abandoned replay. The previous entry recorded that as deferred to "scoring,
+  which this ticket puts out of scope"; this is scoring. The fix is in the
+  Orchestrator rather than in `FinishAttempt`, because preserving a
+  best-known status across re-attempts is orchestrator policy, which is
+  exactly what the store said it was declining to decide.
+
+What #127 asked to be able to prove, and the honest version of it: the
+achievements stage changes nothing in `orchestrator.go`, which is the
+pluggability claim in ARCHITECTURE 4.5 holding up. The branch as a whole does
+change that file, for scoring, hints and reset, so the diff alone does not
+show it; the claim rests on the achievements package importing nothing from
+the orchestrator and the orchestrator knowing no achievement key exists.
+
+Not done, and deliberately: no `explain <command>`, no reactive or diagnostic
+hints, no concept mastery or review queue, no time bonus and no per-mode
+toggle for one, no `reset --hard`, no auto-advance to the next level after a
+pass, and no campaign intro shown once at first start.
+
+Verified by hand on this machine, all four with no Docker daemon:
+`shellforge play --next`, `shellforge skip nav-01`, `shellforge stats`, and
+`shellforge map`, including the sequence where a skip unlocks the next level
+and all three views agree about it afterwards. `shellforge play` was run far
+enough to confirm it prints the chosen level and the reason BEFORE it tries to
+provision, which is the ordering that lets a learner Ctrl-C out of the wrong
+level rather than waiting minutes for it.
+
+NOT verified here, and left to CI as every prior entry has been: the golden
+contract across all nine levels, the reset isolation test, and `play` end to
+end, all of which need a container this environment does not have.
+`govulncheck`, `gosec` and `pytest` over `scripts/tests` are not installed
+here either.
 
 ### Day 4, 2026-08-20: the event bus and the seven domain events
 

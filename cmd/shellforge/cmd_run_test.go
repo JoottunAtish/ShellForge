@@ -250,7 +250,7 @@ func controlVerbResponder(t *testing.T, result verify.LevelResult) *gameResponde
 	if err != nil {
 		t.Fatalf("build the level: %v", err)
 	}
-	return &gameResponder{session: session, level: level, color: false}
+	return &gameResponder{checker: session, level: level, color: false}
 }
 
 // TestHandleControlVerb drives the verb table against a fake session and a fake
@@ -292,8 +292,13 @@ func TestHandleControlVerb(t *testing.T) {
 		{name: "a check that could not decide says so, and is not a wrong answer", verb: "check", result: inconclusive, want: "not a wrong answer", notWant: "PASS:"},
 		{name: "brief reprints the briefing", verb: "brief", want: "Billing service"},
 		{name: "brief reprints the objective checklist", verb: "brief", want: "report.txt holds the total ERROR count"},
-		{name: "hint is honest about not existing", verb: "hint", want: "`hint` is not built yet"},
-		{name: "reset is honest about not existing", verb: "reset", want: "`reset` is not built yet"},
+		// This responder is built from a game.Session with no orchestrator
+		// behind it, which is what a test that only cares about check and
+		// brief needs. Both verbs say so plainly rather than panicking on
+		// the nil, and render_hint_test.go and render_reset_test.go cover
+		// what they do when there IS an orchestrator.
+		{name: "hint says so when there is no ladder behind it", verb: "hint", want: "`hint` is not available"},
+		{name: "reset says so when there is nothing to rebuild", verb: "reset", want: "`reset` is not available"},
 		{name: "an unknown verb says so", verb: "wat", want: `unknown request "wat"`},
 	}
 
