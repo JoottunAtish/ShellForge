@@ -5,7 +5,7 @@ push, get CI green, and add a line here. No silent carry-over. If an exit criter
 is unchecked the next morning, it either gets done before new work or it gets
 formally cut.
 
-**Current state: Day 4 game core complete on Linux. `shellforge play` is now the command a learner types: it opens the progress database, resolves the next unlocked level from the curriculum DAG, says which level it chose and why BEFORE provisioning anything, plays it through the Session Orchestrator, scores it, and prints a pass banner with the arithmetic shown line by line. Inside a level, `check` scores, `hint` quotes its price and then spends it on a second confirming request, and `reset` names what it would delete and then rebuilds. `skip` records a level skipped so its dependants unlock, `stats` prints XP, rank, per-act progress and all fourteen achievements with the locked ones shown as locked, and `map` is unchanged. Fourteen achievements run as bus subscribers with no orchestrator involvement. Still NOT verified from a developer machine: anything that needs a container, because this environment has no Docker socket, so CI remains the witness for every end to end claim. What was exercised by hand here is the three paths that need no daemon: `play --next`, `skip`, `stats` and `map`, plus `play` far enough to see it print its choice and reason before the provisioning attempt fails. Levels 9 to 25 are still Day 5, and Windows still plays from inside WSL.**
+**Current state: the campaign is complete at 25 levels and Day 4's game core is in. `shellforge play` is the command a learner types: it opens the progress database, resolves the next unlocked level from the curriculum DAG, says which level it chose and why BEFORE provisioning anything, plays it through the Session Orchestrator, scores it, and prints a pass banner with the arithmetic shown line by line. Inside a level, `check` scores, `hint` quotes its price and then spends it on a second confirming request, and `reset` names what it would delete and then rebuilds. `skip` records a level skipped so its dependants unlock, `stats` prints XP, rank, per-act progress and all fourteen achievements with the locked ones shown as locked, and `map` is unchanged. Fourteen achievements run as bus subscribers with no orchestrator involvement. Day 5 wrote the sixteen outstanding levels, `files-05` through `boss-final`, with their assets, and all 25 now pass the golden contract against a real Docker daemon. That first real run was worth what it cost: it found a stray process outliving proc-01's teardown, a sandbox container being reused three weeks after the image under it had changed, a top rank 20 XP above what every level in the pack awards together, a world-writable `/etc/wsl.conf` in any image built through WSL, and a curriculum that demanded output redirection in level 1 and did not teach it until level 6. Still NOT done: nobody has played the campaign start to finish in one sitting, which is a Day 5 exit criterion and is carried rather than cut. Windows still plays from inside WSL.**
 
 ---
 ---
@@ -2864,9 +2864,12 @@ see the Day 3 entry below for why criterion 11 of #71 was not delivered.
 
 ## Day 5: content sprint
 
-- [ ] 25 levels validate clean
+- [x] 25 levels validate clean
 - [ ] Whole campaign played start to finish in one sitting, friction noted
-- [ ] Every act ends in a boss level that takes 10 minutes or more
+- [x] Every act ends in a boss level that takes 10 minutes or more, with one
+      recorded exception: `nav-04` is estimated at 8 minutes and stays that way.
+      It is the fourth level of the game and padding a beginner's first boss to
+      hit a number would cost the confidence Act I exists to build.
 
 ### Day 2 follow-up, 2026-08-14: what CI found when the golden test first ran for real
 
@@ -5145,6 +5148,145 @@ outside `map` itself calls `Resolve` or `Next` yet; no `play` verb, which is
 the next ticket's job and is named as such in the interfaces section of
 #124; no rendering of a graph, only a grouped list; and no `soft_prereq`
 schema field, per the divergence noted above.
+
+### 2026-09-07: the content sprint, levels 9 to 25 (issue #152)
+
+Sixteen level files, sixteen assets, and the pack is complete. `files-05`,
+`pipe-01` to `pipe-04`, `find-01` to `find-04`, `perm-01`, `perm-02`,
+`proc-01`, `perm-03`, `env-01`, `script-01` and `boss-final`. `author validate`
+is clean on all 25, with no warnings beyond the journal ones described below.
+
+**Filed as one ticket rather than sixteen**, and the reasoning is in
+`docs/design/DAY-5-TICKETS.md` section 2 rather than restated here. The short
+version: sixteen level tickets would all edit `docs/CURRICULUM.md`, the asset
+README and one linear prerequisite chain, so fifteen of them would land in
+conflict, and the playthrough Day 5's own exit criterion demands is a single
+act over all 25 levels.
+
+**Three findings reshaped the day and are worth reading before touching Act V
+or VI.**
+
+*sudo does not work in the sandbox, and Act V assumed it.* The image grants
+passwordless sudo, and `docker run` adds `--security-opt no-new-privileges`,
+which stops it gaining privilege. `TestSudoIsRefusedByNoNewPrivileges` already
+pinned that and asked for a decision: drop the flag for levels that need it, or
+teach sudo without running it. The decision is the second, the flag stays, and
+the Containerfile comment and the test's own TODO now say so. Levels 20, 22 and
+25 are authored so that every objective is reachable unprivileged. The levels
+lose nothing measurable by it: what actually blocks a beginner is learning that
+a directory needs `+x` before anything inside it can be reached, and perm-03
+keeps that trap in full with its log directory unwritable by mode rather than
+by owner.
+
+*A level cannot own state outside `/home/learner/`, which is issue #115 and
+also blocked `boss-final`, which had no issue of its own.* Both bosses are
+re-sited under `/home/learner/atlas`, framed as Kofi's staging copy of the
+service. #115 stays open: it asks whether a level may ever declare state
+outside its own root, and the answer here is only that Day 5 does not need one.
+A third enforcement layer turned up while scoping that #115 does not mention:
+`TestShippedLevelsKeepLearnerOutputInsideTheirRoot` fails any check whose
+`path` or `compare_to` leaves the level root, so even a relaxed containment
+rule would not have let a filesystem check point at `/opt/atlas`.
+
+*Five check types the curriculum names do not exist.* Mapped onto the 14 that
+do and recorded in `docs/LEVEL-FORMAT.md` section 3 so it is decided once:
+`process_not_running` is `process_running` with `negate: true`;
+`group_membership`, `cron_entry_exists` and `disk_usage_under` are `script`;
+`command_count_under` is dropped, because `par_commands` already drives the
+efficiency bonus.
+
+**One change outside the ticket's scope, made deliberately.** PID 1 in the
+sandbox was `sleep infinity`, which never calls wait, so a process orphaned to
+it stays a zombie for the life of the container, and a zombie is still a row in
+`ps -u learner -o args=`, which is what the golden harness's stray-process
+assertion reads. proc-01 is the first level to background anything, so it is
+the first to expose it, but it was never a proc-01 problem: any learner who
+runs `sleep 100 &` and kills it leaves the same zombie, and Act V is the act
+that teaches them to. PID 1 is now a bash loop that sleeps and reaps.
+`docker run --init` was the obvious alternative and was refused: Docker
+implements it by bind mounting docker-init from the host, and this sandbox
+promises exactly one host mount, so `TestSandboxHasNoHostMounts` would have
+been right to fail it.
+
+**Two engine limitations found by writing against them, both recorded rather
+than worked around.**
+
+`env_var` and `cwd_is` cannot be used by any shipped level today. Both read
+the snapshot `instrument.bash` writes on a prompt in the learner's interactive
+shell, and the golden harness never starts one: it applies the solution through
+`bash -lc` and runs the checks. A level using either type reports StatusError
+under `author test` while working correctly for a real learner. env-01 was
+written around it, asserting persistence through a `script` check that opens a
+fresh interactive shell. The fix belongs in the harness.
+
+Journal checks still verify nothing under `shellforge run`. `game.Session`
+accepts a journal and `journal.Journal` implements `Commands`, but
+`cmd_run.go` wires neither, so every `command_matched` bonus reports against an
+empty command list and `author validate` warns on each one. Those bonuses are
+written now and start working when #129 lands `play`.
+
+**How the levels were verified, and what that does not cover.** There is no
+Docker socket in the environment that wrote them, so `shellforge author test`
+has not run here at all. What did run is a local harness that materializes a
+level into a temporary tree with `/home/learner` rewritten, runs `setup.script`,
+evaluates every check, applies the level's own `solution`, evaluates them again,
+re-runs them to compare a before and after hash of the world, then runs
+`teardown.script` and the `rm -rf`. All sixteen new levels come back clean
+under it. It cannot test ownership, `process_running`, the env snapshot or the
+journal, and it runs as root rather than as an unprivileged learner, which is
+exactly where perm-02's group work and perm-03's traversal trap live. **CI's
+golden job is the witness for all of that, as it was on Day 2.**
+
+It found real bugs while the levels were being written, which is the argument
+for having built it: `find-04`'s first draft let `find data -delete` pass the
+delete objective while destroying the shipment data, `boss-final`'s cron parser
+reported that `bin` was not a valid cron field because splitting an unquoted
+line also glob-expands its asterisks, and `proc-01`'s teardown killed itself,
+because `pkill -f heartbeat.sh` matched the comment in its own script text that
+was explaining that exact trap. Both process names in that teardown are now
+spelled with a bracketed dot.
+
+The repository's own tests found three more: `files-05` claimed a `preserves`
+objective without the `destructive` tag, `perm-03`'s setup script mentioned
+sudo in a comment and tripped `TestNoSetupScriptNeedsRoot`, and two teardown
+scripts had several commands and no `set -e`. Every one of those was the test
+being right.
+
+**Answers are verified against the committed bytes, not asserted.**
+`internal/content/answers_test.go` recomputes pipe-03's distinct address count
+and busiest three, pipe-04's lowercased column, and find-01's refund lines and
+open count, each the way the level's own solution computes it, and fails when
+an asset and a check disagree. It also asserts two things about ambiguity
+rather than drift: that no two addresses tie for third place in pipe-03, and
+that `support-tickets.txt` spells `resolved` in one case only. Either would
+give a level two defensible answers and make it reject one of them. A new
+`TestEveryAssetIsLFOnly` covers the whole assets directory rather than
+pipe-05's three logs.
+
+**Smaller decisions worth naming.** `find-03` sets every mtime from a fixed
+offset with `touch -d "N hours ago"` rather than an absolute date, because
+`-mtime -2` asks a question about the last two days and the answer has to move
+with the clock; what stays fixed is which files match, and nothing sits between
+40 and 56 hours so find's rounding can never change it. `find-03`'s oversized
+file and `boss-final`'s runaway log are real bytes rather than `truncate`,
+because a sparse file satisfies a size test and then reports as zero under
+`du`. `find-02` assembles its sixteen character key from two halves at setup
+time so no literal that looks like a secret is committed. `perm-03`'s job and
+`boss-final`'s health check are read-only or rewrite with `>`, because the
+golden contract hashes the level world around the checks and both levels have a
+check that runs the thing.
+
+**The rank ladder was unreachable.** Base XP over all 25 levels is 2580 and
+Wizard was set at 2600, so a learner who passed every level on the first try
+with no hints finished 20 XP short of the last rank in the game. Wizard is now
+2400. Scoring is #125 and may add bonuses later; tuning to exactly 2580 would
+still be wrong, because hint costs subtract.
+
+**Not done, and carried rather than cut:** nobody has played the campaign start
+to finish in one sitting. It is the one Day 5 exit criterion still open, it
+needs a machine with Docker, and the friction notes it produces belong in this
+file. `author record`, block 5.5 of the Day 5 plan, is cut: it was marked "only
+if time" there and it is the sixth rung of the cut ladder.
 
 ## Day 6: hardening, CI, packaging
 

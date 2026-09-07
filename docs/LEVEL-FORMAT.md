@@ -412,6 +412,18 @@ the syntax genuinely is the lesson, and for anti-pattern warnings.
 
 > **Note:** levels 20, 21 and 25 in the curriculum reference some deferred types. Implement them with `type: script` for v0.1 - it covers every case at the cost of a less pretty YAML. Promote the common ones to first-class types in v0.2.
 
+Day 5 made that mapping concrete, and it is recorded here so it is decided once rather than rediscovered per level:
+
+| Curriculum wants | Level | What the pack ships |
+|---|---|---|
+| `process_not_running` | proc-01 | `process_running` with `negate: true` |
+| `group_membership` | perm-02 | `script`, comparing `id -nG learner` as a set |
+| `cron_entry_exists` | boss-final | `script`, parsing a crontab line in a file under the level's own root. No cron daemon runs in the sandbox: PID 1 sleeps and reaps, nothing starts `cron`, and a level that waited for a job to fire would hang |
+| `disk_usage_under` | boss-final | `script`, comparing `stat -c %s` against a byte threshold |
+| `command_count_under` | pipe-03 | Nothing. Dropped rather than emulated: `par_commands` already drives the efficiency bonus, which is the same intent expressed through scoring rather than through a check |
+
+**`env_var` and `cwd_is` cannot be used by a shipped level today.** Both read the snapshot `instrument.bash` writes on every prompt in the learner's interactive shell. The golden test harness never starts one: it applies a level's `solution` through `bash -lc` and then runs the checks. So a level using either type reports `StatusError` under `shellforge author test` while working correctly for a real learner, and the golden contract fails it. env-01 was written around this, asserting persistence through a `script` check that opens a fresh shell instead. The fix belongs in the harness rather than in a level, and until it lands, neither type belongs in the pack.
+
 ---
 
 ## 4. Check execution contract
