@@ -176,7 +176,7 @@ func TestProvisionArgvConstruction(t *testing.T) {
 		{"docker", "image", "inspect", "--", "shellforge-sandbox"},
 		{"docker", "build", "-f", containerfile, "-t", "shellforge-sandbox", "--", buildContext},
 		{"docker", "inspect", "--format", `{{.State.Running}}|{{index .Config.Labels "shellforge.sandbox"}}`, "--", "shellforge-sandbox"},
-		{"docker", "run", "-d", "--name", "shellforge-sandbox", "--label", "shellforge.sandbox=1", "--network", "none", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "FOWNER", "--security-opt", "no-new-privileges", "--", "shellforge-sandbox", "sleep", "infinity"},
+		{"docker", "run", "-d", "--name", "shellforge-sandbox", "--label", "shellforge.sandbox=1", "--network", "none", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "FOWNER", "--security-opt", "no-new-privileges", "--", "shellforge-sandbox", "bash", "-c", sandboxInit},
 	}
 	assertArgvSequence(t, "Provision", fake.calls, want)
 }

@@ -1,0 +1,11 @@
+Handover notes. Written the day I left, in a hurry.
+
+The ledger is the only file finance actually reads. Keep it in the
+logistics group so the billing team can correct a line without waiting
+for me, which they will need to do roughly once a week.
+
+This file belongs to root because I did not want anyone editing my notes
+after I was gone. You can read it. You cannot change it. That is the
+point, and it is also the whole of what file ownership means.
+
+                                                              - Kofi

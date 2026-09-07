@@ -1,0 +1,168 @@
+id: proc-01
+version: 1
+title: "Process Control"
+act: act5
+
+difficulty: 4
+xp: 120
+par_commands: 6
+estimated_minutes: 12
+concepts: [ps, kill, signals, background-jobs, nohup]
+prerequisites: [perm-02]
+tags: [must-know]
+
+briefing: |
+  ## 02:20, Thursday. Something is still running.
+
+  A program that is running is a **process**, and every process has a number,
+  its PID. `ps` lists them. `ps aux` lists all of them with the full command
+  line that started each one, which is how you tell two copies of the same
+  program apart.
+
+  Kofi's depot indexer, `atlas-indexer.sh`, started three days ago and never
+  finished. Nobody knows why. It is still there.
+
+  1. Find its PID and write it, on its own, into `~/quest/pid.txt`.
+  2. Stop it. `kill <pid>` asks a process to shut down.
+  3. Start `~/quest/heartbeat.sh` in the background so the monitoring page
+     stops paging people, and make sure it **survives you closing this
+     shell**. A command started with `&` on the end runs in the background,
+     and `nohup` in front of it keeps it running after you log out.
+
+  Order matters for the first two: once the process is gone, `ps` will not
+  tell you what its PID was.
+
+objectives:
+  - id: pid-recorded
+    text: "pid.txt holds the indexer's PID"
+  - id: indexer-stopped
+    text: "atlas-indexer.sh is no longer running"
+  - id: heartbeat-running
+    text: "heartbeat.sh is running in the background"
+
+setup:
+  root: /home/learner/quest
+  files:
+    - path: atlas-indexer.sh
+      source: assets/atlas-indexer.sh
+      mode: "0755"
+    - path: heartbeat.sh
+      source: assets/heartbeat.sh
+      mode: "0755"
+  script: |
+    set -e
+    # setsid so the indexer outlives the shell running this setup script, and
+    # a full set of redirections so it holds no handle on the setup pipe.
+    setsid nohup ./atlas-indexer.sh >/dev/null 2>&1 </dev/null &
+
+    # Wait for it to write its own pidfile. The checks compare the learner's
+    # answer against that file, so a setup that returned before it existed
+    # would be a race rather than a level.
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+      if [ -s .indexer.pid ]; then
+        exit 0
+      fi
+      sleep 0.2
+    done
+    echo "the indexer did not write its pidfile within three seconds"
+    exit 1
+
+checks:
+  - id: pid-recorded
+    type: script
+    run: |
+      cd /home/learner/quest || { echo "the level directory is missing"; exit 1; }
+      if [ ! -s pid.txt ]; then
+        echo "pid.txt is missing or empty"
+        exit 1
+      fi
+      answer=$(tr -d '[:space:]' < pid.txt)
+      case "$answer" in
+        ''|*[!0-9]*) echo "pid.txt should hold a number and nothing else, it holds: $answer"; exit 1;;
+      esac
+      if [ ! -s .indexer.pid ]; then
+        echo "the level's own record of the pid is missing, which is a bug in the level"
+        exit 1
+      fi
+      want=$(tr -d '[:space:]' < .indexer.pid)
+      if [ "$answer" != "$want" ]; then
+        echo "pid.txt holds $answer, which is not the pid the indexer was running under"
+        exit 1
+      fi
+      exit 0
+    on_fail: >-
+      pid.txt should hold the indexer's process id, on its own, with nothing
+      else around it. `ps aux | grep atlas-indexer` shows the line; the PID is
+      the second column. Watch out for catching the `grep` itself: it is a
+      process too, and its command line contains the text you searched for.
+      If you have already killed the process, `shellforge reset` puts it back.
+
+  - id: indexer-stopped
+    type: process_running
+    pattern: 'atlas-indexer\.sh'
+    negate: true
+    on_fail: >-
+      The indexer is still running. `kill <pid>` sends it a polite request to
+      stop, which is what you want first. Check with `ps aux` afterwards: if
+      it is still there a few seconds later, it is ignoring the request, and
+      `man kill` explains the signal that cannot be ignored.
+
+  - id: heartbeat-running
+    type: process_running
+    pattern: 'heartbeat\.sh'
+    on_fail: >-
+      heartbeat.sh is not running. Start it with `&` on the end so your shell
+      does not wait for it, and `nohup` in front so it is not stopped when the
+      shell goes away. Without the `&` your prompt never comes back, and
+      Ctrl-C is how you escape that.
+
+hints:
+  - cost: 5
+    text: >-
+      `ps aux` lists every process with its full command line. It is a lot of
+      output. Pipe it into `grep` and search for the name of the script.
+  - cost: 15
+    text: >-
+      In `ps aux` output the PID is the second column, so `awk '{print $2}'`
+      pulls it out. `pgrep -f atlas-indexer.sh` does the whole job in one
+      command and is worth knowing about.
+  - cost: 30
+    text: >-
+      Record it first: `pgrep -f atlas-indexer.sh > pid.txt`. Then
+      `kill $(cat pid.txt)`. Then start the heartbeat with `nohup` in front
+      and `&` on the end, redirecting its output so it does not print into
+      your prompt.
+  - cost: 50
+    reveal_solution: true
+
+solution: |
+  cd ~/quest
+  pgrep -f 'atlas-indexer[.]sh' > pid.txt
+  kill "$(cat pid.txt)"
+  nohup ./heartbeat.sh >/dev/null 2>&1 </dev/null &
+  sleep 1
+
+teardown:
+  script: |
+    set -e
+    # Both patterns are written with a bracketed dot on purpose, and every
+    # mention of either name below is written the same way. bash -c puts the
+    # whole text of this script into its own command line, so a pattern
+    # spelled plainly would match this very shell and kill the teardown half
+    # way through. That is not hypothetical: the first draft of this file
+    # explained the trap in a comment, spelled the name plainly while doing
+    # so, and was killed by its own pkill.
+    pkill -f 'atlas-indexer[.]sh' || true
+    pkill -f 'heartbeat[.]sh' || true
+
+    # Wait for them to actually leave the process table before the harness
+    # looks. A kill is a request, and the golden contract checks for strays
+    # the moment teardown returns.
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      if ! pgrep -f 'atlas-indexer[.]sh' >/dev/null 2>&1 &&
+         ! pgrep -f 'heartbeat[.]sh' >/dev/null 2>&1; then
+        exit 0
+      fi
+      sleep 0.2
+    done
+    exit 0

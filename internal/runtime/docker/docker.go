@@ -39,6 +39,30 @@ var imagePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9/_.:@-]*$`)
 // name alone is not proof.
 const sandboxLabel = "shellforge.sandbox"
 
+// sandboxInit is PID 1 inside the sandbox. It sleeps, it reaps, and it exits
+// cleanly when asked.
+//
+// This used to be `sleep infinity`, which is the wrong PID 1 for a machine
+// where a learner backgrounds a process and then kills it. An orphaned
+// process is re-parented to PID 1, and a PID 1 that never calls wait leaves
+// it as a zombie for the life of the container. `sleep` never calls wait.
+// Level proc-01 is what made that visible, because the golden contract
+// asserts that no process outlives a level's teardown and a zombie is still
+// a row in `ps`, but it was never a proc-01 problem: any level where a
+// learner runs `sleep 100 &` and then kills it has the same hole, and Act V
+// is the act that teaches them to.
+//
+// bash reaps. Its SIGCHLD handling calls waitpid(-1) in a loop and discards
+// the pids it does not recognise, which is exactly the job of an init. The
+// obvious alternative, `docker run --init`, is refused: Docker implements it
+// by bind mounting docker-init in from the host, and this sandbox promises
+// exactly one host mount. TestSandboxHasNoHostMounts would be right to fail
+// it.
+//
+// The trap is so `docker stop` gets a clean exit instead of having to
+// escalate to SIGKILL after ten seconds.
+const sandboxInit = "trap 'exit 0' TERM INT; while :; do sleep infinity & wait $!; done"
+
 // containerfilePath and containerfileContext are where Provision builds the
 // image from, relative to the repository root. This matches `make image`.
 const (
@@ -219,7 +243,7 @@ func (rt *dockerRuntime) ensureContainerRunning(ctx context.Context, image strin
 			"--cap-add", "CHOWN",
 			"--cap-add", "FOWNER",
 			"--security-opt", "no-new-privileges",
-			"--", image, "sleep", "infinity",
+			"--", image, "bash", "-c", sandboxInit,
 		}, nil)
 		if err != nil {
 			return rt.classifyFailure(ctx, "start the sandbox container", err, stderr)

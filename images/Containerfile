@@ -199,7 +199,15 @@ COPY wsl.conf /etc/wsl.conf
 USER learner
 WORKDIR /home/learner
 
-# PID 1 does nothing. The learner's shell arrives via `docker exec -it`, which
-# keeps the container alive independently of any one session and makes reset a
-# matter of recreating the container from the pristine image.
-CMD ["sleep", "infinity"]
+# PID 1 sleeps and reaps. The learner's shell arrives via `docker exec -it`,
+# which keeps the container alive independently of any one session and makes
+# reset a matter of recreating the container from the pristine image.
+#
+# It is not `sleep infinity`. An orphaned process is re-parented to PID 1, and
+# a PID 1 that never calls wait leaves it as a zombie for the life of the
+# container, which matters here because Act V teaches the learner to background
+# a process and kill it. bash reaps what the kernel hands it. The reasoning is
+# in full on sandboxInit in internal/runtime/docker/docker.go, which passes the
+# same command explicitly on `docker run` and is what the Docker backend
+# actually uses; this CMD is what a manually started container gets.
+CMD ["bash", "-c", "trap 'exit 0' TERM INT; while :; do sleep infinity & wait $!; done"]
