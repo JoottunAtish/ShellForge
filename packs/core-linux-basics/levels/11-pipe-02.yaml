@@ -1,0 +1,107 @@
+id: pipe-02
+version: 1
+title: "Separating Streams"
+act: act3
+
+difficulty: 3
+xp: 80
+par_commands: 4
+estimated_minutes: 8
+concepts: [stdout, stderr, redirection, exit-codes]
+prerequisites: [pipe-01]
+tags: [must-know]
+
+briefing: |
+  ## 13:15, Thursday. Twelve nodes, four of them unhappy.
+
+  Kofi left a health sweep at `~/quest/check-nodes.sh`. Run it and you get a
+  wall of twelve lines with the failures buried in the middle of the healthy
+  ones.
+
+  They are not actually one list. A program has **two** output streams:
+
+  - **stdout**, stream 1, for its normal output
+  - **stderr**, stream 2, for anything that went wrong
+
+  They both land on your screen by default, which is why they look like one
+  thing. Redirect them separately and the problem sorts itself.
+
+  Put only the errors into `~/quest/errors.txt` and only the normal output
+  into `~/quest/output.txt`.
+
+  One more thing worth knowing: this script exits with a non-zero status,
+  because four nodes failed. That is the script being correct, not broken.
+
+objectives:
+  - id: errors-captured
+    text: "errors.txt holds the four failure lines and nothing else"
+  - id: output-captured
+    text: "output.txt holds the eight healthy lines and nothing else"
+
+setup:
+  root: /home/learner/quest
+  files:
+    - path: check-nodes.sh
+      source: assets/check-nodes.sh
+      mode: "0755"
+
+checks:
+  - id: errors-captured
+    type: file_content
+    path: /home/learner/quest/errors.txt
+    match: trimmed_equals
+    value: |-
+      ERROR node atlas-03 unreachable after 3 attempts
+      ERROR node atlas-05 returned HTTP 503
+      ERROR node atlas-08 certificate expired 2026-01-11
+      ERROR node atlas-10 disk usage 97 percent
+    on_fail: >-
+      errors.txt should hold the four ERROR lines, in the order the script
+      printed them, and nothing else. Those lines go to stderr, which is
+      stream 2, so the operator you want names that stream: `2>`. If
+      errors.txt is empty, you captured stdout instead. If it holds all twelve
+      lines, you merged the streams rather than splitting them.
+
+  - id: output-captured
+    type: file_content
+    path: /home/learner/quest/output.txt
+    match: trimmed_equals
+    value: |-
+      node atlas-01  OK      latency 12ms
+      node atlas-02  OK      latency 15ms
+      node atlas-04  OK      latency 11ms
+      node atlas-06  OK      latency 18ms
+      node atlas-07  OK      latency 14ms
+      node atlas-09  OK      latency 13ms
+      node atlas-11  OK      latency 16ms
+      node atlas-12  OK      latency 12ms
+    on_fail: >-
+      output.txt should hold the eight healthy node lines and none of the
+      ERROR lines. Plain `>` redirects stdout, which is stream 1, and that is
+      already the right stream for these. If an ERROR line is in here too, the
+      two redirections are pointing at the same place.
+
+hints:
+  - cost: 5
+    text: >-
+      Run `./check-nodes.sh` on its own first and watch what appears. Then run
+      `./check-nodes.sh > /dev/null` and watch what is left: whatever still
+      prints is not on stdout.
+  - cost: 15
+    text: >-
+      The streams are numbered. `1>` is stdout and is what plain `>` means.
+      `2>` is stderr. You can use both in one command, pointing at two
+      different files.
+  - cost: 30
+    text: >-
+      The shape is `./check-nodes.sh > <one file> 2> <the other file>`. The
+      script exits non-zero on purpose, so add `|| true` on the end if the
+      non-zero status bothers you.
+  - cost: 45
+    reveal_solution: true
+
+solution: |
+  cd ~/quest
+  ./check-nodes.sh > output.txt 2> errors.txt || true
+
+teardown: {}

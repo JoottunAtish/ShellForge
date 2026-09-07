@@ -1,0 +1,107 @@
+id: pipe-03
+version: 1
+title: "Connecting Pipes"
+act: act3
+
+difficulty: 3
+xp: 90
+par_commands: 5
+estimated_minutes: 9
+concepts: [pipes, sort, uniq, wc, cut]
+prerequisites: [pipe-02]
+tags: [must-know, text-processing]
+
+briefing: |
+  ## 15:50, Thursday. Who is hammering the API?
+
+  `~/quest/access.log` is yesterday's web log for the tracking API. Every line
+  starts with the address that made the request.
+
+  Two answers, please:
+
+  1. How many **different** addresses appear? Put the number, on its own, in
+     `~/quest/unique_ips.txt`.
+  2. Which three addresses appear most often, and how often? Put them in
+     `~/quest/top3.txt`, busiest first, one per line, as **the count then the
+     address**.
+
+  A pipe, written `|`, takes what one command printed and feeds it straight
+  into the next one as input. Nothing touches the disk in between. Four small
+  commands chained with pipes will answer both of these, and the chain you
+  build here is one you will use for the rest of your career.
+
+objectives:
+  - id: unique-count
+    text: "unique_ips.txt holds the number of distinct addresses"
+  - id: top-three
+    text: "top3.txt holds the three busiest addresses with their counts"
+
+setup:
+  root: /home/learner/quest
+  files:
+    - path: access.log
+      source: assets/access.log
+
+checks:
+  - id: unique-count
+    type: file_content
+    path: /home/learner/quest/unique_ips.txt
+    match: trimmed_equals
+    value: "12"
+    on_fail: >-
+      unique_ips.txt should hold one number: how many different addresses
+      appear in access.log. The address is the first field on each line, so
+      pull that out first, then `sort`, then count. `sort -u` throws away
+      repeats, and `wc -l` counts lines. Counting every line rather than every
+      distinct address gives you 160, which is a different question.
+
+  - id: top-three
+    type: script
+    run: |
+      cd /home/learner/quest || { echo "the level directory is missing"; exit 1; }
+      if [ ! -f top3.txt ]; then
+        echo "top3.txt does not exist yet"
+        exit 1
+      fi
+      actual=$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]][[:space:]]*/ /g' -e 's/[[:space:]]*$//' top3.txt | grep -v '^$')
+      expected=$(printf '%s\n' '42 203.0.113.17' '31 198.51.100.4' '24 203.0.113.88')
+      if [ "$actual" != "$expected" ]; then
+        echo "top3.txt currently holds:"
+        sed 's/^/  /' top3.txt
+        echo "it should hold three lines, busiest first, each one a count then an address"
+        exit 1
+      fi
+      exit 0
+    on_fail: >-
+      top3.txt should hold three lines, busiest first, each one a count then
+      an address. `uniq -c` counts runs of identical lines, which means the
+      input has to be sorted before it reaches `uniq` or the counts come out
+      wrong. Then sort again, numerically and in reverse, and keep the first
+      three. The spacing does not matter: `uniq -c` pads its counts and this
+      check reads past that.
+
+hints:
+  - cost: 5
+    text: >-
+      Start by getting just the addresses. `cut -d' ' -f1 access.log` splits
+      each line on spaces and keeps the first field. `awk '{print $1}'` does
+      the same thing.
+  - cost: 15
+    text: >-
+      `sort` puts identical lines next to each other. `uniq -c` collapses runs
+      of identical lines into one line with a count in front. `uniq` only sees
+      neighbours, which is why it has to come after `sort`.
+  - cost: 30
+    text: >-
+      For the count of distinct addresses: addresses, then `sort -u`, then
+      `wc -l`. For the top three: addresses, then `sort`, then `uniq -c`, then
+      `sort -rn` for numeric descending, then `head -3`.
+  - cost: 45
+    reveal_solution: true
+
+solution: |
+  cd ~/quest
+  cut -d' ' -f1 access.log | sort -u | wc -l > unique_ips.txt
+  cut -d' ' -f1 access.log | sort | uniq -c | sort -rn | head -3 > top3.txt
+
+teardown: {}

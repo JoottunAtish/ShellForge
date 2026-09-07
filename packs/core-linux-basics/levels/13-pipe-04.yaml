@@ -1,0 +1,105 @@
+id: pipe-04
+version: 1
+title: "The Toolbelt"
+act: act3
+
+difficulty: 3
+xp: 90
+par_commands: 5
+estimated_minutes: 9
+concepts: [cut, tr, tee, pipes]
+prerequisites: [pipe-03]
+tags: [text-processing]
+
+briefing: |
+  ## 09:20, Friday. The mailing list is a mess.
+
+  `~/quest/contacts.csv` is the depot contact list: name, role, email, depot,
+  one record per line, no header row. Whoever typed it in was not consistent
+  about capitals, and the mail system treats `A.Osei@...` and `a.osei@...` as
+  two different people.
+
+  Pull the email column out, force it all to lower case, and put the result in
+  `~/quest/emails.txt`, one address per line, in the order they appear.
+
+  There is a catch, and it is the actual lesson. Do it in **one pipeline**,
+  and have the addresses appear on your screen at the same time as they go
+  into the file. A redirection with `>` cannot do that: it swallows the
+  output. The tool that can is `tee`, named after a T-shaped pipe fitting,
+  because it sends what flows through it in two directions at once.
+
+objectives:
+  - id: emails-lowercased
+    text: "emails.txt holds the fifteen addresses, all lower case"
+  - id: used-tee
+    text: "Written with tee, so the addresses showed on screen too"
+    optional: true
+
+setup:
+  root: /home/learner/quest
+  files:
+    - path: contacts.csv
+      source: assets/contacts.csv
+
+checks:
+  - id: emails-lowercased
+    type: file_content
+    path: /home/learner/quest/emails.txt
+    match: trimmed_equals
+    value: |-
+      a.osei@meridian-logistics.example
+      tomas.brandt@meridian-logistics.example
+      p.raman@meridian-logistics.example
+      nils.haugen@meridian-logistics.example
+      c.nwosu@meridian-logistics.example
+      sofia.marin@meridian-logistics.example
+      j.nowak@meridian-logistics.example
+      lena.fischer@meridian-logistics.example
+      r.chandra@meridian-logistics.example
+      elin.dahl@meridian-logistics.example
+      m.ferri@meridian-logistics.example
+      astrid.vogel@meridian-logistics.example
+      k.boateng@meridian-logistics.example
+      ines.moreau@meridian-logistics.example
+      y.demir@meridian-logistics.example
+    on_fail: >-
+      emails.txt should hold the fifteen addresses, one per line, all lower
+      case, in the order they appear in the file. The email is the third
+      comma-separated field, so `cut` wants a comma as its delimiter and field
+      three. `tr` translates one set of characters into another, character by
+      character. If your file still has capitals in it, the translation is not
+      in the pipeline; if it holds names rather than addresses, the field
+      number is off.
+
+  - id: used-tee
+    type: command_matched
+    pattern: '\|\s*tee\s'
+    scope: level
+    on_fail: >-
+      The file is right, and there is a tool that would have shown you the
+      addresses on screen while writing them at the same time. `tee` reads its
+      input, writes it to the file you name, and passes it on to whatever
+      comes next, which is your terminal when nothing does.
+
+hints:
+  - cost: 5
+    text: >-
+      `cut` splits a line into fields. It needs to be told what separates
+      them, with `-d`, and which one you want, with `-f`.
+  - cost: 15
+    text: >-
+      `tr 'A-Z' 'a-z'` maps every capital to its lower case letter as the text
+      flows past. `tr '[:upper:]' '[:lower:]'` says the same thing and is
+      easier to read.
+  - cost: 30
+    text: >-
+      The shape is `cut -d, -f3 contacts.csv | tr ... | tee emails.txt`. `tee`
+      takes the filename as an ordinary argument, not after a `>`.
+  - cost: 45
+    reveal_solution: true
+
+solution: |
+  cd ~/quest
+  cut -d, -f3 contacts.csv | tr '[:upper:]' '[:lower:]' | tee emails.txt
+
+teardown: {}
