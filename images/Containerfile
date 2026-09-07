@@ -112,15 +112,30 @@ RUN set -eux; \
 # The learner. uid 1000 so file ownership matches on a bind mount and so `id`
 # shows something familiar in level 20.
 #
-# sudo is granted because Act V teaches it. It is scoped to the sudo group, and
-# levels that must deny privilege remove the user from that group in setup
-# rather than relying on the image.
+# The sudoers grant below is inert, and that is deliberate rather than an
+# oversight. DockerRuntime creates the container with --security-opt
+# no-new-privileges, which stops sudo from gaining privilege at all, so
+# `sudo anything` fails here no matter what this file says.
+# cmd/shellforge/isolation_test.go's TestSudoIsRefusedByNoNewPrivileges pins
+# that, and issue #152 took the decision it asked for: the curriculum teaches
+# what sudo is and why this box withholds it, and every Act V and Act VI
+# objective is reachable by an unprivileged learner. The flag stays. The grant
+# stays too, because removing it would make the refusal a "command not found"
+# rather than the honest "the no new privileges flag is set" a learner can look
+# up. Do not remove the flag to make a level pass.
+#
+# learner joins the logistics group at build time. perm-02 asks the learner to
+# regroup a file they own, and a user may chgrp only to a group they already
+# belong to, so an empty logistics group makes that objective unreachable by
+# any command an unprivileged learner can run. The CI image job asserts the
+# membership, in the same style as the `man ls` assertion above.
 RUN set -eux; \
     groupadd --gid 1000 learner; \
     useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash learner; \
     echo 'learner ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/learner; \
     chmod 0440 /etc/sudoers.d/learner; \
-    groupadd --gid 1100 logistics
+    groupadd --gid 1100 logistics; \
+    usermod -aG logistics learner
 
 # SF_STATE: the journal, the snapshots, the sentinels, and the control
 # channel FIFOs, all inside the learner's own home rather than under

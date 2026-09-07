@@ -320,9 +320,25 @@ func checkFailureSummary(res verify.LevelResult) string {
 // before those levels can be authored. This test pins the current behaviour so
 // the decision is made deliberately rather than discovered by a learner.
 //
-// TODO(v0.2): decide whether Act V drops no-new-privileges for levels that
-// declare they need sudo, or whether the curriculum teaches sudo without
-// running it. Do NOT resolve it by removing the flag to make a level pass.
+// Issue #152 took that decision, so this is no longer an open question: the
+// curriculum teaches sudo without running it. Every Act V and Act VI objective
+// is reachable by an unprivileged learner, and the flag stays. The alternative
+// on the table was dropping no-new-privileges for a level that declared
+// `requires: [multiuser]`, and it was refused: it is runtime work at L1 plus
+// plumbing at L4 on a day budgeted for writing, and it trades CLAUDE.md's
+// non-negotiable 2 for a nicer level 20.
+//
+// The levels lose nothing by it. What actually blocks a beginner is reading
+// `ls -l` and learning that a directory needs +x before anything inside it can
+// be reached, not typing the word sudo. perm-03 keeps that trap in full: its
+// log directory is unwritable by mode rather than by owner, which fails the
+// nightly job in exactly the same way and is fixed with chmod.
+//
+// So this test is now a refusal test with content behind it. If it goes red,
+// either the flag was removed or the sandbox got more permissive, and a level
+// authored against the looser behaviour would be a level that cannot be played
+// on a correctly configured sandbox. Do NOT resolve it by removing the flag to
+// make a level pass.
 func TestSudoIsRefusedByNoNewPrivileges(t *testing.T) {
 	requireGoldenSandbox(t)
 

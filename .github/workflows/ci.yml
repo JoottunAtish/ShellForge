@@ -388,6 +388,12 @@ jobs:
             # level is unplayable and the whole curriculum loses its spine.
             man ls >/dev/null 2>&1 || { echo "MISSING: man pages for ls"; exit 1; }
             id learner >/dev/null || { echo "MISSING: learner user"; exit 1; }
+            # perm-02 asks the learner to chgrp a file they own to logistics,
+            # and a user may chgrp only to a group they already belong to. An
+            # empty logistics group makes that objective unreachable by any
+            # unprivileged command, which would surface as a level nobody can
+            # pass rather than as a build failure.
+            id -nG learner | tr ' ' '\n' | grep -qx logistics || { echo "MISSING: learner is not in the logistics group"; exit 1; }
             # SF_STATE default: writable by learner, not under /opt/shellforge.
             # This shell is already the learner: the image declares USER
             # learner and learner has no password, so su would only ever
@@ -423,7 +429,7 @@ jobs:
         run: |
           set -euo pipefail
           docker tag shellforge-sandbox:ci shellforge-authortest:latest
-          go test -run '^TestEveryLevelGoldenPath$|^TestPipe05RejectsNearMisses$|^TestSandboxHasNoHostMounts$|^TestSandboxIsolationLeavesTheHostUntouched$|^TestSudoIsRefusedByNoNewPrivileges$|^TestInstrumentationEmitsMarkersForARealSession$' -timeout 30m -v ./cmd/shellforge/...
+          go test -run '^TestEveryLevelGoldenPath$|^TestPipe05RejectsNearMisses$|^TestSandboxHasNoHostMounts$|^TestSandboxIsolationLeavesTheHostUntouched$|^TestSudoIsRefusedByNoNewPrivileges$|^TestInstrumentationEmitsMarkersForARealSession$' -timeout 60m -v ./cmd/shellforge/...
 
       - name: The rootfs tarball exports cleanly and has what WSL import needs
         # The WSL runtime verifies a sha256 before `wsl --import` and refuses on
