@@ -179,12 +179,26 @@ RUN set -eux; \
     chmod 0755 /opt/shellforge; \
     chmod 0444 /opt/shellforge/.sandbox-id
 
-COPY rc/instrument.bash /opt/shellforge/rc/instrument.bash
-COPY bin/ /opt/shellforge/bin/
-
-RUN set -eux; \
-    chmod 0644 /opt/shellforge/rc/instrument.bash; \
-    chmod 0755 /opt/shellforge/bin/*
+# --chmod on every COPY below, so a file's mode comes from this file and not
+# from whatever filesystem the build host read the checkout through.
+#
+# Without it one Containerfile produced two different images. On Windows the
+# checkout reports 0755; built from the same checkout through WSL, where
+# /mnt/d is drvfs with metadata off, every file reports 0777. COPY carries the
+# source mode into the layer, so every layer from the first COPY onward had a
+# different digest depending on which shell ran `make image`, and the sandbox
+# container was replaced each time a developer switched. The header of this
+# file promises a byte-identical starting state on every machine, and that
+# promise has to survive the build host too.
+#
+# It also mattered on its own for wsl.conf below, which came out
+# world-writable on the WSL path. That file is what turns automount and
+# interop off, which is the mechanism behind the promise that a learner cannot
+# reach their own files, and `make rootfs` exports this image as the WSL
+# distribution. A file any user in the distribution can rewrite is not a
+# guarantee.
+COPY --chmod=0644 rc/instrument.bash /opt/shellforge/rc/instrument.bash
+COPY --chmod=0755 bin/ /opt/shellforge/bin/
 
 # WSL reads this on import. It is written again by WslRuntime after import
 # because the values matter enough to verify rather than assume, but baking it
@@ -194,7 +208,7 @@ RUN set -eux; \
 # interop off:            cannot launch notepad.exe from bash
 # appendWindowsPath off:  $PATH is not polluted with 300 Windows entries, which
 #                         would make every PATH lesson nonsense
-COPY wsl.conf /etc/wsl.conf
+COPY --chmod=0644 wsl.conf /etc/wsl.conf
 
 USER learner
 WORKDIR /home/learner
