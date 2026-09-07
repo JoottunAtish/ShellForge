@@ -1,0 +1,178 @@
+id: perm-02
+version: 1
+title: "Chain of Command"
+act: act5
+
+difficulty: 4
+xp: 110
+par_commands: 5
+estimated_minutes: 10
+concepts: [ownership, groups, chgrp, id, sudo]
+prerequisites: [perm-01]
+tags: [must-know]
+
+briefing: |
+  ## 11:15, Wednesday. Billing cannot edit the ledger.
+
+  Permissions answer "what may be done". Ownership answers "by whom". Every
+  file has exactly one owner and exactly one group, and `ls -l` shows both,
+  in the third and fourth columns.
+
+  You belong to more than one group. `id` prints them: your own group,
+  `learner`, and any others you have been added to. One of them is
+  `logistics`, which is the group the billing team is in.
+
+  Three things:
+
+  1. `~/quest/ledger.csv` is yours, and finance cannot correct a line in it.
+     Put it in the `logistics` group and let that group write to it.
+  2. Write your own group memberships into `~/quest/groups.txt`, so the audit
+     has a record of them.
+  3. `~/quest/kofi-handover.txt` belongs to `root`, not to you. You can read
+     it and you cannot change it. Take a copy you **do** own, called
+     `~/quest/handover-copy.txt`, so the notes survive the next cleanup.
+
+  **A word about `sudo`, because you will read about it everywhere else.**
+  `sudo` runs one command as another user, usually root, and on a normal
+  server it is how you would take ownership of Kofi's file outright. This
+  sandbox refuses it on purpose: it is started with a flag that stops any
+  program gaining privilege, so `sudo` here fails with "the no new privileges
+  flag is set" no matter how it is invoked. That is the sandbox protecting
+  your actual computer, and it is why this ticket asks you to work as
+  yourself. Everything below is doable as `learner`.
+
+  You can change a file's group to any group **you are a member of**, as long
+  as you own the file. That is the whole trick.
+
+objectives:
+  - id: ledger-regrouped
+    text: "ledger.csv is in the logistics group and that group can write it"
+  - id: groups-recorded
+    text: "groups.txt records your group memberships"
+  - id: handover-copied
+    text: "handover-copy.txt is a copy of Kofi's notes that you own"
+  - id: used-id
+    text: "Checked your memberships with id"
+    optional: true
+
+setup:
+  root: /home/learner/quest
+  files:
+    - path: ledger.csv
+      source: assets/ledger.csv
+      mode: "0644"
+    # owner: root:root is the one shape the level format allows for
+    # non-learner state. A regular file may declare an owner and keep it; a
+    # directory may not, because teardown's rm -rf runs as the learner and
+    # unlinking a file needs write and execute on the parent directory rather
+    # than ownership of the file itself.
+    - path: kofi-handover.txt
+      source: assets/kofi-handover.txt
+      mode: "0644"
+      owner: "root:root"
+
+checks:
+  - id: ledger-regrouped
+    all_of:
+      - type: file_owner
+        path: /home/learner/quest/ledger.csv
+        owner: learner
+        group: logistics
+        on_fail: "ledger.csv is not owned by learner and the logistics group."
+      - type: file_mode
+        path: /home/learner/quest/ledger.csv
+        modes: ["0664", "0660", "0674", "0670", "0666"]
+        on_fail: "ledger.csv is not writable by its group."
+    on_fail: >-
+      ledger.csv should still belong to you and should now be in the
+      `logistics` group, with that group able to write it. `chgrp logistics
+      ledger.csv` changes the group; `chmod g+w ledger.csv` gives the group
+      write permission. `ls -l ledger.csv` shows the owner in the third column
+      and the group in the fourth. If `chgrp` refused, check `id` to see
+      whether you are in the group you are naming.
+
+  - id: groups-recorded
+    type: script
+    run: |
+      cd /home/learner/quest || { echo "the level directory is missing"; exit 1; }
+      if [ ! -s groups.txt ]; then
+        echo "groups.txt is missing or empty"
+        exit 1
+      fi
+      actual=$(tr ' ,' '\n\n' < groups.txt | grep -v '^$' | LC_ALL=C sort -u | tr '\n' ' ')
+      expected=$(printf '%s\n' learner logistics | LC_ALL=C sort -u | tr '\n' ' ')
+      if [ "$actual" != "$expected" ]; then
+        echo "groups.txt holds: $actual"
+        echo "it should name exactly the groups you are in: $expected"
+        exit 1
+      fi
+      exit 0
+    on_fail: >-
+      groups.txt should name the groups you belong to, and nothing else. `id`
+      on its own prints your user and group ids together; the flags that print
+      just the group names are worth finding in `man id`. Separators do not
+      matter here and neither does order: spaces, commas or one per line all
+      read the same.
+
+  - id: handover-copied
+    all_of:
+      - type: script
+        run: |
+          cd /home/learner/quest || { echo "the level directory is missing"; exit 1; }
+          if [ ! -f handover-copy.txt ]; then
+            echo "handover-copy.txt does not exist yet"
+            exit 1
+          fi
+          if ! cmp -s kofi-handover.txt handover-copy.txt; then
+            echo "handover-copy.txt is not byte for byte the same as kofi-handover.txt"
+            exit 1
+          fi
+          exit 0
+        on_fail: "handover-copy.txt is missing or does not match the original."
+      - type: file_owner
+        path: /home/learner/quest/handover-copy.txt
+        owner: learner
+        on_fail: "handover-copy.txt is not owned by you."
+    on_fail: >-
+      handover-copy.txt should be a byte for byte copy of kofi-handover.txt
+      that belongs to you. `cp` makes the copy, and the copy is owned by
+      whoever ran `cp`, which is the point: you cannot change the original, and
+      you can change anything you create. If you tried to edit the original
+      first, the refusal you got is ownership working correctly.
+
+  - id: used-id
+    type: command_matched
+    pattern: '^\s*id(\s|$)'
+    scope: level
+    on_fail: >-
+      The record is written, and it is worth knowing where it came from. `id`
+      on its own answers "who am I and what am I in", which is the first
+      command to reach for when something refuses you and you do not know why.
+
+hints:
+  - cost: 5
+    text: >-
+      Start with `ls -l` and `id`. `ls -l` shows you who owns each file and
+      which group it is in. `id` shows you which groups you are in. Compare
+      the two and the first two tasks explain themselves.
+  - cost: 15
+    text: >-
+      `chgrp <group> <file>` changes a file's group. You may set it to any
+      group you belong to, on any file you own. Group write permission is a
+      separate thing from the group itself: `chmod g+w` adds it.
+  - cost: 30
+    text: >-
+      `chgrp logistics ledger.csv` then `chmod g+w ledger.csv`. For the
+      record, `id -nG > groups.txt` prints the group names only. For the third,
+      `cp kofi-handover.txt handover-copy.txt`.
+  - cost: 45
+    reveal_solution: true
+
+solution: |
+  cd ~/quest
+  chgrp logistics ledger.csv
+  chmod g+w ledger.csv
+  id -nG > groups.txt
+  cp kofi-handover.txt handover-copy.txt
+
+teardown: {}

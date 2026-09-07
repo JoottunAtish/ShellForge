@@ -1,0 +1,5 @@
+# Meridian Logistics scheduled jobs for atlas.
+# Five time fields, then the command: minute, hour, day of month, month,
+# day of week.
+
+0 3 * * /home/learner/atlas/bin/cleanup.sh

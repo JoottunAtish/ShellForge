@@ -1,0 +1,304 @@
+id: boss-final
+version: 1
+title: "The 3 AM Page"
+act: act6
+boss: true
+
+difficulty: 5
+xp: 300
+par_commands: 15
+estimated_minutes: 30
+concepts: [debugging, permissions, grep, find, sed, cron, disk-usage, post-mortem]
+prerequisites: [script-01]
+tags: [must-know, debugging, destructive]
+
+briefing: |
+  ## 03:04. Your phone is ringing.
+
+  `atlas` is not serving orders. It has not served an order since Sunday and
+  nobody noticed until a customer did. There is no runbook. Kofi is not
+  answering.
+
+  Everything is in `~/atlas`.
+
+  ```
+  ~/atlas/bin/            atlas-service, atlas-health, cleanup.sh
+  ~/atlas/etc/            atlas.conf, crontab
+  ~/atlas/var/log/atlas/  error.log, debug.log
+  ~/atlas/run/            where a running atlas writes its pid
+  ```
+
+  `bin/atlas-health` is the one tool that tells you anything. Run it. It
+  reports the first thing it finds wrong and stops, so you will be running it
+  more than once.
+
+  **Four things are broken and there is a fifth that caused one of them.**
+  They can be found in any order. `bin/atlas-health` will point at three of
+  them. The other two you find by looking: one by reading the error log, one
+  by noticing what is taking up all the space.
+
+  When it is working, write `~/atlas/postmortem.txt` and name all five root
+  causes, one per line, in your own words. That is not paperwork. Writing
+  down what was actually wrong is how the next person at 3 AM does not start
+  from nothing, and being able to explain a fix is the difference between
+  having got lucky and knowing what you did.
+
+  Say, in whatever words you like:
+
+  - which log filled the disk
+  - which program had lost its execute bit
+  - which config setting was misspelled
+  - what the stale file in `run/` was
+  - what was wrong with the cron schedule
+
+objectives:
+  - id: health-ok
+    text: "bin/atlas-health reports OK"
+  - id: disk-reclaimed
+    text: "The runaway log is no longer taking up the disk"
+  - id: schedule-fixed
+    text: "The cron entry has a valid schedule again"
+  - id: postmortem-written
+    text: "postmortem.txt names all five root causes"
+
+setup:
+  root: /home/learner/atlas
+  files:
+    - path: bin/atlas-service
+      source: assets/atlas-service
+      mode: "0644"
+    - path: bin/atlas-health
+      source: assets/atlas-health
+      mode: "0755"
+    - path: bin/cleanup.sh
+      source: assets/boss-cleanup.sh
+      mode: "0755"
+    - path: etc/atlas.conf
+      source: assets/boss-atlas.conf
+      mode: "0644"
+    - path: etc/crontab
+      source: assets/boss-crontab
+      mode: "0644"
+    - path: var/log/atlas/error.log
+      source: assets/boss-error.log
+      mode: "0644"
+    - path: run/atlas.pid
+      content: |
+        4815162342
+  script: |
+    set -e
+    # Roughly 14 MB of debug log, written here rather than committed or
+    # generated. `truncate -s 2G` would satisfy any size test and then report
+    # as zero under du, which teaches a learner something false the moment
+    # they go looking for the space themselves. Real bytes, deterministic
+    # content, no clock and no randomness.
+    yes '2026-02-11T02:00:00Z atlas[1144] DEBUG route cache miss for lane RTM-FXT' \
+      | head -n 200000 > var/log/atlas/debug.log
+
+checks:
+  - id: health-ok
+    type: script
+    run: |
+      cd /home/learner/atlas || { echo "the level directory is missing"; exit 1; }
+      if ! output=$(./bin/atlas-health 2>&1); then
+        echo "atlas-health is still unhappy. It said:"
+        echo "$output" | sed 's/^/  /'
+        exit 1
+      fi
+      case "$output" in
+        *OK*) exit 0;;
+      esac
+      echo "atlas-health exited cleanly without reporting OK. It said:"
+      echo "$output" | sed 's/^/  /'
+      exit 1
+    on_fail: >-
+      `bin/atlas-health` is not reporting OK yet. Run it yourself and read
+      what it says, then fix that one thing and run it again: it stops at the
+      first problem, so this is three rounds, not one. When it complains about
+      the config, `var/log/atlas/error.log` is more specific about what is
+      wrong with it than the health check is.
+
+  - id: disk-reclaimed
+    type: script
+    run: |
+      cd /home/learner/atlas || { echo "the level directory is missing"; exit 1; }
+      if [ ! -e var/log/atlas/debug.log ]; then
+        exit 0
+      fi
+      size=$(stat -c %s var/log/atlas/debug.log)
+      if [ "$size" -ge 1048576 ]; then
+        echo "var/log/atlas/debug.log is still $size bytes"
+        exit 1
+      fi
+      exit 0
+    on_fail: >-
+      `var/log/atlas/debug.log` is still enormous. `du -sh var/log/atlas` and
+      `ls -lh var/log/atlas` both show it. Emptying a file without deleting it
+      is `> var/log/atlas/debug.log` or `truncate -s 0`, and emptying rather
+      than deleting is usually what you want for a log a running program still
+      has open. Deleting it is accepted here too.
+
+  - id: schedule-fixed
+    type: script
+    run: |
+      cd /home/learner/atlas || { echo "the level directory is missing"; exit 1; }
+      if [ ! -f etc/crontab ]; then
+        echo "etc/crontab is gone"
+        exit 1
+      fi
+      line=$(grep -v '^[[:space:]]*#' etc/crontab | grep -v '^[[:space:]]*$' | head -n 1)
+      if [ -z "$line" ]; then
+        echo "etc/crontab has no schedule line left in it at all"
+        exit 1
+      fi
+      # set -f first. Splitting an unquoted $line into fields also runs
+      # pathname expansion over it, and a cron schedule is mostly asterisks,
+      # so without this the time fields expand into whatever happens to be in
+      # the current directory and the check reports nonsense.
+      set -f
+      # shellcheck disable=SC2086
+      set -- $line
+      set +f
+      if [ "$#" -lt 6 ]; then
+        echo "the schedule line has $# fields: $line"
+        echo "a cron line is five time fields and then the command"
+        exit 1
+      fi
+      for field in "$1" "$2" "$3" "$4" "$5"; do
+        case "$field" in
+          ''|*[!0-9*,/-]*)
+            echo "'$field' is not a cron time field, in: $line"
+            exit 1
+            ;;
+        esac
+      done
+      case "$line" in
+        *cleanup.sh*) ;;
+        *) echo "the schedule no longer runs cleanup.sh: $line"; exit 1;;
+      esac
+      exit 0
+    on_fail: >-
+      The entry in `etc/crontab` still does not have a valid schedule. A cron
+      line is five time fields and then the command: minute, hour, day of
+      month, month, day of week. Count the fields before the path. With one
+      missing, cron reads the start of the path as the fifth field, the line
+      never matches any time, and the job silently never runs, which is why
+      the log was allowed to grow for three days. The comment at the top of
+      the file lists the fields in order.
+
+  - id: postmortem-written
+    all_of:
+      - any_of:
+          - type: file_content
+            path: /home/learner/atlas/postmortem.txt
+            match: contains
+            value: "debug.log"
+            ignore_case: true
+            on_fail: "no mention of debug.log"
+          - type: file_content
+            path: /home/learner/atlas/postmortem.txt
+            match: contains
+            value: "disk"
+            ignore_case: true
+            on_fail: "no mention of the disk filling up"
+        on_fail: "The post-mortem does not mention the log that filled the disk."
+      - any_of:
+          - type: file_content
+            path: /home/learner/atlas/postmortem.txt
+            match: contains
+            value: "atlas-service"
+            ignore_case: true
+            on_fail: "no mention of atlas-service"
+          - type: file_content
+            path: /home/learner/atlas/postmortem.txt
+            match: contains
+            value: "executable"
+            ignore_case: true
+            on_fail: "no mention of the execute bit"
+        on_fail: "The post-mortem does not mention the program that had lost its execute bit."
+      - any_of:
+          - type: file_content
+            path: /home/learner/atlas/postmortem.txt
+            match: contains
+            value: "prot"
+            ignore_case: true
+            on_fail: "no mention of the misspelling"
+          - type: file_content
+            path: /home/learner/atlas/postmortem.txt
+            match: contains
+            value: "port"
+            ignore_case: true
+            on_fail: "no mention of the port setting"
+        on_fail: "The post-mortem does not mention the misspelled config setting."
+      - type: file_content
+        path: /home/learner/atlas/postmortem.txt
+        match: contains
+        value: "pid"
+        ignore_case: true
+        on_fail: "The post-mortem does not mention the stale pid file."
+      - type: file_content
+        path: /home/learner/atlas/postmortem.txt
+        match: contains
+        value: "cron"
+        ignore_case: true
+        on_fail: "The post-mortem does not mention the broken cron schedule."
+    on_fail: >-
+      `~/atlas/postmortem.txt` should name all five root causes, one per line,
+      in your own words: the log that filled the disk, the program that had
+      lost its execute bit, the misspelled config setting, the stale file in
+      `run/`, and the cron schedule that never matched. Four out of five is
+      the post-mortem that gets written when somebody stops as soon as the
+      service comes back, and it is why the same outage happens again a month
+      later.
+
+hints:
+  - cost: 10
+    text: >-
+      `cd ~/atlas` and run `./bin/atlas-health`. Fix whatever it names, then
+      run it again. It reports one problem at a time. When it is happy, you
+      still have two things to find that it does not check: look at what is
+      taking up space, and look at why the job that was supposed to stop that
+      never ran.
+  - cost: 25
+    text: >-
+      For the config, `grep -n port etc/atlas.conf` next to
+      `grep -i port var/log/atlas/error.log` shows you the difference between
+      what the file says and what the service was looking for. For the space,
+      `du -sh var/log/atlas/*` sorts it out in one line. For the schedule,
+      count the fields in `etc/crontab` against the comment above them.
+  - cost: 45
+    text: >-
+      The five: `var/log/atlas/debug.log` is enormous and needs emptying;
+      `bin/atlas-service` lost its execute bit and needs `chmod +x`;
+      `etc/atlas.conf` says `prot=8080` where it should say `port=8080`;
+      `run/atlas.pid` is left over from a process that died and needs
+      deleting; and the line in `etc/crontab` has four time fields where cron
+      needs five. Then write the post-mortem.
+  - cost: 90
+    reveal_solution: true
+
+solution: |
+  cd ~/atlas
+  chmod +x bin/atlas-service
+  sed -i 's/^prot=/port=/' etc/atlas.conf
+  rm -f run/atlas.pid
+  : > var/log/atlas/debug.log
+  sed -i 's|^0 3 \* \* /|0 3 * * * /|' etc/crontab
+  ./bin/atlas-health
+  cat > postmortem.txt <<'NOTES'
+  Post-mortem, atlas outage, 2026-02-08 to 2026-02-11.
+
+  1. var/log/atlas/debug.log had grown to 14 MB and was filling the disk.
+     Emptied it.
+  2. bin/atlas-service had lost its execute bit, so nothing could start it.
+     chmod +x.
+  3. etc/atlas.conf said prot=8080 instead of port=8080. The service ignored
+     the unknown setting, found no port, and refused to start. Corrected.
+  4. run/atlas.pid was left behind by a process that had already died. A
+     stale pid file blocks the next start. Deleted.
+  5. The cron entry in etc/crontab had four time fields where a schedule
+     needs five, so it never matched any time and cleanup.sh never ran. That
+     is the root cause of item 1. Added the missing field.
+  NOTES
+
+teardown: {}

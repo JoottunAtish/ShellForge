@@ -1,0 +1,229 @@
+id: find-04
+version: 1
+title: "Search and Destroy"
+act: act4
+boss: true
+
+difficulty: 4
+xp: 160
+par_commands: 5
+estimated_minutes: 15
+concepts: [find-exec, xargs, chmod, recursive-delete, command-substitution]
+prerequisites: [find-03]
+tags: [must-know, destructive]
+
+briefing: |
+  ## 23:50, Tuesday. Two jobs before the release window closes.
+
+  Finding files was the easy half. Now you do something to each one you find.
+
+  1. Every `.tmp` file anywhere under `~/quest/data` is scratch from a job
+     that crashed. Delete them. They are scattered up to five directories
+     deep and there are more than you want to type out.
+  2. Every `.sh` file under `~/quest/scripts` arrived without its execute
+     bit, so none of them will run. Fix all of them.
+  3. Write the number of files you touched, deleted and made executable
+     together, into `~/quest/touched.txt`.
+
+  **Nothing else changes.** There are real records under `data/`, and there
+  are files in `scripts/` that are not scripts. A `find` that is one test too
+  loose takes them with it, and there is no undo. `shellforge reset` rebuilds
+  the level if it comes to that, which is the whole reason you get to practise
+  this here rather than on a real server.
+
+  For the third answer: count before you act, not after. The files are gone by
+  the time you want to count them.
+
+  `find` can run a command on each result. The syntax is genuinely awkward:
+  `-exec somecommand {} \;` where `{}` stands for the file it found and `\;`
+  marks the end of the command. The backslash is there because otherwise the
+  shell would eat the semicolon before `find` ever saw it.
+
+objectives:
+  - id: temps-deleted
+    text: "No .tmp file is left anywhere under data/"
+  - id: scripts-executable
+    text: "All eight .sh files under scripts/ can be run"
+  - id: bystanders-intact
+    text: "Nothing else was deleted or had its permissions changed"
+    # True the moment setup finishes. This level is a recursive delete and a
+    # recursive chmod pointed at a tree that also holds real records, so the
+    # objective the learner earns is the one where the blast radius stayed
+    # where they aimed it.
+    preserves: true
+  - id: count-recorded
+    text: "touched.txt holds the number of files touched"
+
+setup:
+  root: /home/learner/quest
+  script: |
+    set -e
+    mkdir -p data/inbound/2026-01/batch-01/raw data/inbound/2026-01/batch-02 \
+             data/inbound/2026-02 data/outbound/2026-01/batch-07/raw \
+             data/archive/2025/q4 scripts
+
+    for f in data/scratch.tmp \
+             data/inbound/queue.tmp \
+             data/inbound/2026-01/import.tmp \
+             data/inbound/2026-01/batch-01/rows.tmp \
+             data/inbound/2026-01/batch-01/raw/part-a.tmp \
+             data/inbound/2026-01/batch-01/raw/part-b.tmp \
+             data/inbound/2026-01/batch-02/rows.tmp \
+             data/inbound/2026-02/import.tmp \
+             data/outbound/queue.tmp \
+             data/outbound/2026-01/export.tmp \
+             data/outbound/2026-01/batch-07/rows.tmp \
+             data/outbound/2026-01/batch-07/raw/part-a.tmp \
+             data/archive/2025/old.tmp \
+             data/archive/2025/q4/older.tmp; do
+      printf 'scratch from a job that died half way through\n' > "$f"
+    done
+
+    printf 'MRDU-771,Rotterdam,Felixstowe,18\n'  > data/inbound/2026-01/batch-01/rows.csv
+    printf 'MRDU-773,Hamburg,Gdansk,44\n'        > data/inbound/2026-01/batch-02/rows.csv
+    printf 'MRDU-780,Oslo,Rotterdam,9\n'         > data/outbound/2026-01/batch-07/rows.csv
+    printf 'Q4 2025: 14 812 consignments, 2 losses.\n' > data/archive/2025/summary.txt
+
+    for f in backup cleanup deploy healthcheck rotate-logs seed-depots \
+             sync-manifests warm-cache; do
+      printf '#!/bin/bash\n# Meridian Logistics: %s\necho "%s ran"\n' "$f" "$f" > "scripts/$f.sh"
+      chmod 0644 "scripts/$f.sh"
+    done
+
+    printf 'Kofi never wrote these down properly. Sorry.\n' > scripts/README.md
+    printf 'retention_days=30\n'                            > scripts/atlas.conf
+    printf 'The cleanup job runs at 02:00. Or it used to.\n' > scripts/notes.txt
+    chmod 0644 scripts/README.md scripts/atlas.conf scripts/notes.txt
+
+checks:
+  - id: temps-deleted
+    type: script
+    run: |
+      cd /home/learner/quest || { echo "the level directory is missing"; exit 1; }
+      left=$(find data -name '*.tmp' -printf '%p\n' 2>/dev/null | LC_ALL=C sort)
+      if [ -n "$left" ]; then
+        echo "still here:"
+        echo "$left" | sed 's/^/  /'
+        exit 1
+      fi
+      exit 0
+    on_fail: >-
+      At least one `.tmp` file is still under `data/`. They go five levels
+      deep, so a search that only looks at the top of `data/` misses most of
+      them. `find data -name '*.tmp'` lists them; adding `-exec rm {} \;`
+      deletes each one it lists. Look at the list before you add the delete.
+
+  - id: scripts-executable
+    type: script
+    run: |
+      cd /home/learner/quest || { echo "the level directory is missing"; exit 1; }
+      bad=""
+      for f in backup cleanup deploy healthcheck rotate-logs seed-depots \
+               sync-manifests warm-cache; do
+        if [ ! -x "scripts/$f.sh" ]; then
+          bad="$bad scripts/$f.sh"
+        fi
+      done
+      if [ -n "$bad" ]; then
+        echo "not executable:$bad"
+        exit 1
+      fi
+      exit 0
+    on_fail: >-
+      At least one script under `scripts/` still cannot be run. `chmod +x`
+      adds the execute bit, and `find scripts -name '*.sh' -exec chmod +x {} \;`
+      applies it to every `.sh` in one command. Check with `ls -l scripts`:
+      an executable file shows an `x` in its permission string.
+
+  - id: bystanders-intact
+    all_of:
+      - type: file_mode
+        path: /home/learner/quest/scripts/README.md
+        mode: "0644"
+        on_fail: "scripts/README.md is missing or its permissions changed."
+      - type: file_mode
+        path: /home/learner/quest/scripts/atlas.conf
+        mode: "0644"
+        on_fail: "scripts/atlas.conf is missing or its permissions changed."
+      - type: file_mode
+        path: /home/learner/quest/scripts/notes.txt
+        mode: "0644"
+        on_fail: "scripts/notes.txt is missing or its permissions changed."
+      - type: script
+        run: |
+          cd /home/learner/quest || { echo "the level directory is missing"; exit 1; }
+          missing=""
+          for f in data/inbound/2026-01/batch-01/rows.csv \
+                   data/inbound/2026-01/batch-02/rows.csv \
+                   data/outbound/2026-01/batch-07/rows.csv \
+                   data/archive/2025/summary.txt; do
+            [ -f "$f" ] || missing="$missing $f"
+          done
+          if [ -n "$missing" ]; then
+            echo "deleted along with the temporaries:$missing"
+            exit 1
+          fi
+          exit 0
+        on_fail: "A real record under data/ was deleted."
+    on_fail: >-
+      Something that was not yours to touch has changed. The four `.csv` and
+      `.txt` records under `data/` are the real shipment data and must still
+      be there, and the three files in `scripts/` that are not scripts must
+      still be mode 0644. A `find data -delete` with no `-name` test, or a
+      `chmod -R +x scripts`, is how this usually happens. `shellforge reset`
+      rebuilds the level.
+
+  - id: count-recorded
+    type: file_content
+    path: /home/learner/quest/touched.txt
+    match: trimmed_equals
+    value: "22"
+    on_fail: >-
+      touched.txt should hold one number: how many files you deleted plus how
+      many you made executable. Fourteen temporaries and eight scripts. If you
+      are counting after the fact, the deleted ones are already gone, which is
+      why the count has to happen first: `find data -name '*.tmp' | wc -l`
+      before you delete anything.
+
+  - id: no-hardcoded-count
+    severity: warn
+    type: command_not_matched
+    pattern: '^\s*echo\s+22\s*>'
+    scope: level
+    on_fail: >-
+      The number is right, and it was typed in rather than counted. On this
+      level that is a shortcut with no consequences. On the next tree, with
+      four hundred temporaries in it, the typed number is wrong and nothing
+      tells you.
+
+hints:
+  - cost: 5
+    text: >-
+      Build the search first and run it on its own: `find data -name '*.tmp'`.
+      Nothing is deleted by looking, and the list it prints is also the count
+      you need for the third answer.
+  - cost: 15
+    text: >-
+      `-exec` runs a command once per result. `{}` is where `find` puts the
+      filename, and `\;` tells `find` the command has ended. So
+      `find data -name '*.tmp' -exec rm {} \;` deletes each match.
+  - cost: 30
+    text: >-
+      The second job is the same shape with a different command:
+      `find scripts -name '*.sh' -exec chmod +x {} \;`. Count both sets with
+      `wc -l` before you run either of them, then add the two numbers. To keep
+      a count without writing it down, put the command in `$( )`: whatever
+      `$(find data -name '*.tmp' | wc -l)` prints becomes the value, so
+      `tmps=$(find data -name '*.tmp' -type f | wc -l)` remembers it for you.
+  - cost: 55
+    reveal_solution: true
+
+solution: |
+  cd ~/quest
+  tmps=$(find data -name '*.tmp' -type f | wc -l)
+  shs=$(find scripts -name '*.sh' -type f | wc -l)
+  find data -name '*.tmp' -type f -exec rm {} \;
+  find scripts -name '*.sh' -type f -exec chmod +x {} \;
+  echo $((tmps + shs)) > touched.txt
+
+teardown: {}

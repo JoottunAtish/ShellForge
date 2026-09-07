@@ -1,0 +1,207 @@
+id: files-05
+version: 1
+title: "Pattern Matching"
+act: act2
+boss: true
+
+difficulty: 3
+xp: 120
+par_commands: 6
+estimated_minutes: 12
+concepts: [globs, wildcards, brace-expansion, mv, rm]
+prerequisites: [files-04]
+tags: [must-know, text-processing, destructive]
+
+briefing: |
+  ## 09:05, Thursday. Kofi's dumping ground.
+
+  `~/quest` is where Kofi put everything he did not want to think about. There
+  are sixty files in there and no folders at all.
+
+  Sort it out:
+
+  - every `*.log` file goes into `logs/`
+  - every monthly report for 2025, named `report-2025-` then two digits then
+    `.pdf`, goes into `archive/`
+  - every file whose name starts with `tmp_` gets deleted
+  - **everything else stays exactly where it is**
+
+  You could do this one file at a time. Sixty times. Or you could learn what
+  `*` and `?` mean to the shell, which is the actual point of the morning.
+
+  Read the list before you start. Some of the names are close to the ones you
+  want without being the ones you want, and the shell will not warn you.
+
+objectives:
+  - id: logs-filed
+    text: "Every .log file is in logs/, and none is left loose"
+  - id: reports-archived
+    text: "Every 2025 monthly report is in archive/"
+  - id: temps-cleared
+    text: "Every tmp_ file is gone"
+  - id: rest-untouched
+    text: "Everything else is still where it was"
+    # True the moment setup finishes. The learner earns it by aiming their
+    # globs precisely rather than by doing anything, so the golden contract
+    # does not expect it to fail first.
+    preserves: true
+
+setup:
+  root: /home/learner/quest
+  script: |
+    set -e
+
+    for f in api-gateway.log billing.log cron.log dispatch.log freight-api.log \
+             inbound.log manifest-sync.log outbound.log router.log \
+             scheduler.log warehouse.log webhook.log; do
+      printf 'rotated log for %s, kept because nobody dared delete it\n' "$f" > "$f"
+    done
+
+    for n in 01 02 03 04 05 06 07 08; do
+      printf 'Meridian Logistics monthly report, 2025-%s\n' "$n" > "report-2025-$n.pdf"
+    done
+
+    for f in tmp_0001.dat tmp_0002.dat tmp_batch.csv tmp_export.json \
+             tmp_import.json tmp_manifest.txt tmp_render.bin tmp_scan.out \
+             tmp_sort.idx tmp_upload.part; do
+      printf 'scratch output, safe to delete\n' > "$f"
+    done
+
+    for f in report-2024-03.pdf report-2024-11.pdf report-2025-1.pdf \
+             report-2025-009.pdf notes.log.bak tmpfile.txt tmp-cache.db \
+             carriers.csv contracts.csv depot-list.csv drivers.csv fleet.csv \
+             fuel-prices.csv handover.md insurance.pdf invoice-4471.pdf \
+             invoice-4472.pdf kofi-notes.md manifest-0117.csv \
+             manifest-0118.csv pallet-codes.txt rates-2026.csv readme.txt \
+             routes.json schedule.ics shifts.csv staff.csv suppliers.csv \
+             tariffs.json vehicles.csv; do
+      printf 'Meridian Logistics record: %s\n' "$f" > "$f"
+    done
+
+checks:
+  - id: logs-filed
+    type: script
+    run: |
+      cd /home/learner/quest || { echo "the level directory is missing"; exit 1; }
+      expected=$(printf '%s\n' api-gateway.log billing.log cron.log dispatch.log \
+        freight-api.log inbound.log manifest-sync.log outbound.log router.log \
+        scheduler.log warehouse.log webhook.log | LC_ALL=C sort)
+      actual=$(ls -1A logs 2>/dev/null | LC_ALL=C sort)
+      if [ "$actual" != "$expected" ]; then
+        echo "logs/ currently holds:"
+        if [ -z "$actual" ]; then echo "  (nothing, or the directory does not exist)"; else echo "$actual" | sed 's/^/  /'; fi
+        exit 1
+      fi
+      loose=$(find . -maxdepth 1 -type f -name '*.log' -printf '%f\n' | LC_ALL=C sort | tr '\n' ' ')
+      if [ -n "$loose" ]; then
+        echo "still loose in ~/quest: $loose"
+        exit 1
+      fi
+      exit 0
+    on_fail: >-
+      The twelve `.log` files should all be inside `logs/` and none should be
+      left in `~/quest` itself. `mkdir logs` makes the directory, and `mv`
+      takes many sources and one destination, so `mv *.log logs/` moves the lot
+      in one go. Watch out for `notes.log.bak`: it has `.log` in the middle of
+      its name, not at the end, so `*.log` does not match it and it must not
+      move.
+
+  - id: reports-archived
+    type: script
+    run: |
+      cd /home/learner/quest || { echo "the level directory is missing"; exit 1; }
+      expected=$(printf 'report-2025-%s.pdf\n' 01 02 03 04 05 06 07 08 | LC_ALL=C sort)
+      actual=$(ls -1A archive 2>/dev/null | LC_ALL=C sort)
+      if [ "$actual" != "$expected" ]; then
+        echo "archive/ currently holds:"
+        if [ -z "$actual" ]; then echo "  (nothing, or the directory does not exist)"; else echo "$actual" | sed 's/^/  /'; fi
+        exit 1
+      fi
+      loose=$(find . -maxdepth 1 -type f -name 'report-2025-??.pdf' -printf '%f\n' | LC_ALL=C sort | tr '\n' ' ')
+      if [ -n "$loose" ]; then
+        echo "still loose in ~/quest: $loose"
+        exit 1
+      fi
+      exit 0
+    on_fail: >-
+      `archive/` should hold exactly the eight 2025 monthly reports and nothing
+      else. `?` matches one character, so `report-2025-??.pdf` matches the
+      two-digit months and nothing longer or shorter. `report-2025-1.pdf` and
+      `report-2025-009.pdf` are not monthly reports and stay where they are, as
+      does anything from 2024.
+
+  - id: temps-cleared
+    type: script
+    run: |
+      cd /home/learner/quest || { echo "the level directory is missing"; exit 1; }
+      left=$(find . -name 'tmp_*' -printf '%P\n' | LC_ALL=C sort | tr '\n' ' ')
+      if [ -n "$left" ]; then
+        echo "still here: $left"
+        exit 1
+      fi
+      exit 0
+    on_fail: >-
+      At least one file starting with `tmp_` is still in the tree. `rm tmp_*`
+      deletes all ten at once. Moving them into a subdirectory does not count
+      as deleting them, and note the underscore: `tmpfile.txt` and
+      `tmp-cache.db` are real records and must survive.
+
+  - id: rest-untouched
+    type: script
+    run: |
+      cd /home/learner/quest || { echo "the level directory is missing"; exit 1; }
+      missing=""
+      for f in report-2024-03.pdf report-2024-11.pdf report-2025-1.pdf \
+               report-2025-009.pdf notes.log.bak tmpfile.txt tmp-cache.db \
+               carriers.csv contracts.csv depot-list.csv drivers.csv fleet.csv \
+               fuel-prices.csv handover.md insurance.pdf invoice-4471.pdf \
+               invoice-4472.pdf kofi-notes.md manifest-0117.csv \
+               manifest-0118.csv pallet-codes.txt rates-2026.csv readme.txt \
+               routes.json schedule.ics shifts.csv staff.csv suppliers.csv \
+               tariffs.json vehicles.csv; do
+        if [ ! -f "$f" ]; then
+          missing="$missing $f"
+        fi
+      done
+      if [ -n "$missing" ]; then
+        echo "gone from ~/quest, or moved out of it:$missing"
+        exit 1
+      fi
+      exit 0
+    on_fail: >-
+      A file that was not yours to move or delete has left `~/quest`. The
+      names above are the ones that should still be sitting in the top level.
+      A glob that was one character too loose is the usual cause: check
+      whether you matched `tmp*` rather than `tmp_*`, or `report-2025-*.pdf`
+      rather than `report-2025-??.pdf`. `shellforge reset` rebuilds the
+      level if you want a clean run at it.
+
+hints:
+  - cost: 5
+    text: >-
+      The shell expands the pattern before the command ever sees it. `*`
+      stands for any run of characters, including none. `?` stands for
+      exactly one character. Try `ls *.log` and `ls report-2025-??.pdf` first
+      and read what comes back: nothing is moved by looking.
+  - cost: 10
+    text: >-
+      `mkdir` makes a directory, and it takes more than one name at a time.
+      `mv` takes any number of sources and one destination, so a single `mv`
+      with a pattern moves every file the pattern matched.
+  - cost: 20
+    text: >-
+      The shape is `mkdir logs archive`, then `mv *.log logs/`, then
+      `mv report-2025-??.pdf archive/`, then a `rm` with a pattern for the
+      temporaries. Brace expansion writes the first of those as
+      `mkdir {logs,archive}` if you prefer.
+  - cost: 40
+    reveal_solution: true
+
+solution: |
+  cd ~/quest
+  mkdir -p logs archive
+  mv *.log logs/
+  mv report-2025-??.pdf archive/
+  rm tmp_*
+
+teardown: {}

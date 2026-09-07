@@ -1,0 +1,135 @@
+id: pipe-01
+version: 1
+title: "Capturing Output"
+act: act3
+
+difficulty: 2
+xp: 60
+par_commands: 4
+estimated_minutes: 6
+concepts: [redirection, truncate, append, stdout]
+prerequisites: [files-05]
+tags: [must-know]
+
+briefing: |
+  ## 10:40, Thursday. Someone wants a paper trail.
+
+  The depot manager wants to know what arrived in the inbox overnight, and
+  she wants it in a file rather than read out over the phone.
+
+  Two steps, and the order matters:
+
+  1. Save a listing of `~/quest/inbox` into `~/quest/inventory.txt`.
+  2. Add the current date and time to the **end** of that same file, without
+     losing the listing you just saved.
+
+  There are two redirection operators and they are one character apart. One of
+  them replaces the file. The other adds to it. Getting that wrong is how
+  people lose an afternoon of work, so this is a good morning to find out
+  which is which.
+
+objectives:
+  - id: listing-saved
+    text: "inventory.txt holds the listing of inbox/"
+  - id: date-appended
+    text: "The date is on the end, with the listing still above it"
+
+setup:
+  root: /home/learner/quest
+  files:
+    - path: inbox/manifest-0117.csv
+      content: |
+        MRDU-771,Rotterdam,Felixstowe,pallets,18
+        MRDU-772,Rotterdam,Oslo,pallets,6
+    - path: inbox/manifest-0118.csv
+      content: |
+        MRDU-773,Hamburg,Gdansk,crates,44
+    - path: inbox/rates-2026.csv
+      content: |
+        lane,per_km,minimum
+        RTM-FXT,1.18,240
+        HAM-GDN,0.97,180
+    - path: inbox/driver-roster.txt
+      content: |
+        Monday early: Tomas, Nils
+        Monday late: Jakub, Marco
+    - path: inbox/depot-codes.txt
+      content: |
+        Rotterdam 4471
+        Hamburg 4488
+        Oslo 4502
+    - path: inbox/fuel-log.csv
+      content: |
+        HH-4412,2026-02-09,74.2
+        HH-4419,2026-02-09,61.8
+
+checks:
+  - id: listing-saved
+    type: file_content
+    path: /home/learner/quest/inventory.txt
+    match: contains
+    value: "manifest-0117.csv"
+    on_fail: >-
+      inventory.txt is missing, or it does not hold the listing of
+      `~/quest/inbox`. `ls inbox` prints the listing to the screen, and `>`
+      sends what a command would have printed into a file instead. If the file
+      exists but the listing is gone, you have found what `>` does to a file
+      that already had something in it.
+
+  - id: date-appended
+    type: script
+    run: |
+      cd /home/learner/quest || { echo "the level directory is missing"; exit 1; }
+      if [ ! -f inventory.txt ]; then
+        echo "inventory.txt does not exist yet"
+        exit 1
+      fi
+      last=$(tail -n 1 inventory.txt)
+      if [ -z "$last" ]; then
+        echo "the last line of inventory.txt is empty"
+        exit 1
+      fi
+      if ! date -d "$last" >/dev/null 2>&1; then
+        echo "the last line does not read as a date and time: $last"
+        exit 1
+      fi
+      if [ "$(wc -l < inventory.txt)" -lt 2 ]; then
+        echo "inventory.txt holds one line, so the listing is not above the date"
+        exit 1
+      fi
+      if ! head -n -1 inventory.txt | grep -q 'manifest-0117.csv'; then
+        echo "the listing is not above the date. inventory.txt currently holds:"
+        sed 's/^/  /' inventory.txt
+        exit 1
+      fi
+      exit 0
+    on_fail: >-
+      The last line of inventory.txt should be the current date and time, with
+      the listing still above it. `date` prints it. If the listing has
+      disappeared, you used `>` a second time and it replaced the whole file:
+      `>>` is the one that adds to the end.
+
+hints:
+  - cost: 5
+    text: >-
+      A command normally prints to the screen. Redirection sends that output
+      somewhere else instead. `ls inbox` first, on its own, so you can see what
+      you are about to capture.
+  - cost: 10
+    text: >-
+      `>` writes output to a file and throws away whatever was in it. `>>`
+      writes output onto the end of a file and keeps what was there. The
+      command that prints the current date and time is `date`.
+  - cost: 20
+    text: >-
+      First `ls inbox > inventory.txt`. Then the same shape again with `date`
+      and the other operator.
+  - cost: 30
+    reveal_solution: true
+
+solution: |
+  cd ~/quest
+  ls inbox > inventory.txt
+  date >> inventory.txt
+
+teardown: {}

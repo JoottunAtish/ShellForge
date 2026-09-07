@@ -1,0 +1,29 @@
+#!/bin/bash
+# Meridian Logistics order service.
+#
+# --check validates the configuration and exits. It reads and prints; it never
+# writes. A health check that changed something would be a health check nobody
+# could run twice.
+
+here="$(cd "$(dirname "$0")/.." && pwd)"
+conf="$here/etc/atlas.conf"
+
+case "$1" in
+    --check)
+        if [ ! -r "$conf" ]; then
+            echo "atlas-service: cannot read $conf" >&2
+            exit 1
+        fi
+        port=$(grep '^port=' "$conf" | cut -d= -f2)
+        if [ -z "$port" ]; then
+            echo "atlas-service: no port configured, refusing to start" >&2
+            exit 1
+        fi
+        echo "config ok, port $port"
+        exit 0
+        ;;
+    *)
+        echo "usage: atlas-service --check" >&2
+        exit 2
+        ;;
+esac

@@ -1,0 +1,240 @@
+id: script-01
+version: 1
+title: "Your First Script"
+act: act6
+
+difficulty: 4
+xp: 140
+par_commands: 6
+estimated_minutes: 15
+concepts: [shebang, arguments, exit-codes, stderr, conditionals]
+prerequisites: [env-01]
+tags: [must-know, scripting]
+
+briefing: |
+  ## 15:20, Monday. You have typed this three times today.
+
+  Counting the log files in a directory is a one liner you now know by heart.
+  Write it down once and stop retyping it.
+
+  Write `~/toolbox/bin/count-logs.sh`. It takes a directory as its first
+  argument and prints how many `.log` files are directly inside it.
+
+  It has to behave like a real command, which means four things beyond
+  printing a number:
+
+  - **A shebang.** The first line is `#!/bin/bash`, which tells the kernel
+    which interpreter to run the file with. Without it the file is text, not
+    a program.
+  - **The execute bit.** You know this one from Act V.
+  - **Exit 0 when it worked.** Every command reports success or failure as a
+    number, and `0` means success. Your shell keeps the last one in `$?`.
+  - **Exit 1 and complain on stderr when the directory does not exist**, and
+    print nothing at all on stdout in that case. This is the lesson from
+    Act III, from the other side: whoever pipes your script into something
+    else needs the error to stay out of the data.
+
+  Running it with no argument at all must also fail rather than counting the
+  wrong thing.
+
+  `$1` is the first argument. `$#` is how many there are. `if [ -d "$1" ]`
+  tests whether `$1` is a directory. `>&2` sends output to stderr. `exit 1`
+  ends the script with that status.
+
+  There are fixtures to test against: `~/toolbox/logs` has some `.log` files
+  in it, and `~/toolbox/empty` has none.
+
+objectives:
+  - id: counts-correctly
+    text: "It prints the right count for a real directory and exits 0"
+  - id: rejects-missing
+    text: "It exits 1 with a message on stderr for a directory that does not exist"
+  - id: rejects-no-args
+    text: "It fails rather than guessing when given no argument"
+  - id: has-shebang
+    text: "It starts with a shebang line"
+  - id: is-executable
+    text: "It can be run"
+
+setup:
+  root: /home/learner/toolbox
+  script: |
+    set -e
+    mkdir -p bin logs empty
+
+    for f in api-gateway billing dispatch router warehouse; do
+      printf 'nothing interesting in here\n' > "logs/$f.log"
+    done
+    printf 'not a log\n'      > logs/README.md
+    printf 'retention=30\n'   > logs/rotate.conf
+
+    printf 'Kofi kept this empty on purpose. Do not delete it.\n' > empty/.keep
+
+checks:
+  - id: counts-correctly
+    type: script
+    run: |
+      cd /home/learner/toolbox || { echo "the level directory is missing"; exit 1; }
+      if [ ! -f bin/count-logs.sh ]; then
+        echo "bin/count-logs.sh does not exist yet"
+        exit 1
+      fi
+      out=$(bash bin/count-logs.sh logs 2>/dev/null)
+      status=$?
+      if [ "$status" -ne 0 ]; then
+        echo "it exited $status on a directory that exists, and should have exited 0"
+        exit 1
+      fi
+      trimmed=$(printf '%s' "$out" | tr -d '[:space:]')
+      if [ "$trimmed" != "5" ]; then
+        echo "on logs/ it printed '$out', and there are 5 .log files in there"
+        exit 1
+      fi
+      empty_out=$(bash bin/count-logs.sh empty 2>/dev/null | tr -d '[:space:]')
+      if [ "$empty_out" != "0" ]; then
+        echo "on empty/ it printed '$empty_out', and there are no .log files in there"
+        exit 1
+      fi
+      exit 0
+    on_fail: >-
+      The count is not right yet. `logs/` holds five `.log` files plus two
+      files that are not logs, and `empty/` holds none, so the answers are 5
+      and 0. `find "$1" -maxdepth 1 -type f -name '*.log' | wc -l` counts
+      them; without `-maxdepth 1` you would also count anything nested, and
+      without `-name` you would count the two that are not logs. A script
+      that prints nothing at all for the empty directory is counting
+      differently from one that prints 0.
+
+  - id: rejects-missing
+    type: script
+    run: |
+      cd /home/learner/toolbox || { echo "the level directory is missing"; exit 1; }
+      if [ ! -f bin/count-logs.sh ]; then
+        echo "bin/count-logs.sh does not exist yet"
+        exit 1
+      fi
+      # Two runs rather than one and a temporary file. A check may not write
+      # anything, anywhere, and the script under test is read only, so
+      # invoking it twice costs nothing and keeps that promise.
+      err=$(bash bin/count-logs.sh no-such-directory 2>&1 >/dev/null)
+      out=$(bash bin/count-logs.sh no-such-directory 2>/dev/null)
+      status=$?
+      if [ "$status" -eq 0 ]; then
+        echo "it exited 0 for a directory that does not exist, so nothing downstream would notice"
+        exit 1
+      fi
+      if [ "$status" -ne 1 ]; then
+        echo "it exited $status, and the ticket asks for 1"
+        exit 1
+      fi
+      if [ -z "$err" ]; then
+        echo "it said nothing on stderr, so there is no way to tell what went wrong"
+        exit 1
+      fi
+      if [ -n "$out" ]; then
+        echo "it printed '$out' on stdout as well, which would land in whatever you piped it into"
+        exit 1
+      fi
+      exit 0
+    on_fail: >-
+      Given a directory that does not exist, the script has to exit 1, say
+      something on stderr, and print nothing on stdout. `if [ ! -d "$1" ]`
+      tests for it, `echo "message" >&2` sends the complaint to stderr, and
+      `exit 1` sets the status. The stdout part matters: an error that lands
+      on stdout ends up mixed into whatever the next command in the pipeline
+      is reading, which is the problem pipe-02 was about.
+
+  - id: rejects-no-args
+    type: script
+    run: |
+      cd /home/learner/toolbox || { echo "the level directory is missing"; exit 1; }
+      if [ ! -f bin/count-logs.sh ]; then
+        echo "bin/count-logs.sh does not exist yet"
+        exit 1
+      fi
+      bash bin/count-logs.sh >/dev/null 2>&1
+      status=$?
+      if [ "$status" -eq 0 ]; then
+        echo "with no argument at all it exited 0, so it counted something nobody asked about"
+        exit 1
+      fi
+      exit 0
+    on_fail: >-
+      Run with no argument, the script should fail rather than guess. `$#`
+      holds the number of arguments, so `if [ $# -lt 1 ]` catches it. Without
+      that test `$1` is an empty string, and an empty string is not a
+      directory, so you may already be covered by the check above: run it and
+      see what it does.
+
+  - id: has-shebang
+    type: file_content
+    path: /home/learner/toolbox/bin/count-logs.sh
+    match: regex
+    value: '\A#!/(usr/)?bin/(env )?bash'
+    on_fail: >-
+      The first line of the file should be `#!/bin/bash`. Those two
+      characters at the very start tell the kernel which interpreter to hand
+      the file to, which is what lets you run it as `./count-logs.sh` rather
+      than `bash count-logs.sh`. A blank line or a comment above it does not
+      work: it has to be the first thing in the file.
+
+  - id: is-executable
+    type: script
+    run: |
+      cd /home/learner/toolbox || { echo "the level directory is missing"; exit 1; }
+      if [ ! -f bin/count-logs.sh ]; then
+        echo "bin/count-logs.sh does not exist yet"
+        exit 1
+      fi
+      if [ ! -x bin/count-logs.sh ]; then
+        echo "bin/count-logs.sh exists and does not have its execute bit"
+        exit 1
+      fi
+      exit 0
+    on_fail: >-
+      The file is there and cannot be run. `chmod +x bin/count-logs.sh` adds
+      the execute bit. Any mode with `x` for you is accepted: this checks that
+      it runs, not that you picked a particular number.
+
+hints:
+  - cost: 5
+    text: >-
+      Start by getting the one liner right on the command line, with a real
+      directory: `find logs -maxdepth 1 -type f -name '*.log' | wc -l`. The
+      script is that line with the directory replaced by `$1`.
+  - cost: 15
+    text: >-
+      Create the file with `nano ~/toolbox/bin/count-logs.sh`. First line
+      `#!/bin/bash`. Then the guards, then the counting line. Save, then
+      `chmod +x` it.
+  - cost: 30
+    text: >-
+      The guard for a missing directory is:
+      `if [ ! -d "$1" ]; then echo "no such directory: $1" >&2; exit 1; fi`.
+      The guard for no arguments is the same shape with `[ $# -lt 1 ]`. Put
+      both before the counting line, and nothing else on stdout.
+  - cost: 55
+    reveal_solution: true
+
+solution: |
+  cd ~/toolbox
+  mkdir -p bin
+  cat > bin/count-logs.sh <<'SCRIPT'
+  #!/bin/bash
+  # Counts the .log files directly inside the directory given as $1.
+
+  if [ $# -lt 1 ]; then
+      echo "usage: count-logs.sh <directory>" >&2
+      exit 1
+  fi
+
+  if [ ! -d "$1" ]; then
+      echo "count-logs.sh: no such directory: $1" >&2
+      exit 1
+  fi
+
+  find "$1" -maxdepth 1 -type f -name '*.log' | wc -l
+  SCRIPT
+  chmod +x bin/count-logs.sh
+
+teardown: {}

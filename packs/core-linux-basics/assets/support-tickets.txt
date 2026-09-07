@@ -1,0 +1,26 @@
+TKT-1031 | 2026-01-04 | dispatch | resolved | Pallet 8871 delivered to the wrong bay at Rotterdam
+TKT-1032 | 2026-01-05 | billing  | open     | Customer asking for a refund on invoice 4471
+TKT-1033 | 2026-01-06 | fleet    | resolved | Van HH-4412 failed its inspection, swapped for HH-4419
+TKT-1034 | 2026-01-08 | billing  | waiting  | REFUND request from Northwind Freight, needs manager sign off
+TKT-1035 | 2026-01-09 | customs  | resolved | Missing export paperwork for container MRDU-771
+TKT-1036 | 2026-01-11 | dispatch | open     | Driver could not reach the Felixstowe gate code
+TKT-1037 | 2026-01-12 | billing  | resolved | Duplicate invoice sent to Halden Shipping
+TKT-1038 | 2026-01-14 | billing  | open     | Refund promised on the phone but never processed
+TKT-1039 | 2026-01-15 | fleet    | resolved | Tyre pressure warning on HH-4407 cleared after service
+TKT-1040 | 2026-01-16 | dispatch | waiting  | Night shift handover notes are missing again
+TKT-1041 | 2026-01-18 | billing  | open     | Customer disputes the fuel surcharge on invoice 4488
+TKT-1042 | 2026-01-19 | customs  | resolved | Tariff code corrected for the Genoa shipment
+TKT-1043 | 2026-01-21 | billing  | waiting  | Partial refund agreed for the delayed Oslo consignment
+TKT-1044 | 2026-01-22 | dispatch | resolved | Route 14 rescheduled around the bridge closure
+TKT-1045 | 2026-01-24 | fleet    | open     | Tail lift on HH-4421 is intermittent
+TKT-1046 | 2026-01-25 | billing  | resolved | Credit note issued instead of a REFUND, customer accepted
+TKT-1047 | 2026-01-27 | customs  | open     | Import duty query on the Izmir load
+TKT-1048 | 2026-01-28 | dispatch | resolved | Depot key card reissued for the night dispatcher
+TKT-1049 | 2026-01-30 | billing  | open     | Third refund chase from Corvo Maritime this month
+TKT-1050 | 2026-02-01 | fleet    | resolved | Annual service booked for the whole Hamburg fleet
+TKT-1051 | 2026-02-02 | dispatch | waiting  | Customer wants a delivery window narrower than two hours
+TKT-1052 | 2026-02-04 | billing  | resolved | Invoice 4471 reissued with the corrected VAT line
+TKT-1053 | 2026-02-05 | customs  | open     | Certificate of origin rejected at Le Havre
+TKT-1054 | 2026-02-07 | billing  | open     | Refund policy question from the Valencia depot
+TKT-1055 | 2026-02-08 | fleet    | resolved | Dashcam footage pulled for the Gdansk incident
+TKT-1056 | 2026-02-09 | dispatch | open     | Two drivers double booked for the same Monday run

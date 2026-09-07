@@ -1,0 +1,161 @@
+id: find-03
+version: 1
+title: "Finding Files"
+act: act4
+
+difficulty: 4
+xp: 100
+par_commands: 5
+estimated_minutes: 10
+concepts: [find, name, type, size, mtime]
+prerequisites: [find-02]
+tags: [must-know]
+
+briefing: |
+  ## 08:40, Tuesday. Two questions from the handover meeting.
+
+  `grep` searches inside files. `find` searches **for** files, by name, by
+  type, by size, by how recently they changed. Different tool, different
+  question.
+
+  1. Somebody changed a config in the last couple of days and did not say
+     which. List every `.conf` file under `~/quest/etc` modified in the last
+     two days, into `~/quest/recent.txt`. There are configs in
+     subdirectories, so do not stop at the top level.
+  2. Something under `~/quest` is eating the disk. Find the one file larger
+     than 10 MB and put its path in `~/quest/hog.txt`.
+
+  `find` takes a place to start and then a series of tests: `-name` for the
+  filename, `-type f` for regular files, `-size` for how big, `-mtime` for
+  how many days since it changed. Order the tests however you like; they all
+  have to be true.
+
+  A warning about `-mtime`. It counts in whole 24 hour periods, so `-mtime -2`
+  means "changed less than two days ago", not "changed in the last two
+  calendar days". That distinction bites people at midnight.
+
+objectives:
+  - id: recent-configs
+    text: "recent.txt lists the .conf files changed in the last two days"
+  - id: disk-hog
+    text: "hog.txt names the one file over 10 MB"
+
+setup:
+  root: /home/learner/quest
+  script: |
+    set -e
+    mkdir -p etc/site.d etc/backup data
+
+    printf 'port=8080\nworkers=4\n'            > etc/atlas.conf
+    printf 'lane=RTM-FXT\nper_km=1.18\n'       > etc/routing.conf
+    printf 'legacy=true\n'                     > etc/legacy.conf
+    printf 'archived=2025\n'                   > etc/archive.conf
+    printf 'depot=Rotterdam\ngate=4471\n'      > etc/site.d/depot.conf
+    printf 'depot=Hamburg\ngate=4488\n'        > etc/backup/old-atlas.conf
+    printf 'Kofi: the routing file is the one that matters.\n' > etc/notes.txt
+    printf 'port=8080\nworkers=2\n'            > etc/atlas.conf.bak
+
+    # A real file rather than a sparse one. `truncate -s 11M` would satisfy
+    # find and then report as zero under `du`, which teaches the learner
+    # something false the moment they go looking for the space themselves.
+    yes 'cached tile row, regenerated on demand' | head -n 400000 > data/tile-cache.bin
+    printf 'tile index\n' > data/tile-index.txt
+
+    # Every mtime is set from a fixed offset, never from an absolute date: the
+    # level asks find a question about the last two days, so the answer has to
+    # move with the clock. Nothing sits between 40 and 56 hours, so rounding at
+    # the boundary can never change which files match.
+    touch -d '6 hours ago'   etc/atlas.conf
+    touch -d '36 hours ago'  etc/routing.conf
+    touch -d '12 hours ago'  etc/site.d/depot.conf
+    touch -d '10 days ago'   etc/legacy.conf
+    touch -d '45 days ago'   etc/archive.conf
+    touch -d '60 days ago'   etc/backup/old-atlas.conf
+    touch -d '2 hours ago'   etc/notes.txt
+    touch -d '1 hour ago'    etc/atlas.conf.bak
+
+checks:
+  - id: recent-configs
+    type: script
+    run: |
+      cd /home/learner/quest || { echo "the level directory is missing"; exit 1; }
+      if [ ! -f recent.txt ]; then
+        echo "recent.txt does not exist yet"
+        exit 1
+      fi
+      actual=$(sed -e 's|^/home/learner/quest/||' -e 's|^\./||' recent.txt \
+        | grep -v '^$' | LC_ALL=C sort)
+      expected=$(printf '%s\n' etc/atlas.conf etc/routing.conf etc/site.d/depot.conf | LC_ALL=C sort)
+      if [ "$actual" != "$expected" ]; then
+        echo "recent.txt currently names:"
+        if [ -z "$actual" ]; then echo "  (nothing)"; else echo "$actual" | sed 's/^/  /'; fi
+        exit 1
+      fi
+      exit 0
+    on_fail: >-
+      recent.txt should name three files: `etc/atlas.conf`, `etc/routing.conf`
+      and `etc/site.d/depot.conf`. Order does not matter and neither does
+      whether the paths are absolute or relative. Two files that are easy to
+      catch by mistake: `etc/notes.txt` was changed recently but is not a
+      `.conf`, and `etc/atlas.conf.bak` ends in `.bak`, so `-name '*.conf'`
+      does not match it. If you are missing the one in `site.d`, something is
+      stopping the search from going into subdirectories.
+
+  - id: disk-hog
+    any_of:
+      - type: file_content
+        path: /home/learner/quest/hog.txt
+        match: trimmed_equals
+        value: "/home/learner/quest/data/tile-cache.bin"
+        on_fail: "not the absolute path"
+      - type: file_content
+        path: /home/learner/quest/hog.txt
+        match: trimmed_equals
+        value: "data/tile-cache.bin"
+        on_fail: "not the relative path"
+      - type: file_content
+        path: /home/learner/quest/hog.txt
+        match: trimmed_equals
+        value: "./data/tile-cache.bin"
+        on_fail: "not the dot-slash form"
+    on_fail: >-
+      hog.txt should name exactly one file, the one over 10 MB. Any spelling
+      of the path is accepted. `find` writes sizes with a suffix: `-size +10M`
+      means larger than 10 megabytes, and the plus sign is what makes it
+      "larger than" rather than "exactly". Without a `-type f` you may also
+      pick up directories, and if the file is listed twice you have searched
+      two overlapping starting points.
+
+  - id: used-find-not-ls
+    severity: warn
+    type: command_not_matched
+    pattern: 'ls\s+-[a-zA-Z]*R'
+    scope: level
+    on_fail: >-
+      A recursive `ls` shows you everything and leaves the filtering to your
+      eyes. That works on ten files and fails on ten thousand. `find` does the
+      filtering itself, which is the habit worth building here.
+
+hints:
+  - cost: 5
+    text: >-
+      `find etc` on its own prints everything underneath `etc`, directories
+      included. Everything after that is narrowing it down.
+  - cost: 15
+    text: >-
+      `-name '*.conf'` keeps only the config files, and the quotes matter:
+      without them the shell expands the pattern before `find` sees it.
+      `-mtime -2` keeps only what changed in the last two days.
+  - cost: 30
+    text: >-
+      First answer: `find etc -name '*.conf' -mtime -2` redirected into
+      recent.txt. Second: `find . -type f -size +10M` redirected into hog.txt.
+  - cost: 45
+    reveal_solution: true
+
+solution: |
+  cd ~/quest
+  find etc -name '*.conf' -mtime -2 > recent.txt
+  find . -type f -size +10M > hog.txt
+
+teardown: {}

@@ -8,6 +8,11 @@ PKG         := ./cmd/shellforge
 BIN_DIR     := bin
 IMAGE_NAME  := shellforge-sandbox
 IMAGE_TAG   := dev
+# The image `author test` provisions. It is deliberately not IMAGE_NAME: the
+# golden harness tears down every level it touches, and doing that to the
+# container a learner has a level open in is not acceptable. It must be built
+# from the same Containerfile, which is what golden-image below is for.
+GOLDEN_IMAGE := shellforge-authortest
 LEVEL       ?= nav-01
 
 VERSION     := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
@@ -23,7 +28,7 @@ CONTAINER_ENGINE := $(shell command -v docker 2>/dev/null || command -v podman 2
 
 .DEFAULT_GOAL := help
 .PHONY: help build install test race fuzz cover lint fmt vet punct allowlist links arch \
-        cli labels sec vuln gosec image rootfs run golden golden-go validate clean tools ci
+        cli labels sec vuln gosec image rootfs run golden golden-image golden-go validate clean tools ci
 
 ## help: Show this help.
 help:
@@ -118,8 +123,17 @@ gosec:
 sec: vuln gosec
 
 ## image: Build the sandbox container image.
+#
+# It tags :latest as well as :dev, because those are two different consumers
+# and only one of them is this file. `shellforge run` provisions the untagged
+# $(IMAGE_NAME), which docker resolves to :latest, so an image built only as
+# :dev left the game running whatever :latest happened to hold. On this
+# machine that was three weeks old and predated the logistics group perm-02
+# needs, which is the same trap golden-image exists to close for `author
+# test`.
 image:
 	$(CONTAINER_ENGINE) build -f images/Containerfile -t $(IMAGE_NAME):$(IMAGE_TAG) images/
+	$(CONTAINER_ENGINE) tag $(IMAGE_NAME):$(IMAGE_TAG) $(IMAGE_NAME):latest
 
 ## rootfs: Export the WSL rootfs tarball from the container image.
 rootfs: image
@@ -145,12 +159,23 @@ run: build
 validate: build
 	./$(BIN_DIR)/$(BINARY) author validate packs/core-linux-basics
 
+## golden-image: Tag the sandbox image as the one `author test` provisions.
+golden-image: image
+	$(CONTAINER_ENGINE) tag $(IMAGE_NAME):$(IMAGE_TAG) $(GOLDEN_IMAGE):latest
+
 ## golden: Run the golden test for every level, through the CLI.
-golden: build
+#
+# It depends on golden-image because nothing else keeps that tag current.
+# `shellforge author test` builds $(GOLDEN_IMAGE) from the Containerfile when
+# the tag is missing, but not when it merely holds an old build, so a local
+# `make golden` used to test whatever image happened to be sitting under that
+# name. On the Day 5 content run that was a three week old one, and it
+# reported three failures that did not exist.
+golden: build golden-image
 	./$(BIN_DIR)/$(BINARY) author test --all
 
 ## golden-go: The same contract as a Go test. Needs a Linux Docker daemon.
-golden-go:
+golden-go: golden-image
 	SHELLFORGE_GOLDEN=1 go test -run '^TestEveryLevelGoldenPath$$|^TestPipe05RejectsNearMisses$$' -timeout 30m ./cmd/shellforge/...
 
 ## tools: Report the toolchain versions this repo expects.

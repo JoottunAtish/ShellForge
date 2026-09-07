@@ -287,6 +287,68 @@ func (v *validator) validatePack() {
 		}
 		seenLevel[lvl.ID] = lvl.SourceFile
 	}
+
+	v.validateRanks()
+}
+
+// validateRanks checks the rank ladder pack.yaml declares.
+//
+// The ladder is not decoration. Until the score formula lands it is the only
+// progression a learner sees, and Day 5 shipped a pack whose top rank asked
+// for 2600 XP over levels awarding 2580 in total: a learner who passed all
+// 25 on the first try with no hints finished 20 short of the last rank in
+// the game. Nothing caught it because nothing looked, and the arithmetic
+// moves every time a level is added, removed, or retuned.
+func (v *validator) validateRanks() {
+	p := v.pack
+	if len(p.Ranks) == 0 {
+		return
+	}
+
+	seen := map[string]bool{}
+	prev := 0
+	for i, r := range p.Ranks {
+		field := fmt.Sprintf("ranks[%d]", i)
+		if r.ID == "" {
+			v.errorf(packFile, "", field+".id", 0, "must not be empty")
+			continue
+		}
+		if seen[r.ID] {
+			v.errorf(packFile, "", field+".id", 0, "rank id %q is declared twice", r.ID)
+		}
+		seen[r.ID] = true
+		if r.Title == "" {
+			v.errorf(packFile, "", field+".title", 0, "must not be empty")
+		}
+
+		switch {
+		case r.MinXP < 0:
+			v.errorf(packFile, "", field+".min_xp", 0, "must not be negative, got %d", r.MinXP)
+		case i == 0 && r.MinXP != 0:
+			v.errorf(packFile, "", field+".min_xp", 0,
+				"the first rank must start at 0, got %d: a learner who has passed nothing still holds a rank, and it is this one", r.MinXP)
+		case i > 0 && r.MinXP <= prev:
+			v.errorf(packFile, "", field+".min_xp", 0,
+				"must be greater than the rank before it (%d), got %d: ranks are awarded in ascending order of cumulative XP, so a ladder that does not ascend awards the later rank never or the earlier one twice", prev, r.MinXP)
+		}
+		prev = r.MinXP
+	}
+
+	total := 0
+	for i := range p.Levels {
+		if p.Levels[i].XP > 0 {
+			total += p.Levels[i].XP
+		}
+	}
+	if top := p.Ranks[len(p.Ranks)-1]; top.MinXP > total {
+		// A warning and not an error, deliberately. The score formula is
+		// not built yet, and if it ever awards more than a level's base XP
+		// then a top rank above that base is a stretch goal rather than a
+		// mistake. Until it does, this ladder ends in a rank nobody earns.
+		v.warnf(packFile, "", "ranks",
+			"the last rank %q needs %d XP and all %d levels together award %d, so a learner who passes every one of them on the first try with no hints still falls %d short of it",
+			top.ID, top.MinXP, len(p.Levels), total, top.MinXP-total)
+	}
 }
 
 // validateLevel checks one level's own fields.
@@ -712,27 +774,43 @@ func (v *validator) validateCheckType(lvl *Level, field string, c *CheckSpec, ga
 			c.Type)
 	case journalCheckTypes[c.Type]:
 		// A legitimately optional or severity: warn journal check is exactly
-		// the shape the rule above steers an author toward, and today it is
-		// silently useless: no runtime session in this build wires a real
-		// verify.JournalReader (issue #88), so every command list this check
-		// sees is empty. That degrades into a wrong answer rather than an
-		// error, which is worse than either check type refusing to load, so
-		// this warns instead of staying quiet.
+		// the shape the rule above steers an author toward. It works for a
+		// learner: cmd_run.go wires a real journal into game.Config as of
+		// #151. It is still invisible to the golden contract, because the
+		// author test harness constructs its session without one and
+		// game.Config.Journal falls back to noJournal, which reports no
+		// commands ever. So the check runs correctly in the game and cannot
+		// be exercised before it ships, which is worth telling an author
+		// rather than leaving them to infer it from a bonus that never ticks
+		// under `author test`.
 		v.warnf(file, id, field,
-			"%s reads the command journal, and no runtime session in this build wires a real one yet (issue #88): every command list it sees is empty. %s until then. This is harmless, since a journal check may never gate passing, but the check verifies nothing yet.",
+			"%s reads the command journal, which `shellforge run` populates but `shellforge author test` does not: the golden harness builds its session without a journal, so every command list it sees there is empty and %s. The check itself is fine and works for a learner. What it cannot do is fail the golden contract, so nothing verifies it before it ships (issue #154).",
 			c.Type, journalNeverOutcome(c.Type))
+	case c.Type == "cwd_is":
+		// env_var used to draw this warning too. It no longer does: the
+		// golden harness writes the env snapshot itself after applying a
+		// solution, so env_var reads real state under `author test`.
+		// cwd_is cannot be rescued the same way. It asks where the
+		// learner's shell is, and the harness has no shell that survives
+		// between the solution and the checks, so a cd in the solution has
+		// nothing to persist in and PWD is always the directory the harness
+		// runs from.
+		v.warnf(file, id, field,
+			"cwd_is reads the working directory of the learner's interactive shell, and `shellforge author test` has none: it applies the solution in one shell and then runs the checks, so PWD is always %s and a cd in the solution leaves no trace. The check works for a real learner, but the golden contract cannot exercise it, which means nothing verifies this level before it ships.",
+			"the learner's home")
 	}
 }
 
-// journalNeverOutcome names what a journal check does today, with nothing
-// populating the journal it reads from. The two check types fail in opposite
+// journalNeverOutcome names what a journal check does under `author test`,
+// where the harness supplies no journal. The two check types fail in opposite
 // directions: command_matched can never pass, and command_not_matched can
-// never fire.
+// never fire. Under `shellforge run`, where a real journal is wired, both
+// behave normally.
 func journalNeverOutcome(checkType string) string {
 	if checkType == "command_not_matched" {
-		return "It can never fire, so the anti-pattern it warns about goes uncaught"
+		return "it can never fire there, so the anti-pattern it warns about goes uncaught"
 	}
-	return "It can never pass"
+	return "it can never pass there"
 }
 
 // validateObjectiveCorrespondence enforces the one-to-one relationship in

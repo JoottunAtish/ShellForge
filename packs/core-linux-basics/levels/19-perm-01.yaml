@@ -1,0 +1,145 @@
+id: perm-01
+version: 1
+title: "The Gatekeeper"
+act: act5
+
+difficulty: 3
+xp: 100
+par_commands: 5
+estimated_minutes: 10
+concepts: [permissions, chmod, octal, symbolic-modes]
+prerequisites: [find-04]
+tags: [must-know]
+
+briefing: |
+  ## 09:30, Wednesday. Security audit, three findings.
+
+  Run `ls -l` in `~/quest` and you get a ten character string in front of
+  every file. It is not decoration. Read it in four pieces:
+
+  ```
+  -rw-r--r--
+  ^ ---  ---  ---
+  |  |    |    |
+  |  |    |    +--  what everyone else can do
+  |  |    +-------  what the file's group can do
+  |  +------------  what the file's owner can do
+  +---------------  d for a directory, - for an ordinary file
+  ```
+
+  Each group of three is read, write, execute, in that order, and a `-` means
+  no. So `rw-` is read and write but not run, and `r-x` is read and run but
+  not change.
+
+  `chmod` changes them, and it speaks two languages. **Symbolic**:
+  `chmod u+x file` adds execute for the user who owns it, where `u` is user,
+  `g` is group, `o` is others and `a` is all. **Octal**: three digits, one per
+  group, where read is 4, write is 2 and execute is 1, added together. So
+  `rw-` is 6 and `r-x` is 5 and `chmod 640` is `rw-r-----`.
+
+  Three findings to close:
+
+  - `deploy.sh` must be readable, writable and runnable **by its owner only**.
+  - `notes.txt` must be readable by everyone and writable by nobody at all.
+  - `secrets.env` must be `600`.
+
+objectives:
+  - id: deploy-owner-only
+    text: "deploy.sh is 0700, owner only"
+  - id: notes-read-only
+    text: "notes.txt is 0444, readable by all and writable by none"
+  - id: secrets-locked
+    text: "secrets.env is 0600"
+  - id: used-symbolic
+    text: "Used symbolic notation at least once"
+    optional: true
+
+setup:
+  root: /home/learner/quest
+  files:
+    - path: deploy.sh
+      mode: "0644"
+      content: |
+        #!/bin/bash
+        # Pushes the current build to atlas. Do not run this before 19:00.
+        echo "deploying to atlas"
+    - path: notes.txt
+      mode: "0664"
+      content: |
+        Deployment notes, kept by whoever is on call.
+
+        The deploy script takes about four minutes. If it is still going after
+        ten, something is wrong and the rollback is in the runbook.
+    - path: secrets.env
+      mode: "0644"
+      content: |
+        ATLAS_DB_HOST=db.internal.example
+        ATLAS_DB_USER=atlas
+        ATLAS_DB_PASSWORD=change-me-before-go-live
+
+checks:
+  - id: deploy-owner-only
+    type: file_mode
+    path: /home/learner/quest/deploy.sh
+    mode: "0700"
+    on_fail: >-
+      deploy.sh should be `0700`: read, write and execute for the owner,
+      nothing for the group, nothing for anyone else. In symbolic terms that
+      is `u=rwx,go=`. Check it with `ls -l deploy.sh` and read the string
+      three characters at a time.
+
+  - id: notes-read-only
+    type: file_mode
+    path: /home/learner/quest/notes.txt
+    mode: "0444"
+    on_fail: >-
+      notes.txt should be `0444`: everyone can read it and nobody can write
+      it, including you. Read is 4, so all three groups are 4. Symbolically,
+      `a=r` sets all three at once. Being locked out of writing your own file
+      feels wrong the first time and is exactly what was asked for.
+
+  - id: secrets-locked
+    type: file_mode
+    path: /home/learner/quest/secrets.env
+    mode: "0600"
+    on_fail: >-
+      secrets.env should be `0600`: the owner can read and write it, and
+      nobody else can do anything at all. 6 is read plus write, and the two
+      zeros are what make it private. A credentials file that anyone on the
+      machine can read is the finding that started this audit.
+
+  - id: used-symbolic
+    type: command_matched
+    pattern: 'chmod\s+[ugoa]*[+=-]'
+    scope: level
+    on_fail: >-
+      All three modes are right, and they were all set with numbers. The
+      symbolic form is worth having as well: `chmod u+x` adds one bit without
+      needing to know or restate the other eight, which is what you want when
+      you are fixing one thing on a file somebody else set up.
+
+hints:
+  - cost: 5
+    text: >-
+      `ls -l` first. You cannot fix a permission you have not read, and the
+      string in the first column is the current state of all three groups.
+  - cost: 15
+    text: >-
+      Octal is three digits, one per group: owner, group, others. Read is 4,
+      write is 2, execute is 1, and you add them. So read plus write plus
+      execute is 7, read plus write is 6, read only is 4, and nothing is 0.
+  - cost: 30
+    text: >-
+      `chmod 700 deploy.sh` closes the first one. For notes.txt the symbolic
+      form is clearer: `chmod a=r notes.txt` sets all three groups to read and
+      clears everything else.
+  - cost: 40
+    reveal_solution: true
+
+solution: |
+  cd ~/quest
+  chmod 700 deploy.sh
+  chmod a=r notes.txt
+  chmod 600 secrets.env
+
+teardown: {}

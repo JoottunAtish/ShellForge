@@ -23,6 +23,27 @@ where neither is true. See [LEVEL-FORMAT.md](LEVEL-FORMAT.md) section 3 for
 why. Where a level below describes a required journal check, it is a bonus
 objective in the built level.
 
+**Two more were settled on Day 5, while levels 9 to 25 were written.**
+
+*Nothing in the curriculum requires `sudo`.* The image grants the learner
+passwordless sudo and the container is created with
+`--security-opt no-new-privileges`, which stops it gaining privilege, so
+`sudo` fails inside the sandbox no matter how it is invoked. That is the
+sandbox protecting the learner's own machine and it is not being traded away
+for a nicer level 20. Levels 20, 22 and 25 are therefore written so that every
+objective is reachable by an unprivileged learner, and the briefings explain
+what `sudo` is and why this box withholds it. The lesson survives intact: what
+actually blocks a beginner is reading `ls -l` and learning that a directory
+needs `+x` before anything inside it can be reached, not typing the word sudo.
+
+*Every level's world is under `/home/learner/`, including the two that describe
+a system service.* `setup.root` must resolve under `/home/learner/`, only a
+regular file may carry a non-learner `owner:`, and no check's `path` may name
+anything outside the level's own root. Levels 22 and 25 are therefore sited at
+`~/atlas` rather than `/opt/atlas` and `/var/log/atlas`, framed as Kofi's
+staging copy of the service. Issue #115 tracks whether a level may ever declare
+state outside its own root; nothing in this curriculum needs one.
+
 ---
 
 ## Act I - Orientation
@@ -31,7 +52,7 @@ objective in the built level.
 ### 1. `nav-01` - First Contact
 | | |
 |---|---|
-| Concepts | `pwd`, the prompt, filesystem root |
+| Concepts | `pwd`, the prompt, filesystem root, `~`, `>` |
 | XP / Difficulty / Par / Time | 40 / 1 / 2 / 3 min |
 
 **Briefing.** 08:15. You've been handed a terminal and no instructions. Before you can go anywhere, you need to know where you are.
@@ -44,7 +65,7 @@ objective in the built level.
 ### 2. `nav-02` - Taking Inventory
 | | |
 |---|---|
-| Concepts | `ls`, `-l`, `-a`, `-h`, hidden files |
+| Concepts | `ls`, `-l`, `-a`, `-h`, hidden files, `echo`, `>` |
 | XP / Diff / Par / Time | 50 / 1 / 3 / 5 min |
 
 **Briefing.** Kofi left files everywhere, including some he didn't want you to see immediately.
@@ -56,7 +77,7 @@ objective in the built level.
 ### 3. `nav-03` - Getting Around
 | | |
 |---|---|
-| Concepts | `cd`, absolute vs relative, `..`, `~`, `-`, `tree` |
+| Concepts | `cd`, absolute vs relative, `..`, `~`, `-`, `tree`, `>` |
 | XP / Diff / Par / Time | 60 / 2 / 5 / 6 min |
 
 **Briefing.** The warehouse records live four directories deep. Kofi's note says "third bay, second aisle". Go find it.
@@ -69,7 +90,7 @@ objective in the built level.
 ### 4. `nav-04` - The Manual  🔶 *Act I boss*
 | | |
 |---|---|
-| Concepts | `man`, `--help`, `apropos`, self-sufficiency |
+| Concepts | `man`, `--help`, `apropos`, self-sufficiency, `echo`, `>` |
 | XP / Diff / Par / Time | 90 / 2 / 4 / 8 min |
 
 **Briefing.** Kofi's last note: *"I'm not going to teach you every command. Learn to read the manual and you'll never need me."*
@@ -144,14 +165,18 @@ Concepts: stdout vs stderr, `2>`, `&>`, `/dev/null`. **80 XP / D3 / par 4 / 8 mi
 ### 12. `pipe-03` - Connecting Pipes
 Concepts: `|`, `sort`, `uniq -c`, `wc`. **90 XP / D3 / par 5 / 9 min.**
 **Objectives.** From `access.log`: produce a count of unique IP addresses into `unique_ips.txt`, and the top 3 most frequent IPs (with counts) into `top3.txt`.
-**Checks.** exact `file_content` for both · bonus `command_count_under 8`.
+**Checks.** exact `file_content` for the count · a `script` check for the top three, normalizing whitespace before comparing so that `uniq -c` padding and a hand-written `awk` answer both pass.
 **Teaching note.** `sort | uniq -c | sort -rn | head -3` is the canonical idiom - one of the highest-value one-liners in the whole curriculum.
+
+> No `command_count_under` bonus. The check type does not exist and was not worth adding: `par_commands` already drives the efficiency bonus, which is the same intent expressed through scoring rather than through a check. `access.log` is built so third and fourth place are strictly separated, because a tie would give the level two correct answers and make it reject one of them.
 
 ### 13. `pipe-04` - The Toolbelt
 Concepts: `cut`, `tr`, `tee`, `xargs`. **90 XP / D3 / par 5 / 9 min.**
 **Objectives.** From a CSV: extract column 3 into `emails.txt`, lowercase it, and simultaneously write the result to both `emails.txt` and the screen using a single pipeline.
-**Checks.** `file_content` exact · `command_matched tee` (this one *is* the skill).
+**Checks.** `file_content` exact · bonus `command_matched tee`.
 **Teaching note.** One of the few places a syntax check is legitimate - `tee` is the objective, not the output.
+
+> It is still a journal check, and a journal check may never gate passing, so `tee` is a bonus objective and the exact content of `emails.txt` is what decides the level. The CSV ships without a header row, so `cut -d, -f3` is the whole extraction.
 
 ### 14. `pipe-05` - The Log Sifter  🔶 *Act III boss*
 Concepts: full pipeline composition. **150 XP / D4 / par 6 / 15 min.**
@@ -183,7 +208,7 @@ Concepts: `find`, `-name`, `-type`, `-size`, `-mtime`. **100 XP / D4 / par 5 / 1
 **Teaching note.** Setup must set mtimes explicitly with `touch -d` so the level is deterministic regardless of when it's played.
 
 ### 18. `find-04` - Search and Destroy  🔶 *Act IV boss*
-Concepts: `find -exec`, `find | xargs`, combining search with action. **160 XP / D4 / par 5 / 15 min.**
+Concepts: `find -exec`, `find | xargs`, `$( )` command substitution, combining search with action. **160 XP / D4 / par 5 / 15 min.**
 **Objectives.** Delete every `.tmp` file anywhere under `data/` (nested up to 5 deep); make every `.sh` file under `scripts/` executable; count how many files you touched → `touched.txt`.
 **Checks.** no `.tmp` remains anywhere · `file_mode` on 8 scripts · non-`.sh` files unchanged · count correct.
 **Teaching note.** The `-exec {} \;` syntax is genuinely hard. Hint tier 3 should show the shape: `find ... -exec cmd {} \;`.
@@ -201,23 +226,29 @@ Concepts: `ls -l` anatomy, `chmod` symbolic and octal. **100 XP / D3 / par 5 / 1
 
 ### 20. `perm-02` - Chain of Command
 Concepts: users, groups, `chown`, `sudo`, `id`. **110 XP / D4 / par 5 / 10 min.**
-**Objectives.** A file owned by `root` must be transferred to `learner`; add `learner` to the `logistics` group; verify with `id`.
-**Checks.** `file_owner` · `group_membership` · bonus `command_matched ^\s*id`.
-**Teaching note.** First forced `sudo`. Briefing explains *why* it fails without sudo before they try - permission errors are demoralizing when unexplained.
+**Objectives.** Regroup `ledger.csv`, which the learner owns, into the `logistics` group and make that group able to write it; record their own memberships into `groups.txt`; take a copy they own of a root-owned handover note they can read and cannot write.
+**Checks.** `file_owner` with a group · `file_mode` accepting any group-writable mode · a `script` comparing `id -nG` as a set · a `script` running `cmp` against the original, plus `file_owner` on the copy · bonus `command_matched ^\s*id`.
+**Teaching note.** Ownership and groups, without privilege. The briefing explains what `sudo` is and why this box refuses it, so a learner who has read about it elsewhere is not left confused.
+
+> Rebuilt from the sudo decision above. The root-owned file is a `setup.files` entry with `owner: "root:root"`, which is the one shape the format allows, and teardown can still unlink it because unlinking needs write and execute on the parent directory rather than ownership of the file. The learner joins `logistics` at image build time, because a user may `chgrp` only to a group they already belong to and an empty group makes the objective unreachable. `group_membership` does not exist as a check type; it is a `script`.
 
 ### 21. `proc-01` - Process Control
-Concepts: `ps aux`, `kill`, signals, `&`, `jobs`, `fg`, `nohup`. **120 XP / D4 / par 6 / 12 min.**
+Concepts: `ps aux`, `pgrep`, `kill`, signals, `&`, `jobs`, `fg`, `nohup`, `$( )`. **120 XP / D4 / par 6 / 12 min.**
 **Objectives.** A runaway process `atlas-indexer` is eating CPU - find its PID, write it to `pid.txt`, and terminate it. Then start `heartbeat.sh` in the background so it survives your shell.
-**Checks.** `process_not_running atlas-indexer` · `file_content pid.txt` matches actual PID · `process_running heartbeat.sh`.
+**Checks.** `process_running` with `negate: true` · a `script` comparing `pid.txt` against the pid the indexer recorded · `process_running heartbeat.sh`.
 **Teaching note.** Setup launches the fake runaway process; its PID differs per attempt, so the check must resolve it dynamically - a good stress test for the `script` check type.
+
+> The pid has to be recorded somewhere while the process is alive and it cannot be recorded outside `setup.root`, so the indexer writes `.indexer.pid` inside the level root. A learner who runs `ls -a` finds the answer without `ps`. That is an accepted trade: the alternative is a check that cannot verify the pid at all, and `ls -a` is a skill nav-02 taught. Both scripts sleep rather than spin and the heartbeat writes nothing, because a busy loop would peg a core on every machine that plays the level and a writing heartbeat would change the level's world while the checks are running. `process_not_running` does not exist as a check type; it is `negate: true`.
 
 ### 22. `perm-03` - Lockout  🔶 *Act V boss (break/fix)*
 Concepts: diagnosing permission failures under pressure. **180 XP / D5 / par 8 / 18 min.**
 **Briefing.** 03:12. The nightly job hasn't run in three days. Kofi "fixed" something before he left.
-**The break.** `/opt/atlas/run.sh` is not executable; its parent dir lacks `+x` (so nothing inside can be traversed); the log dir is owned by root so the job can't write; and a config file is `000`.
-**Objectives.** Get `/opt/atlas/run.sh` to execute successfully as `learner` and produce output in `/var/log/atlas/nightly.log`.
+**The break.** `~/atlas/bin/run.sh` is not executable; `~/atlas/bin` lacks `+x` (so nothing inside can be traversed); `~/atlas/var/log/atlas` is mode `0555` so the job can't write; and `~/atlas/etc/atlas.conf` is `000`.
+**Objectives.** Get `~/atlas/bin/run.sh` to execute successfully as `learner` and produce output in `~/atlas/var/log/atlas/nightly.log`.
 **Checks.** `script` check that literally runs the job as `learner` and asserts exit 0 + log written. **Multiple valid fixes all pass** - this is the point.
 **Teaching note.** The best level in the game. No step-by-step objectives; just "make it work". The directory-`+x`-for-traversal trap is the thing nobody teaches and everybody needs.
+
+> Sited under `~/atlas` rather than `/opt/atlas`, per the containment convention above, and the log directory is unwritable by mode rather than owned by root, per the sudo one. An unwritable directory fails the job in exactly the same way a root-owned one would and is fixed with the same command, so all four faults and the traversal trap survive the change. `run.sh` rewrites its report with `>` and fixed content, because the golden contract hashes the level's world before and after running the checks and this level's check runs the job: an appending log or a timestamp in it would fail the purity assertion rather than the level. Teardown restores the modes before the runner's `rm -rf`, because a directory the level deliberately left untraversable is one the learner cannot empty.
 
 ---
 
@@ -241,15 +272,17 @@ Concepts: everything. **300 XP / D5 / par 15 / 30 min.**
 **Briefing.** 03:04. Your phone is ringing. `atlas` is not serving orders. You have no runbook. Kofi is unreachable. Fix it.
 
 **The break (five faults, discoverable in any order):**
-1. Disk "full" - a runaway 2 GB log in `/var/log/atlas/` must be found and truncated.
+1. Disk "full" - a runaway 14 MB log in `~/atlas/var/log/atlas/` must be found and emptied.
 2. The service script lost its `+x` bit.
 3. A config file has a typo (`prot=8080` instead of `port=8080`) discoverable only by grepping the error log.
 4. A stale PID file blocks startup.
 5. A cron entry is malformed so the cleanup job never ran (root cause of #1).
 
-**Objectives.** (1) `atlas-health` reports `OK`. (2) Disk usage under threshold. (3) Cron entry valid. (4) Write a post-mortem to `~/postmortem.txt` naming all five root causes (checked with `file_content contains` × 5 keyword sets).
+**Objectives.** (1) `atlas-health` reports `OK`. (2) The runaway log is under a byte threshold. (3) Cron entry valid. (4) Write a post-mortem to `~/atlas/postmortem.txt` naming all five root causes.
 
-**Checks.** One `script` check running `atlas-health` · `disk_usage_under` · `cron_entry_exists` · 5 keyword checks on the post-mortem.
+**Checks.** One `script` check running `atlas-health` · a `script` reading `stat -c %s` · a `script` parsing the crontab line · the post-mortem as one objective composed of five keyword tests under `all_of`, three of them `any_of` pairs.
+
+> Sited under `~/atlas`, per the containment convention. 14 MB rather than 2 GB, and real bytes rather than `truncate -s 2G`: a sparse file satisfies any size test and then reports as zero under `du`, which teaches a learner something false the moment they go looking for the space. The cron fault is a text file under the level's own root, checked as text, because no cron daemon runs in the sandbox and a level that waited for a job to fire would hang; the learner still counts four time fields where five belong. `disk_usage_under` and `cron_entry_exists` do not exist as check types.
 
 **Teaching note.** The post-mortem objective is deliberate: it forces the learner to *articulate* what they did, which is the actual skill the job requires. It's also the emotional payoff - they write the document that proves they can do this now.
 

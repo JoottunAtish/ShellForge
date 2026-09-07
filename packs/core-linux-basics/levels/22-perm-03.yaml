@@ -1,0 +1,140 @@
+id: perm-03
+version: 1
+title: "Lockout"
+act: act5
+boss: true
+
+difficulty: 5
+xp: 180
+par_commands: 8
+estimated_minutes: 18
+concepts: [permissions, directory-traversal, debugging, chmod]
+prerequisites: [proc-01]
+tags: [must-know, debugging]
+
+briefing: |
+  ## 03:12, Friday. The nightly job has not run in three days.
+
+  Finance noticed. Nobody else did.
+
+  The job lives in `~/atlas`. It is Kofi's staging copy of the service, which
+  is where he tested things before pushing them to the real server, and it is
+  the only copy anybody can find. He changed something in it on his last day.
+
+  ```
+  ~/atlas/bin/run.sh              the job
+  ~/atlas/etc/atlas.conf          what it reads
+  ~/atlas/var/log/atlas/          where it writes
+  ```
+
+  **Make the job run and produce its log.** That is the whole ticket. There
+  is no checklist for this one, because at 03:12 nobody hands you a
+  checklist: you run the thing, read what it says, fix what it complains
+  about, and run it again.
+
+  Everything in that tree belongs to you, so everything wrong with it is
+  something `chmod` can fix. There is more than one thing wrong, and fixing
+  one uncovers the next.
+
+  One idea you have not needed yet, and will need now. On a **directory**,
+  the execute bit does not mean "run it". It means "go through it". Without
+  it you cannot reach anything inside, no matter what the permissions on
+  those things are, and the error you get talks about the file you asked for
+  rather than the directory that actually blocked you. That is the single
+  most confusing permission problem in Linux and you are about to have it.
+
+objectives:
+  - id: job-runs
+    text: "bin/run.sh runs cleanly and writes var/log/atlas/nightly.log"
+
+setup:
+  root: /home/learner/atlas
+  files:
+    - path: bin/run.sh
+      source: assets/atlas-run.sh
+      mode: "0644"
+    - path: etc/atlas.conf
+      source: assets/atlas.conf
+      mode: "0000"
+    - path: etc/README
+      content: |
+        Config for the nightly consolidation. Kofi locked this down after the
+        incident in November and never told anybody what he changed.
+  script: |
+    set -e
+    mkdir -p var/log/atlas
+
+    # The log directory is unwritable rather than owned by somebody else. A
+    # root owned directory is not expressible in the level format, and this
+    # sandbox refuses privilege escalation, so an unprivileged learner could
+    # not fix one anyway. Unwritable by mode fails the job in exactly the same
+    # way and is fixed with the same command.
+    chmod 0555 var/log/atlas
+
+    # Last, because once bin/ cannot be traversed, nothing else in it can be
+    # touched either. That is the point of the level.
+    chmod 0644 bin
+
+checks:
+  - id: job-runs
+    type: script
+    run: |
+      cd /home/learner/atlas || { echo "the level directory is missing"; exit 1; }
+      if ! output=$(./bin/run.sh 2>&1); then
+        echo "the job still will not run. It said:"
+        echo "$output" | sed 's/^/  /'
+        exit 1
+      fi
+      if [ ! -s var/log/atlas/nightly.log ]; then
+        echo "the job exited cleanly and wrote nothing to var/log/atlas/nightly.log"
+        exit 1
+      fi
+      exit 0
+    on_fail: >-
+      The nightly job is not running to completion yet. Run `./bin/run.sh`
+      yourself and read the error, then run `ls -l` on whatever it named and
+      on the directory holding it. Four things are wrong and they surface one
+      at a time: a permission denied on a script usually means the script is
+      not executable, and a "no such file or directory" for a file you can
+      see with `ls` usually means the directory it is in cannot be traversed.
+
+hints:
+  - cost: 10
+    text: >-
+      Run it. `cd ~/atlas` then `./bin/run.sh`, and read the message rather
+      than guessing. Then run `ls -l` and `ls -ld` on the thing it named.
+      `ls -ld bin` shows you the directory itself rather than its contents,
+      which is the view you need here.
+  - cost: 25
+    text: >-
+      A directory needs its execute bit before anything inside it can be
+      reached. A script needs its own execute bit before it can be run. Those
+      are two separate fixes and the first one hides the second.
+  - cost: 45
+    text: >-
+      Four fixes, in an order that works: `chmod u+x bin`, then
+      `chmod u+x bin/run.sh`, then run it and see what it says about the
+      config, then about the log directory. `chmod u+r etc/atlas.conf` and
+      `chmod u+w var/log/atlas` are the other two.
+  - cost: 70
+    reveal_solution: true
+
+solution: |
+  cd ~/atlas
+  chmod u+x bin
+  chmod u+x bin/run.sh
+  chmod u+r etc/atlas.conf
+  chmod u+w var/log/atlas
+  ./bin/run.sh
+
+teardown:
+  script: |
+    set -e
+    # This level deliberately leaves a directory the learner cannot write and
+    # one they cannot traverse. rm -rf runs as the learner and cannot empty
+    # either of them, so the modes come back first. Guarded, because teardown
+    # also runs before setup, when there is nothing here at all.
+    if [ -d /home/learner/atlas ]; then
+      chmod -R u+rwX /home/learner/atlas || true
+    fi
+    exit 0

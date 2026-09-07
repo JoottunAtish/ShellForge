@@ -5,7 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
+	"path"
 	"strings"
 
 	"github.com/JoottunAtish/ShellForge/internal/runtime"
@@ -36,8 +36,16 @@ type Snapshots struct {
 
 // envSnapshotPath is the file instrument.bash writes with `env -0 >
 // env.snapshot`.
+//
+// path.Join and not filepath.Join. This names a file inside the sandbox,
+// which is always Linux, while filepath.Join follows the host's separator:
+// on Windows it produced \home\learner\.shellforge\env.snapshot, which no
+// `cat` in the container will ever open. The read then failed the only way
+// Snapshots can fail, so env_var and cwd_is reported "the shell has not
+// reported its state yet" on every Windows host no matter what the shell had
+// actually reported.
 func (s Snapshots) envSnapshotPath() string {
-	return filepath.Join(s.Dir, "env.snapshot")
+	return path.Join(s.Dir, "env.snapshot")
 }
 
 // Env reads and parses env.snapshot, which instrument.bash writes with

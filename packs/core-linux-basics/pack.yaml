@@ -3,10 +3,10 @@
 # Schema: docs/LEVEL-FORMAT.md
 # Level designs: docs/CURRICULUM.md
 #
-# The act structure below is the plan of record. The level YAML files under
-# levels/ are written on Day 2 (levels 1 to 8) and Day 5 (levels 9 to 25).
-# `shellforge author validate` will report any id listed here without a matching
-# file, which is the intended signal while the pack is being filled in.
+# The act structure below is the plan of record, and as of Day 5 every id in it
+# has a level file under levels/. `shellforge author validate` reports any id
+# listed here without a matching file, which was the signal while the pack was
+# being filled in and is now the signal that somebody deleted one.
 
 id: core-linux-basics
 name: "Meridian Logistics: Atlas"
@@ -69,9 +69,17 @@ acts:
     levels: [env-01, script-01, boss-final]
 
 # Ranks awarded by cumulative XP. Displayed by `shellforge stats`.
+#
+# Base XP over all 25 levels is 2580. Wizard was 2600, which meant a learner
+# who passed every level on the first try without a single hint finished 20 XP
+# short of the last rank in the game. Scoring is issue #125 and may add bonuses
+# on top later; tuning the threshold to exactly 2580 would still be wrong,
+# because hint costs subtract and a top rank only a flawless run reaches is a
+# top rank nobody reaches. 2400 leaves room for a strong run that took a few
+# hints.
 ranks:
   - { id: novice,     title: "Novice",     min_xp: 0 }
   - { id: apprentice, title: "Apprentice", min_xp: 300 }
   - { id: operator,   title: "Operator",   min_xp: 800 }
   - { id: sysadmin,   title: "Sysadmin",   min_xp: 1600 }
-  - { id: wizard,     title: "Wizard",     min_xp: 2600 }
+  - { id: wizard,     title: "Wizard",     min_xp: 2400 }
