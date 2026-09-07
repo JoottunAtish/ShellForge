@@ -438,3 +438,126 @@ func (s *Store) TotalXP(ctx context.Context, profileID int64, packID string) (in
 	}
 	return xp, nil
 }
+
+// AddHintUsed increments level_state.hints_used by one for profileID's
+// record of levelID, creating the row if there is not one yet.
+//
+// It is called the moment the learner confirms a hint, not when the level
+// ends. Charging on take is what makes the ladder mean something: a learner
+// who takes three hints and abandons the level has still spent them when
+// they come back, and the tier they are offered on re-entry is the one
+// after the last they paid for.
+//
+// It deliberately does NOT touch the attempt row. FinishAttempt folds its
+// own Attempt.HintsUsed into this same column, so a caller that uses this
+// method must pass zero there or the same hint is counted twice. The
+// orchestrator does exactly that, and says so at the call site.
+//
+// TODO(v0.2): the consequence is that attempt.hints_used stays zero for
+// every attempt. Nothing reads that column today. Recording it needs either
+// a second counter that FinishAttempt writes without folding, or a
+// FinishAttempt that takes "already recorded" as a flag; both are a change
+// to a tested contract that this is not the ticket for.
+func (s *Store) AddHintUsed(ctx context.Context, profileID int64, packID, levelID string, levelVersion int) error {
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO level_state (profile_id, level_id, pack_id, level_version, status, hints_used)
+		VALUES (?, ?, ?, ?, 'in_progress', 1)
+		ON CONFLICT(profile_id, level_id) DO UPDATE SET
+			hints_used = hints_used + 1`,
+		profileID, levelID, packID, levelVersion,
+	); err != nil {
+		return fmt.Errorf("record a hint taken on level %q: %w", levelID, err)
+	}
+	return nil
+}
+
+// Achievement is one profile's record of one achievement.
+//
+// UnlockedAt is the zero time.Time when the achievement is not yet earned,
+// never the unix epoch: this package's own rule, shared with LevelState's
+// FirstPassedAt. Progress is whatever the rule that owns this key last
+// stored, which is a rule-private counter and means nothing outside it.
+type Achievement struct {
+	Key        string
+	UnlockedAt time.Time
+	Progress   float64
+}
+
+// Unlocked reports whether this achievement has been earned.
+func (a Achievement) Unlocked() bool { return !a.UnlockedAt.IsZero() }
+
+// Achievements returns every achievement row recorded for profileID, keyed
+// by achievement key. A profile with no rows returns an empty map and no
+// error, which is what a fresh install looks like.
+func (s *Store) Achievements(ctx context.Context, profileID int64) (map[string]Achievement, error) {
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT key, unlocked_at, progress FROM achievement WHERE profile_id = ?", profileID)
+	if err != nil {
+		return nil, fmt.Errorf("read achievements for profile %d: %w", profileID, err)
+	}
+	defer rows.Close()
+
+	out := make(map[string]Achievement)
+	for rows.Next() {
+		var (
+			key        string
+			unlockedAt sql.NullInt64
+			progress   sql.NullFloat64
+		)
+		if err := rows.Scan(&key, &unlockedAt, &progress); err != nil {
+			return nil, fmt.Errorf("scan an achievement row for profile %d: %w", profileID, err)
+		}
+		out[key] = Achievement{
+			Key:        key,
+			UnlockedAt: timeFromNullable(unlockedAt),
+			Progress:   progress.Float64,
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read achievements for profile %d: %w", profileID, err)
+	}
+	return out, nil
+}
+
+// SaveProgress records an achievement rule's private counter, creating the
+// row if there is not one yet. It never clears unlocked_at: a counter that
+// keeps rising after the achievement was earned must not un-earn it.
+func (s *Store) SaveProgress(ctx context.Context, profileID int64, key string, progress float64) error {
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO achievement (profile_id, key, progress) VALUES (?, ?, ?)
+		ON CONFLICT(profile_id, key) DO UPDATE SET progress = excluded.progress`,
+		profileID, key, progress,
+	); err != nil {
+		return fmt.Errorf("save progress for achievement %q: %w", key, err)
+	}
+	return nil
+}
+
+// Unlock marks an achievement earned at time at, and reports whether this
+// call is the one that earned it.
+//
+// The bool is what makes an unlock happen exactly once. A second call, in
+// this session or after a restart, writes nothing and returns false, so a
+// caller can publish its "you earned this" event on the true and never
+// announce the same badge twice. The single UPDATE's WHERE clause is what
+// decides it, so two callers racing cannot both see true.
+func (s *Store) Unlock(ctx context.Context, profileID int64, key string, at time.Time) (bool, error) {
+	if _, err := s.db.ExecContext(ctx,
+		"INSERT OR IGNORE INTO achievement (profile_id, key) VALUES (?, ?)",
+		profileID, key,
+	); err != nil {
+		return false, fmt.Errorf("create the row for achievement %q: %w", key, err)
+	}
+
+	res, err := s.db.ExecContext(ctx,
+		"UPDATE achievement SET unlocked_at = ? WHERE profile_id = ? AND key = ? AND unlocked_at IS NULL",
+		nullableUnix(at), profileID, key)
+	if err != nil {
+		return false, fmt.Errorf("unlock achievement %q: %w", key, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("read whether achievement %q was already unlocked: %w", key, err)
+	}
+	return n == 1, nil
+}
