@@ -393,7 +393,12 @@ jobs:
             # empty logistics group makes that objective unreachable by any
             # unprivileged command, which would surface as a level nobody can
             # pass rather than as a build failure.
-            id -nG learner | tr ' ' '\n' | grep -qx logistics || { echo "MISSING: learner is not in the logistics group"; exit 1; }
+            # Double quotes, not single. This whole script is already inside a
+            # single-quoted `bash -lc '...'`, so a nested single quote ends it
+            # and tr receives mangled arguments. That is what happened: the
+            # assertion failed with "tr: missing operand" on every run, which
+            # reads as a broken image rather than as a broken test.
+            id -nG learner | tr " " "\n" | grep -qx logistics || { echo "MISSING: learner is not in the logistics group"; exit 1; }
             # SF_STATE default: writable by learner, not under /opt/shellforge.
             # This shell is already the learner: the image declares USER
             # learner and learner has no password, so su would only ever
