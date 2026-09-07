@@ -97,7 +97,7 @@ func parsePlayArgs(args []string) (playOptions, error) {
 			return opts, ux.Fail(
 				"work out which level to play",
 				nil,
-				fmt.Sprintf("You named more than one level (%q and %q). Name just one, or run `shellforge play` on its own to carry on where you left off.", opts.LevelID, a),
+				fmt.Sprintf("You named more than one level (%q and %q). Name one of them, or run `shellforge play` on its own to carry on where you left off.", opts.LevelID, a),
 				"",
 			)
 		default:
@@ -146,7 +146,13 @@ func runPlay(ctx context.Context, out io.Writer, opts playOptions) error {
 		return nil
 	}
 
-	fmt.Fprintf(out, "Next: %s, %s.\n%s\n", choice.ID, choice.Title, reason)
+	fmt.Fprintf(out, "Next: %s, %s.\n", choice.ID, choice.Title)
+	if reason != "" {
+		// Empty for a level that is in the pack but listed in no act, which
+		// a half-written pack produces. Printing the blank line anyway would
+		// look like something failed to render.
+		fmt.Fprintln(out, reason)
+	}
 	if opts.DryRun {
 		return nil
 	}
