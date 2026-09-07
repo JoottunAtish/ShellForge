@@ -189,9 +189,13 @@ switch ($Target.ToLowerInvariant()) {
         Invoke-Step 'gosec' { go run github.com/securego/gosec/v2/cmd/gosec@latest -quiet ./... }
     }
 
+    # Tags :latest as well as :dev. `shellforge run` provisions the untagged
+    # $Image, which docker resolves to :latest, so an image built only as :dev
+    # left the game running whatever :latest happened to hold.
     'image' {
         $engine = Get-ContainerEngine
         Invoke-Step "image ($engine)" { & $engine build -f images/Containerfile -t "${Image}:${Tag}" images/ }
+        Invoke-Step 'tag' { & $engine tag "${Image}:${Tag}" "${Image}:latest" }
     }
 
     'rootfs' {

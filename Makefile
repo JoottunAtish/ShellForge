@@ -123,8 +123,17 @@ gosec:
 sec: vuln gosec
 
 ## image: Build the sandbox container image.
+#
+# It tags :latest as well as :dev, because those are two different consumers
+# and only one of them is this file. `shellforge run` provisions the untagged
+# $(IMAGE_NAME), which docker resolves to :latest, so an image built only as
+# :dev left the game running whatever :latest happened to hold. On this
+# machine that was three weeks old and predated the logistics group perm-02
+# needs, which is the same trap golden-image exists to close for `author
+# test`.
 image:
 	$(CONTAINER_ENGINE) build -f images/Containerfile -t $(IMAGE_NAME):$(IMAGE_TAG) images/
+	$(CONTAINER_ENGINE) tag $(IMAGE_NAME):$(IMAGE_TAG) $(IMAGE_NAME):latest
 
 ## rootfs: Export the WSL rootfs tarball from the container image.
 rootfs: image
