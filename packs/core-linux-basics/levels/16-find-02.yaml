@@ -1,0 +1,200 @@
+id: find-02
+version: 1
+title: "Deep Search"
+act: act4
+
+difficulty: 4
+xp: 100
+par_commands: 5
+estimated_minutes: 10
+concepts: [grep-recursive, files-with-matches, regex, character-classes]
+prerequisites: [find-01]
+tags: [must-know, security]
+
+briefing: |
+  ## 14:30, Monday. Security have been reading the code.
+
+  They say there is an API key written straight into a source file somewhere
+  under `~/quest/src`, and they want to know which file before they say
+  anything to the customer.
+
+  The key looks like sixteen characters of capital letters and digits, in a
+  row, and nothing else. They do not know its value and neither do you.
+
+  You need **the name of the file**, not the line. Put it in
+  `~/quest/leak.txt`, on its own.
+
+  Two new pieces. `grep` can walk a whole directory tree instead of reading
+  one file, and it can print the names of the files that matched instead of
+  the matching lines. For the pattern itself, `[A-Z0-9]` means one character
+  that is a capital or a digit, and `{16}` after it means sixteen of them.
+  That is extended regular expression syntax, which `grep` needs a flag to
+  turn on.
+
+objectives:
+  - id: leak-located
+    text: "leak.txt names the one file holding the key"
+  - id: used-files-with-matches
+    text: "Found it with the files-with-matches flag"
+    optional: true
+
+setup:
+  root: /home/learner/quest
+  files:
+    - path: src/api/routes.py
+      content: |
+        from api.auth import require_token
+
+
+        def register(app):
+            app.route("/api/v1/manifests", require_token(list_manifests))
+            app.route("/api/v1/shipments", require_token(list_shipments))
+            app.route("/health", health)
+
+
+        def health(request):
+            return {"status": "ok"}
+    - path: src/api/auth.py
+      content: |
+        import os
+
+
+        def token():
+            # Read it from the environment. Never from the source.
+            return os.environ.get("ATLAS_API_KEY", "")
+
+
+        def require_token(handler):
+            def wrapped(request):
+                if request.header("X-Atlas-Key") != token():
+                    return {"error": "forbidden"}, 403
+                return handler(request)
+            return wrapped
+    - path: src/billing/invoices.py
+      content: |
+        VAT_RATE = 0.21
+
+
+        def total(lines):
+            net = sum(line.amount for line in lines)
+            return round(net * (1 + VAT_RATE), 2)
+    - path: src/billing/rates.py
+      content: |
+        LANES = {
+            "RTM-FXT": 1.18,
+            "HAM-GDN": 0.97,
+            "OSL-GOT": 1.42,
+        }
+
+
+        def per_km(lane):
+            return LANES.get(lane, 1.50)
+    - path: src/dispatch/planner.py
+      content: |
+        from billing.rates import per_km
+
+
+        def plan(runs):
+            return sorted(runs, key=lambda run: per_km(run.lane) * run.km)
+    - path: src/dispatch/legacy/oldsync.py
+      content: |
+        # Kofi's old depot sync. Superseded by planner.py, still scheduled
+        # nightly because nobody has dared turn it off.
+        import urllib.request
+
+        ENDPOINT = "https://atlas.internal.example/v1/depots"
+
+
+        def sync():
+            request = urllib.request.Request(ENDPOINT)
+            request.add_header("X-Atlas-Key", ATLAS_API_KEY)
+            return urllib.request.urlopen(request).read()
+    - path: src/config/settings.py
+      content: |
+        PORT = 8080
+        WORKERS = 4
+        LOG_LEVEL = "info"
+        DEPOT_TIMEZONE = "UTC"
+    - path: src/config/logging.py
+      content: |
+        FORMAT = "%(asctime)s %(levelname)s %(message)s"
+        HANDLERS = ["stdout", "file"]
+        FILE_PATH = "/var/log/atlas/atlas.log"
+  script: |
+    set -e
+    # The key is assembled here rather than committed. A sixteen character
+    # literal in the repository is the thing the asset rules exist to stop,
+    # even a synthetic one, because a secret scanner cannot tell the
+    # difference and neither can a reader in a hurry.
+    first='QX7R2L9M'
+    second='K4T8V1ZB'
+    printf '\n# TODO: move this into the vault before go live\nATLAS_API_KEY = "%s%s"\n' \
+      "$first" "$second" >> src/dispatch/legacy/oldsync.py
+
+checks:
+  - id: leak-located
+    any_of:
+      - type: file_content
+        path: /home/learner/quest/leak.txt
+        match: trimmed_equals
+        value: "/home/learner/quest/src/dispatch/legacy/oldsync.py"
+        on_fail: "not the absolute path"
+      - type: file_content
+        path: /home/learner/quest/leak.txt
+        match: trimmed_equals
+        value: "src/dispatch/legacy/oldsync.py"
+        on_fail: "not the path relative to the level directory"
+      - type: file_content
+        path: /home/learner/quest/leak.txt
+        match: trimmed_equals
+        value: "./src/dispatch/legacy/oldsync.py"
+        on_fail: "not the dot-slash form"
+      - type: file_content
+        path: /home/learner/quest/leak.txt
+        match: trimmed_equals
+        value: "dispatch/legacy/oldsync.py"
+        on_fail: "not the path relative to src/"
+    on_fail: >-
+      leak.txt should hold the path of the one file with the key in it, and
+      nothing else. Any spelling of that path is accepted: absolute, relative
+      to `~/quest`, or with a leading `./`. If your file holds a whole line of
+      source code, you found the right thing and captured the wrong part of
+      it: there is a flag that prints the filenames rather than the matching
+      lines. If it is empty, the search never reached the subdirectories, or
+      the pattern is being read as a plain string rather than as an extended
+      regular expression.
+
+  - id: used-files-with-matches
+    type: command_matched
+    pattern: 'grep[^|]*-[a-zA-Z]*l'
+    scope: level
+    on_fail: >-
+      You have the answer. The flag worth remembering here is the one that
+      makes `grep` print each matching file's name once, instead of every
+      matching line: on a tree with a thousand hits, that is the difference
+      between an answer and a screen full of scrolling.
+
+hints:
+  - cost: 5
+    text: >-
+      `grep` takes a directory if you tell it to look inside one, and the flag
+      for that is the same letter as "recursive". Try it with an easy pattern
+      first, like `grep -r Atlas src`, to see the shape of what comes back.
+  - cost: 15
+    text: >-
+      Output looks like `filename:the matching line`. There is a flag that
+      prints only the filename, once per file. `man grep` calls it
+      files-with-matches.
+  - cost: 30
+    text: >-
+      The pattern is `[A-Z0-9]{16}` and it needs `-E` to be read as an
+      extended regular expression. Put that together with the recursive flag
+      and the files-with-matches flag and redirect the result into leak.txt.
+  - cost: 45
+    reveal_solution: true
+
+solution: |
+  cd ~/quest
+  grep -rlE '[A-Z0-9]{16}' src > leak.txt
+
+teardown: {}

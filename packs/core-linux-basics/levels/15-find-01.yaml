@@ -1,0 +1,102 @@
+id: find-01
+version: 1
+title: "Finding Words"
+act: act4
+
+difficulty: 3
+xp: 80
+par_commands: 4
+estimated_minutes: 7
+concepts: [grep, case-insensitive, line-numbers, invert-match]
+prerequisites: [pipe-05]
+tags: [must-know, text-processing]
+
+briefing: |
+  ## 11:05, Monday. Billing wants numbers by lunchtime.
+
+  `~/quest/support-tickets.txt` is every ticket raised since the new year, one
+  per line. Twenty six of them. Billing has two questions and neither of them
+  is worth reading twenty six lines by eye, let alone the four thousand you
+  will have next quarter.
+
+  1. Every ticket that mentions a refund, **with its line number**, into
+     `~/quest/refunds.txt`. Whoever typed these was not consistent about
+     capitals, so `refund`, `Refund` and `REFUND` all count.
+  2. How many tickets are **not** resolved. Just the number, into
+     `~/quest/open_count.txt`.
+
+  `grep` prints the lines that match a pattern. It has a flag for ignoring
+  case, a flag for showing line numbers, a flag for counting instead of
+  printing, and a flag for inverting the match so you get the lines that do
+  **not** contain the pattern. All four are in `man grep`, and you have read
+  a manual before.
+
+objectives:
+  - id: refunds-listed
+    text: "refunds.txt holds the seven refund tickets with their line numbers"
+  - id: open-counted
+    text: "open_count.txt holds the number of tickets that are not resolved"
+
+setup:
+  root: /home/learner/quest
+  files:
+    - path: support-tickets.txt
+      source: assets/support-tickets.txt
+
+checks:
+  - id: refunds-listed
+    type: file_content
+    path: /home/learner/quest/refunds.txt
+    match: trimmed_equals
+    value: |-
+      2:TKT-1032 | 2026-01-05 | billing  | open     | Customer asking for a refund on invoice 4471
+      4:TKT-1034 | 2026-01-08 | billing  | waiting  | REFUND request from Northwind Freight, needs manager sign off
+      8:TKT-1038 | 2026-01-14 | billing  | open     | Refund promised on the phone but never processed
+      13:TKT-1043 | 2026-01-21 | billing  | waiting  | Partial refund agreed for the delayed Oslo consignment
+      16:TKT-1046 | 2026-01-25 | billing  | resolved | Credit note issued instead of a REFUND, customer accepted
+      19:TKT-1049 | 2026-01-30 | billing  | open     | Third refund chase from Corvo Maritime this month
+      24:TKT-1054 | 2026-02-07 | billing  | open     | Refund policy question from the Valencia depot
+    on_fail: >-
+      refunds.txt should hold the seven matching tickets, each one prefixed by
+      its line number and a colon, in the order they appear in the file. If
+      you got four instead of seven, the search is case sensitive and the
+      capitalised spellings slipped past. If the lines are there without the
+      numbers in front, the flag that adds them is missing.
+
+  - id: open-counted
+    type: file_content
+    path: /home/learner/quest/open_count.txt
+    match: trimmed_equals
+    value: "14"
+    on_fail: >-
+      open_count.txt should hold one number: how many tickets do not have
+      `resolved` on their line. `grep` has a flag that inverts the match, so
+      it prints the lines that do not contain the pattern, and another that
+      counts matches instead of printing them. They combine. Counting the
+      resolved ones instead gives 12, and the whole file is 26.
+
+hints:
+  - cost: 5
+    text: >-
+      `grep refund support-tickets.txt` is the starting point. Run it and
+      count what comes back, then look at the file and count the ones it
+      missed. That difference is what the case flag is for.
+  - cost: 15
+    text: >-
+      `-i` ignores case. `-n` puts the line number in front of each match.
+      `-v` inverts the match. `-c` counts instead of printing. Flags can be
+      combined behind a single dash.
+  - cost: 30
+    text: >-
+      The first answer is `grep -in refund` on the file, redirected into
+      refunds.txt. The second is `grep` with the inverting flag and the
+      counting flag together, looking for `resolved`.
+  - cost: 40
+    reveal_solution: true
+
+solution: |
+  cd ~/quest
+  grep -in refund support-tickets.txt > refunds.txt
+  grep -vc resolved support-tickets.txt > open_count.txt
+
+teardown: {}
