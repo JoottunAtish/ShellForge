@@ -1,0 +1,8 @@
+#!/bin/bash
+# Meridian Logistics: one line of service status.
+#
+# Reads ATLAS_ENV so that a check run against production is distinguishable
+# from one run against staging at a glance, which is the entire reason the
+# variable exists.
+
+printf 'atlas: up, environment %s\n' "${ATLAS_ENV:-unset}"

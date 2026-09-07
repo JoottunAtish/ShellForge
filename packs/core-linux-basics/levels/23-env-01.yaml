@@ -1,0 +1,179 @@
+id: env-01
+version: 1
+title: "The Environment"
+act: act6
+
+difficulty: 4
+xp: 110
+par_commands: 6
+estimated_minutes: 12
+concepts: [environment-variables, export, path, bashrc, which]
+prerequisites: [perm-03]
+tags: [must-know]
+
+briefing: |
+  ## 10:00, Monday. Second week. Stop typing the full path.
+
+  Every program you run inherits a set of named values called the
+  **environment**. `printenv` prints all of them. Two matter today.
+
+  `ATLAS_ENV` tells our tools which system they are pointed at. Nothing sets
+  it on this machine, so everything defaults to guessing.
+
+  `PATH` is the list of directories the shell searches when you type a command
+  name. That is the whole mechanism: `ls` works because `/usr/bin` is on
+  `PATH`. `~/toolbox/bin/atlas-status` does not work by its bare name because
+  `~/toolbox/bin` is not.
+
+  Three things:
+
+  1. Set `ATLAS_ENV` to `production` in this shell, so that programs you start
+     from it can see it. `export NAME=value` is how.
+  2. Add `~/toolbox/bin` to `PATH` so that typing `atlas-status` on its own
+     runs it.
+  3. Make **both** survive. Everything you export in a shell dies with that
+     shell. `~/.bashrc` is a file bash reads every time it starts an
+     interactive shell, so a line added there happens every time.
+
+  The third one is the whole point. "Set now" and "set always" are different
+  things, and the difference is invisible until you open a new terminal and
+  everything you configured is gone.
+
+objectives:
+  - id: env-persists
+    text: "ATLAS_ENV is production in a brand new shell"
+  - id: path-persists
+    text: "atlas-status runs by its bare name in a brand new shell"
+  - id: used-export
+    text: "Set it with export rather than editing a file by hand only"
+    optional: true
+
+setup:
+  root: /home/learner/toolbox
+  files:
+    - path: bin/atlas-status
+      source: assets/atlas-status
+      mode: "0755"
+    - path: README
+      content: |
+        Kofi's toolbox. Small scripts that never made it into the deploy.
+
+        atlas-status  one line saying whether atlas is up, and which
+                      environment it thinks it is pointed at
+  script: |
+    set -e
+    # ~/.bashrc lives outside this level's root, so an edit to it would
+    # survive teardown and follow the learner into every later level. The
+    # backup goes inside the root, and teardown puts it back before the
+    # rm -rf that removes it: the runner runs teardown.script first and
+    # deletes the root second, which is what makes this safe.
+    #
+    # If there is no ~/.bashrc at all, the backup is an empty file and
+    # teardown restores an empty one. That is deliberate: the alternative is
+    # a teardown that deletes a file in the learner's home, which is exactly
+    # what the rule about never removing anything outside setup.root exists
+    # to prevent. The shipped image always has one, from /etc/skel, so this
+    # branch is a safety net rather than a path anybody takes.
+    if [ -f "$HOME/.bashrc" ]; then
+      cp "$HOME/.bashrc" .bashrc.orig
+    else
+      : > .bashrc.orig
+    fi
+
+checks:
+  - id: env-persists
+    type: script
+    run: |
+      home=$(getent passwd learner | cut -d: -f6)
+      if [ -z "$home" ]; then
+        echo "cannot work out the learner's home directory, which is a bug in the level"
+        exit 1
+      fi
+      value=$(HOME="$home" bash -ic 'printf "%s" "$ATLAS_ENV"' 2>/dev/null)
+      if [ "$value" != "production" ]; then
+        echo "a brand new shell sees ATLAS_ENV as: ${value:-nothing at all}"
+        exit 1
+      fi
+      exit 0
+    on_fail: >-
+      A shell started fresh does not see `ATLAS_ENV=production`. Exporting it
+      here sets it here, and only until this shell exits. To make it happen
+      every time, the same `export` line has to be in `~/.bashrc`, which bash
+      reads when it starts an interactive shell. Check your work by starting
+      one: type `bash`, then `echo $ATLAS_ENV`, then `exit`.
+
+  - id: path-persists
+    type: script
+    run: |
+      home=$(getent passwd learner | cut -d: -f6)
+      if [ -z "$home" ]; then
+        echo "cannot work out the learner's home directory, which is a bug in the level"
+        exit 1
+      fi
+      found=$(HOME="$home" bash -ic 'command -v atlas-status' 2>/dev/null | tr -d '[:space:]')
+      if [ "$found" != "/home/learner/toolbox/bin/atlas-status" ]; then
+        echo "a brand new shell resolves atlas-status to: ${found:-nothing at all}"
+        exit 1
+      fi
+      exit 0
+    on_fail: >-
+      A shell started fresh cannot find `atlas-status` by name. `PATH` is a
+      list of directories separated by colons, and the usual way to add one is
+      to rebuild the variable from itself:
+      `export PATH="$HOME/toolbox/bin:$PATH"`. Putting the new directory first
+      means it is searched first. As with the variable above, the line has to
+      be in `~/.bashrc` to happen every time. `command -v atlas-status` tells
+      you which one the shell would run, or nothing if it cannot find it.
+
+  - id: used-export
+    type: command_matched
+    pattern: '^\s*export\s+ATLAS_ENV'
+    scope: level
+    on_fail: >-
+      Both settings persist, and the shell you are sitting in may not have
+      picked them up: `~/.bashrc` is read when a shell starts, not when the
+      file changes. `export ATLAS_ENV=production` applies it here and now,
+      which is the half you want while you are still working.
+
+hints:
+  - cost: 5
+    text: >-
+      `printenv` shows the whole environment and `echo $PATH` shows the search
+      list on its own. `export NAME=value` sets one for this shell and for
+      anything it starts.
+  - cost: 15
+    text: >-
+      To add to `PATH` rather than replace it, mention the old value in the
+      new one: `export PATH="$HOME/toolbox/bin:$PATH"`. Leaving out the
+      `:$PATH` part removes every directory you already had, and the shell
+      stops being able to find `ls`.
+  - cost: 30
+    text: >-
+      Both `export` lines also need to go at the end of `~/.bashrc`, which you
+      can do with `nano ~/.bashrc` or by appending with `>>`. Quote the PATH
+      line with single quotes if you append it, so that `$HOME` and `$PATH`
+      are written literally rather than expanded as you write them.
+  - cost: 45
+    reveal_solution: true
+
+solution: |
+  cd ~/toolbox
+  export ATLAS_ENV=production
+  export PATH="$HOME/toolbox/bin:$PATH"
+  {
+    echo 'export ATLAS_ENV=production'
+    echo 'export PATH="$HOME/toolbox/bin:$PATH"'
+  } >> ~/.bashrc
+  atlas-status
+
+teardown:
+  script: |
+    set -e
+    # Teardown runs with the learner's home as its working directory, and it
+    # runs before every setup as well as after the level, so the backup may
+    # not exist yet. Restoring before the runner's rm -rf is what keeps an
+    # edit to ~/.bashrc from following the learner into the next level.
+    if [ -f toolbox/.bashrc.orig ]; then
+      cp toolbox/.bashrc.orig .bashrc
+    fi
+    exit 0

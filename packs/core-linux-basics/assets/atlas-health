@@ -1,0 +1,31 @@
+#!/bin/bash
+# Meridian Logistics: is atlas serving orders?
+#
+# Prints OK and exits 0 when everything it knows how to check is in order, and
+# prints the first thing it found wrong otherwise. Read only throughout.
+
+here="$(cd "$(dirname "$0")/.." && pwd)"
+service="$here/bin/atlas-service"
+pidfile="$here/run/atlas.pid"
+
+fail() {
+    echo "FAIL: $1"
+    exit 1
+}
+
+if [ ! -x "$service" ]; then
+    fail "bin/atlas-service is not executable, so nothing can start it"
+fi
+
+if [ -e "$pidfile" ]; then
+    pid=$(tr -d '[:space:]' < "$pidfile" 2>/dev/null)
+    if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+        fail "run/atlas.pid claims atlas is running as process $pid, and it is not. A stale pid file stops the next start."
+    fi
+fi
+
+if ! output=$("$service" --check 2>&1); then
+    fail "atlas-service --check says: $output"
+fi
+
+echo "OK"
