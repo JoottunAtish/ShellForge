@@ -439,8 +439,14 @@ func (s *Store) TotalXP(ctx context.Context, profileID int64, packID string) (in
 	return xp, nil
 }
 
-// AddHintUsed increments level_state.hints_used by one for profileID's
-// record of levelID, creating the row if there is not one yet.
+// AddHintsUsed adds n to level_state.hints_used for profileID's record of
+// levelID, creating the row if there is not one yet. An n at or below zero
+// writes nothing.
+//
+// It takes a count rather than incrementing by one because a single act can
+// spend more than one tier: revealing a level's solution buys every tier
+// below it in one go, and recording that as one hint would let the learner
+// re-buy the tiers they had already paid for on their next attempt.
 //
 // It is called the moment the learner confirms a hint, not when the level
 // ends. Charging on take is what makes the ladder mean something: a learner
@@ -458,15 +464,18 @@ func (s *Store) TotalXP(ctx context.Context, profileID int64, packID string) (in
 // a second counter that FinishAttempt writes without folding, or a
 // FinishAttempt that takes "already recorded" as a flag; both are a change
 // to a tested contract that this is not the ticket for.
-func (s *Store) AddHintUsed(ctx context.Context, profileID int64, packID, levelID string, levelVersion int) error {
+func (s *Store) AddHintsUsed(ctx context.Context, profileID int64, packID, levelID string, levelVersion, n int) error {
+	if n <= 0 {
+		return nil
+	}
 	if _, err := s.db.ExecContext(ctx, `
 		INSERT INTO level_state (profile_id, level_id, pack_id, level_version, status, hints_used)
-		VALUES (?, ?, ?, ?, 'in_progress', 1)
+		VALUES (?, ?, ?, ?, 'in_progress', ?)
 		ON CONFLICT(profile_id, level_id) DO UPDATE SET
-			hints_used = hints_used + 1`,
-		profileID, levelID, packID, levelVersion,
+			hints_used = hints_used + excluded.hints_used`,
+		profileID, levelID, packID, levelVersion, n,
 	); err != nil {
-		return fmt.Errorf("record a hint taken on level %q: %w", levelID, err)
+		return fmt.Errorf("record %d hints taken on level %q: %w", n, levelID, err)
 	}
 	return nil
 }

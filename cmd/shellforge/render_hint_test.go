@@ -13,10 +13,18 @@ import (
 // orchestrator. It keeps the one property the replies are written against:
 // peeking is free and taking is not.
 type fakeHinter struct {
-	tiers     []game.Tier
-	taken     int
-	hasReveal bool
-	takeErr   error
+	tiers []game.Tier
+	taken int
+
+	// revealIdx is the 1-based tier that reveals the solution, or zero when
+	// the level authored none. It is NOT assumed to be the last tier: a
+	// level may mark any tier reveal_solution, and a reveal bought in the
+	// middle of a ladder leaves ordinary tiers above it. That case is
+	// exactly where "no reveal tier" and "already revealed" stop being
+	// distinguishable by asking whether an ordinary tier remains.
+	revealIdx int
+
+	takeErr error
 
 	peeks int
 	takes int
@@ -29,19 +37,31 @@ func newFakeHinter() *fakeHinter {
 			{Index: 2, Cost: 10, Total: 3, Text: "Have a look at ls -la /srv."},
 			{Index: 3, Cost: 20, Total: 3, Text: "Here is the whole thing.", Reveals: true, Solution: "grep -c ERROR /srv/app.log"},
 		},
-		hasReveal: true,
+		revealIdx: 3,
 	}
 }
+
+// newMidLadderRevealHinter is a level whose reveal tier is the second of
+// three, so buying it leaves tier 3 still on offer.
+func newMidLadderRevealHinter() *fakeHinter {
+	h := newFakeHinter()
+	h.tiers[2].Reveals, h.tiers[2].Solution = false, ""
+	h.tiers[1].Reveals, h.tiers[1].Solution = true, "grep -c ERROR /srv/app.log"
+	h.revealIdx = 2
+	return h
+}
+
+func (f *fakeHinter) HasReveal() bool { return f.revealIdx != 0 }
 
 func (f *fakeHinter) PeekHint(reveal bool) (game.Tier, bool) {
 	f.peeks++
 	if reveal {
-		if !f.hasReveal || f.taken >= len(f.tiers) {
+		if f.revealIdx == 0 || f.taken >= f.revealIdx {
 			return game.Tier{}, false
 		}
-		tier := f.tiers[len(f.tiers)-1]
+		tier := f.tiers[f.revealIdx-1]
 		cost := 0
-		for _, t := range f.tiers[f.taken:] {
+		for _, t := range f.tiers[f.taken:f.revealIdx] {
 			cost += t.Cost
 		}
 		tier.Cost = cost
@@ -61,7 +81,7 @@ func (f *fakeHinter) TakeHint(_ context.Context, reveal bool) (game.Tier, error)
 	tier, ok := f.PeekHint(reveal)
 	f.peeks-- // the peek inside a take is not a learner peeking
 	if !ok {
-		if reveal && !f.hasReveal {
+		if reveal && f.revealIdx == 0 {
 			return game.Tier{}, game.ErrNoRevealTier
 		}
 		return game.Tier{}, game.ErrLadderExhausted
@@ -143,7 +163,7 @@ func TestHintRevealYesPrintsTheAuthoredSolutionVerbatim(t *testing.T) {
 
 func TestHintRevealIsRefusedOnALevelWithNoRevealTier(t *testing.T) {
 	h := newFakeHinter()
-	h.hasReveal = false
+	h.revealIdx = 0
 
 	for _, args := range []string{"--reveal", "--reveal --yes"} {
 		got := hintReply(t, h, args)
@@ -217,5 +237,45 @@ func TestHintRepliesHaveNoEscapeSequenceWithColourOff(t *testing.T) {
 		if strings.Contains(got, "\x1b[") {
 			t.Errorf("%q: reply contains an escape sequence with colour off:\n%q", args, got)
 		}
+	}
+}
+
+// --- regressions found in review ---
+
+// A reveal tier that sits in the middle of a ladder, already bought, with
+// ordinary tiers still above it. Asking "is an ordinary tier available"
+// cannot tell that apart from "this level has no reveal tier", which is the
+// exact conflation the ladder is written to avoid.
+func TestARevealAlreadyBoughtIsNotReportedAsNoRevealTier(t *testing.T) {
+	// The reveal tier is the second of three and has been bought, so tier 3
+	// is still on offer. Asking "is an ordinary tier available" answers yes
+	// here, which is why that question cannot stand in for "did this level
+	// author a reveal tier".
+	h := newMidLadderRevealHinter()
+	h.taken = 2
+
+	got := hintReply(t, h, "--reveal")
+	if strings.Contains(got, "does not offer to reveal") {
+		t.Errorf("a level that authored a reveal tier was reported as having none:\n%s", got)
+	}
+	if !strings.Contains(got, "already revealed") {
+		t.Errorf("reply does not say the solution was already revealed:\n%s", got)
+	}
+	if !strings.Contains(got, "nothing was spent") {
+		t.Errorf("reply does not say nothing was spent:\n%s", got)
+	}
+}
+
+// The other half: a level that genuinely authored no reveal tier still gets
+// the "does not offer" sentence, whether or not ordinary tiers remain.
+func TestNoRevealTierIsReportedAsSuchEvenWithTiersRemaining(t *testing.T) {
+	h := newFakeHinter()
+	h.revealIdx = 0
+	h.tiers[2].Reveals, h.tiers[2].Solution = false, ""
+	h.taken = 1 // tiers 2 and 3 still on offer
+
+	got := hintReply(t, h, "--reveal")
+	if !strings.Contains(got, "does not offer to reveal") {
+		t.Errorf("a level with no reveal tier was not reported as such:\n%s", got)
 	}
 }

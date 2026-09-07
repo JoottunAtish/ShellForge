@@ -294,8 +294,8 @@ func TestPeekHintSpendsNothing(t *testing.T) {
 		}
 	}
 
-	if progress.addHintUsedCalls != 0 {
-		t.Errorf("AddHintUsed was called %d times by PeekHint, want 0", progress.addHintUsedCalls)
+	if progress.addHintsUsedCalls != 0 {
+		t.Errorf("AddHintsUsed was called %d times by PeekHint, want 0", progress.addHintsUsedCalls)
 	}
 	if o.HintsTaken() != 0 {
 		t.Errorf("HintsTaken() = %d after peeking, want 0", o.HintsTaken())
@@ -317,8 +317,8 @@ func TestTakeHintSpendsOneTierAndPublishesOnce(t *testing.T) {
 	if tier.Index != 1 || tier.Cost != 5 {
 		t.Errorf("tier = %+v, want tier 1 at 5 XP", tier)
 	}
-	if progress.addHintUsedCalls != 1 {
-		t.Errorf("AddHintUsed was called %d times, want 1", progress.addHintUsedCalls)
+	if progress.addHintsUsedCalls != 1 {
+		t.Errorf("AddHintsUsed was called %d times, want 1", progress.addHintsUsedCalls)
 	}
 	if o.State() != StateActive {
 		t.Errorf("State() = %q after taking a hint, want %q", o.State(), StateActive)
@@ -381,12 +381,12 @@ func TestTakeHintPastTheLastTierSpendsNothing(t *testing.T) {
 			t.Fatalf("TakeHint %d: %v", i, err)
 		}
 	}
-	before := progress.addHintUsedCalls
+	before := progress.addHintsUsedCalls
 
 	if _, err := o.TakeHint(ctx, false); !errors.Is(err, ErrLadderExhausted) {
 		t.Errorf("TakeHint past the end = %v, want ErrLadderExhausted", err)
 	}
-	if progress.addHintUsedCalls != before {
+	if progress.addHintsUsedCalls != before {
 		t.Error("a refused take still recorded a hint")
 	}
 }
@@ -456,7 +456,7 @@ func TestTakeHintIsRefusedOutsideActive(t *testing.T) {
 // the learner is not charged for something they did not receive.
 func TestTakeHintSpendsNothingWhenTheStoreRefusesIt(t *testing.T) {
 	o, _, rec, progress := startedOrchestrator(t, passingResult(0))
-	progress.addHintUsedErr = errors.New("database is locked")
+	progress.addHintsUsedErr = errors.New("database is locked")
 
 	if _, err := o.TakeHint(context.Background(), false); err == nil {
 		t.Fatal("TakeHint succeeded despite the store refusing to record it")
@@ -471,5 +471,165 @@ func TestTakeHintSpendsNothingWhenTheStoreRefusesIt(t *testing.T) {
 		if _, ok := ev.(bus.HintTaken); ok {
 			t.Error("a failed hint published HintTaken")
 		}
+	}
+}
+
+// --- regressions found in review ---
+
+// A reveal spends every tier below it, and the store has to hear about all
+// of them. Recording one hint would let the learner re-buy, on their next
+// attempt, tiers they had already paid for, and would leave the score
+// subtracting a fraction of what was actually spent.
+func TestRevealingRecordsEveryTierItSpent(t *testing.T) {
+	o, _, _, progress := startedOrchestrator(t, passingResult(0))
+
+	if _, err := o.TakeHint(context.Background(), true); err != nil {
+		t.Fatalf("TakeHint(reveal): %v", err)
+	}
+
+	if progress.addHintsUsedCalls != 1 {
+		t.Errorf("AddHintsUsed was called %d times, want 1", progress.addHintsUsedCalls)
+	}
+	if progress.addHintsUsedTotal != 3 {
+		t.Errorf("AddHintsUsed recorded %d hints, want 3: a reveal buys every tier below it", progress.addHintsUsedTotal)
+	}
+	if progress.levelState.HintsUsed != 3 {
+		t.Errorf("level_state.hints_used = %d, want 3", progress.levelState.HintsUsed)
+	}
+}
+
+// The same property from the other side: after a reveal and a restart, the
+// ladder must be finished rather than offering tiers the learner bought.
+func TestRevealingSurvivesARestartWithNothingLeftToBuy(t *testing.T) {
+	lvl := scoredLevel()
+	progress := newFakeProgress()
+	ctx := context.Background()
+
+	s1, v1, _ := newTestSession(t, Config{Level: lvl})
+	v1.result = passingResult(0)
+	first, _, _ := newTestOrchestrator(t, s1, progress)
+	if err := first.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := first.TakeHint(ctx, true); err != nil {
+		t.Fatalf("TakeHint(reveal): %v", err)
+	}
+	if err := first.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	s2, v2, _ := newTestSession(t, Config{Level: lvl})
+	v2.result = passingResult(0)
+	second, _, _ := newTestOrchestrator(t, s2, progress)
+	if err := second.Start(ctx); err != nil {
+		t.Fatalf("Start (second session): %v", err)
+	}
+
+	if _, ok := second.PeekHint(false); ok {
+		tier, _ := second.PeekHint(false)
+		t.Errorf("after revealing and restarting, tier %d is on offer again; the whole ladder was already paid for", tier.Index)
+	}
+	if got := second.HintsTaken(); got != 3 {
+		t.Errorf("HintsTaken() = %d after a restart, want 3", got)
+	}
+}
+
+// The reveal cost quoted to the learner is what the scorer subtracts, even
+// across a restart. This is the end to end version of the count above.
+func TestARevealSubtractsEveryTierItChargedFor(t *testing.T) {
+	o, _, _, _ := startedOrchestrator(t, passingResult(0))
+	ctx := context.Background()
+
+	quoted, ok := o.PeekHint(true)
+	if !ok {
+		t.Fatal("PeekHint(reveal) reported nothing available")
+	}
+	if quoted.Cost != 35 {
+		t.Fatalf("the reveal was quoted at %d XP, want 35", quoted.Cost)
+	}
+	if _, err := o.TakeHint(ctx, true); err != nil {
+		t.Fatalf("TakeHint(reveal): %v", err)
+	}
+	if _, err := o.Check(ctx); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+
+	// 66 without hints, minus the 35 that was quoted, floors nowhere.
+	if got := o.Score().Total; got != 31 {
+		t.Errorf("Score().Total = %d, want 31 (breakdown %+v)", got, o.Score().Breakdown)
+	}
+}
+
+// A skipped level replayed and abandoned must not be downgraded to
+// in_progress: that re-locks every level the skip was unblocking, and
+// strands the learner behind a level they had decided to move past.
+func TestAbandoningAReplayDoesNotDowngradeASkippedLevel(t *testing.T) {
+	s, verifier, _ := newTestSession(t, Config{Level: scoredLevel()})
+	verifier.result = passingResult(0)
+	progress := newFakeProgress()
+	progress.levelState.Status = store.StatusSkipped
+	o, _, _ := newTestOrchestrator(t, s, progress)
+
+	ctx := context.Background()
+	if err := o.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := o.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if len(progress.setLevelStatusArgs) != 1 || progress.setLevelStatusArgs[0] != store.StatusSkipped {
+		t.Errorf("SetLevelStatus calls = %v, want exactly one restoring %q", progress.setLevelStatusArgs, store.StatusSkipped)
+	}
+}
+
+// The restore must not fire for a status nobody earned. in_progress is this
+// attempt's own doing, and writing it back would be a no-op that muddies
+// what the restore is for.
+func TestAbandoningDoesNotRestoreAStatusNobodyEarned(t *testing.T) {
+	for _, status := range []store.LevelStatus{store.StatusInProgress, store.StatusAvailable, store.StatusLocked} {
+		t.Run(string(status), func(t *testing.T) {
+			s, verifier, _ := newTestSession(t, Config{Level: scoredLevel()})
+			verifier.result = passingResult(0)
+			progress := newFakeProgress()
+			progress.levelState.Status = status
+			o, _, _ := newTestOrchestrator(t, s, progress)
+
+			ctx := context.Background()
+			if err := o.Start(ctx); err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			if err := o.Close(ctx); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+			if len(progress.setLevelStatusArgs) != 0 {
+				t.Errorf("SetLevelStatus was called %v for prior status %q, want not at all", progress.setLevelStatusArgs, status)
+			}
+		})
+	}
+}
+
+func TestHasRevealDistinguishesAnAuthoredTierFromASpentOne(t *testing.T) {
+	o, _, _, _ := startedOrchestrator(t, passingResult(0))
+	if !o.HasReveal() {
+		t.Fatal("HasReveal() = false on a level that authored a reveal tier")
+	}
+	if _, err := o.TakeHint(context.Background(), true); err != nil {
+		t.Fatalf("TakeHint(reveal): %v", err)
+	}
+	if !o.HasReveal() {
+		t.Error("HasReveal() = false after the tier was spent; the level still authored one")
+	}
+
+	lvl := scoredLevel()
+	lvl.Hints[2].RevealSolution = false
+	s, v, _ := newTestSession(t, Config{Level: lvl})
+	v.result = passingResult(0)
+	bare, _, _ := newTestOrchestrator(t, s, newFakeProgress())
+	if err := bare.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if bare.HasReveal() {
+		t.Error("HasReveal() = true on a level that authored no reveal tier")
 	}
 }

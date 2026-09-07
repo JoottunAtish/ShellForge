@@ -78,3 +78,35 @@ func TestGameResponderHintPointsAtBriefTruthfully(t *testing.T) {
 		t.Errorf("hint points at `brief` for the objectives, but brief does not show them:\n%q", brief)
 	}
 }
+
+// --- regressions found in review ---
+
+// JournalSink.Drain's contract is "before a check and once at teardown".
+// Only the check half was wired, so every command after the learner's last
+// check was lost: from the events table, from commands_used, and from the
+// achievements that count commands. A learner who never typed check at all
+// recorded nothing whatsoever.
+//
+// Asserted against the source, because observing it needs a sandbox: what
+// matters is that Teardown drains BEFORE it closes, since Close is what
+// reads the command count for the last time and the Orchestrator stops
+// counting the moment it is closed.
+func TestTeardownDrainsTheJournalBeforeClosingTheAttempt(t *testing.T) {
+	src := readSource(t, "level_adapters.go")
+
+	body := src[strings.Index(src, "func (g *gameLevel) Teardown("):]
+	body = body[:strings.Index(body, "\n}")]
+
+	drain := strings.Index(body, "drainJournal")
+	close := strings.Index(body, "orch.Close")
+
+	if drain < 0 {
+		t.Fatal("gameLevel.Teardown does not drain the journal, so every command after the last check is lost")
+	}
+	if close < 0 {
+		t.Fatal("gameLevel.Teardown does not close the attempt")
+	}
+	if drain > close {
+		t.Error("Teardown closes the attempt before draining, so the last commands are counted by nothing")
+	}
+}

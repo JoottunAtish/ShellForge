@@ -228,6 +228,36 @@ func TestInLevelVerbsSayWhereTheyLive(t *testing.T) {
 	}
 }
 
+// The flags these verbs advertise belong inside a level, and cobra knows
+// none of them. Leaving flag parsing on turned `shellforge hint --reveal`,
+// which is that command's own usage line, into "unknown flag" instead of
+// the guidance the command exists to print.
+func TestInLevelVerbsDoNotChokeOnTheirOwnFlags(t *testing.T) {
+	cases := [][]string{
+		{"hint", "--reveal"},
+		{"hint", "--yes"},
+		{"hint", "--reveal", "--yes"},
+		{"reset", "--yes"},
+	}
+
+	for _, args := range cases {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			root := NewRootCommand(VersionInfo{})
+			_, err := execCommand(t, root, args...)
+			if err == nil {
+				t.Fatalf("shellforge %s: expected an error, there is no level in play", strings.Join(args, " "))
+			}
+			assertUserFacing(t, err)
+			if strings.Contains(err.Error(), "unknown flag") {
+				t.Errorf("cobra rejected the verb's own advertised flag instead of explaining where the verb lives: %v", err)
+			}
+			if !strings.Contains(remediationOf(t, err), "shellforge play") {
+				t.Errorf("the message does not name the command that starts a level: %s", remediationOf(t, err))
+			}
+		})
+	}
+}
+
 func TestVersionCommandPrintsBuildInfo(t *testing.T) {
 	root := NewRootCommand(VersionInfo{Version: "v0.1.0-test", Commit: "abc123", BuildDate: "2026-08-12"})
 	out, err := execCommand(t, root, "version")

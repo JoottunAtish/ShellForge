@@ -78,9 +78,10 @@ type Progress interface {
 	// LevelState reads back a profile's recorded progress on a level.
 	LevelState(ctx context.Context, profileID int64, levelID string, levelVersion int) (store.LevelState, bool, error)
 
-	// AddHintUsed records one hint spent, at the moment the learner
-	// confirms it rather than when the level ends.
-	AddHintUsed(ctx context.Context, profileID int64, packID, levelID string, levelVersion int) error
+	// AddHintsUsed records n hints spent, at the moment the learner
+	// confirms them rather than when the level ends. A reveal spends every
+	// tier below it, so n is not always one.
+	AddHintsUsed(ctx context.Context, profileID int64, packID, levelID string, levelVersion, n int) error
 }
 
 // OrchestratorConfig is everything NewOrchestrator needs. Session, Bus and
@@ -143,19 +144,21 @@ type Orchestrator struct {
 	// score.Inputs.FirstTry together with checkCount.
 	attemptNo int
 
-	// wasPassed records whether the learner had already passed this level
-	// before this attempt opened.
+	// priorStatus is what the learner's record of this level said before
+	// this attempt opened.
 	//
 	// It exists to undo a downgrade rather than to grant anything.
 	// store.FinishAttempt writes in_progress on an abandoned outcome, so
-	// replaying a level already passed and then walking away would take the
-	// pass back. PROGRESS.md recorded that as deferred to "scoring, which
-	// this ticket puts out of scope"; this is that ticket, and Close is
-	// where the status is restored. The fix lives here rather than in
-	// FinishAttempt because preserving a best-known status across
-	// re-attempts is orchestrator policy, which is exactly what the store
-	// said it was declining to decide.
-	wasPassed bool
+	// replaying a level and walking away would take back whatever the
+	// learner had already earned on it. That matters for a pass, and it
+	// matters just as much for a skip: a skipped level downgraded to
+	// in_progress re-locks everything the skip was unblocking. PROGRESS.md
+	// recorded the pass half as deferred to "scoring, which this ticket
+	// puts out of scope"; this is that ticket, and Close restores either.
+	// The fix lives here rather than in FinishAttempt because preserving a
+	// best-known status across re-attempts is orchestrator policy, which is
+	// exactly what the store said it was declining to decide.
+	priorStatus store.LevelStatus
 
 	// commands counts the CommandExecuted events published for this
 	// attempt. It only ever adds an efficiency bonus and can never make a
@@ -386,7 +389,10 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 		return fmt.Errorf("read level state for %q before starting an attempt: %w", lvl.ID, err)
 	}
 	o.mu.Lock()
-	o.wasPassed = priorOK && prior.Status == store.StatusPassed
+	o.priorStatus = ""
+	if priorOK {
+		o.priorStatus = prior.Status
+	}
 	o.ladder = NewLadder(lvl, prior.HintsUsed)
 	o.commands = 0
 	o.scored = score.Result{}
@@ -562,6 +568,14 @@ func (o *Orchestrator) Check(ctx context.Context) (verify.LevelResult, error) {
 	return result, nil
 }
 
+// restorableStatus reports whether a status is one this attempt must not be
+// allowed to take away. Passed and skipped are both things the learner
+// earned on an earlier attempt; every other status is either this attempt's
+// own or means nothing was earned.
+func restorableStatus(status store.LevelStatus) bool {
+	return status == store.StatusPassed || status == store.StatusSkipped
+}
+
 // countOptionalPassed counts the bonus objectives the learner satisfied,
 // which is score.Inputs.OptionalHit.
 func countOptionalPassed(objectives []verify.ObjectiveResult) int {
@@ -642,7 +656,7 @@ func (o *Orchestrator) Close(ctx context.Context) error {
 	o.transition(StateTeardown)
 	attemptID := o.attemptID
 	passed := o.passed
-	wasPassed := o.wasPassed
+	priorStatus := o.priorStatus
 	awarded := o.scored.Total
 	commandsUsed := o.commands
 	o.mu.Unlock()
@@ -673,14 +687,19 @@ func (o *Orchestrator) Close(ctx context.Context) error {
 	}
 
 	// Undo the downgrade, if there is one to undo. FinishAttempt writes
-	// in_progress for an abandoned outcome, which would take back a pass
-	// the learner earned on an earlier attempt merely because they replayed
-	// the level and walked away. best_score and first_passed_at survive on
-	// their own; the status does not, so it is put back here.
+	// in_progress for an abandoned outcome, which would take back whatever
+	// the learner had already earned on this level merely because they
+	// replayed it and walked away. best_score and first_passed_at survive
+	// on their own; the status does not, so it is put back here.
+	//
+	// Both earned statuses are restored, not only a pass. A skipped level
+	// downgraded to in_progress re-locks every level the skip was
+	// unblocking, which strands a learner behind a level they had already
+	// decided to move past.
 	var restoreErr error
-	if attemptID != 0 && !passed && wasPassed {
-		if err := o.progress.SetLevelStatus(ctx, o.profileID, o.packID, lvl.ID, lvl.Version, store.StatusPassed); err != nil {
-			restoreErr = fmt.Errorf("restore the recorded pass on level %q: %w", lvl.ID, err)
+	if attemptID != 0 && !passed && restorableStatus(priorStatus) {
+		if err := o.progress.SetLevelStatus(ctx, o.profileID, o.packID, lvl.ID, lvl.Version, priorStatus); err != nil {
+			restoreErr = fmt.Errorf("restore the recorded %s status on level %q: %w", priorStatus, lvl.ID, err)
 		}
 	}
 
@@ -720,6 +739,19 @@ func (o *Orchestrator) HintsTaken() int {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return o.ladder.Taken()
+}
+
+// HasReveal reports whether this level authored a tier that reveals the
+// solution, whether or not it has been taken.
+//
+// It exists so a caller can tell "this level has no solution tier" from
+// "you have already revealed it", which are different things to say to a
+// learner and would otherwise both arrive as PeekHint returning false.
+// Legal from every state, and never mutates.
+func (o *Orchestrator) HasReveal() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.ladder.HasReveal()
 }
 
 // PeekHint returns what the next hint would cost, or what revealing the
@@ -791,13 +823,20 @@ func (o *Orchestrator) TakeHint(ctx context.Context, reveal bool) (Tier, error) 
 		return Tier{}, ErrLadderExhausted
 	}
 
+	// How many tiers this take actually spends. Ordinary tiers spend one;
+	// the reveal tier spends every tier from the next one up to itself,
+	// which is what its quoted cost already said it would. Recording it as
+	// one hint would let the learner re-buy, on their next attempt, tiers
+	// they have already paid for.
+	spentTiers := tier.Index - o.ladder.Taken()
+
 	o.transition(StateHinting)
 	attemptID := o.attemptID
 	o.mu.Unlock()
 
 	lvl := o.level()
 
-	if err := o.progress.AddHintUsed(ctx, o.profileID, o.packID, lvl.ID, lvl.Version); err != nil {
+	if err := o.progress.AddHintsUsed(ctx, o.profileID, o.packID, lvl.ID, lvl.Version, spentTiers); err != nil {
 		o.mu.Lock()
 		if !o.closed {
 			o.transition(StateActive)

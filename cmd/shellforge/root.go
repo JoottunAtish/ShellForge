@@ -156,6 +156,12 @@ func inLevelCommand(name, usage, group, short string) *cobra.Command {
 		GroupID: group,
 		Short:   short,
 		Args:    cobra.ArbitraryArgs,
+		// The flags these verbs advertise are the ones they take INSIDE a
+		// level, and cobra knows none of them. Leaving parsing on turns
+		// `shellforge hint --reveal`, which is this command's own usage
+		// line, into "unknown flag" instead of the guidance the command
+		// exists to print.
+		DisableFlagParsing: true,
 		RunE: func(*cobra.Command, []string) error {
 			return ux.Fail(
 				fmt.Sprintf("run `%s` out here, where there is no level in play", name),

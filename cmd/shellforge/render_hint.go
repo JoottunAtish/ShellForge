@@ -58,6 +58,11 @@ func parseHintFlags(args string) (hintFlags, error) {
 type hinter interface {
 	PeekHint(reveal bool) (game.Tier, bool)
 	TakeHint(ctx context.Context, reveal bool) (game.Tier, error)
+
+	// HasReveal reports whether the level authored a solution tier at all,
+	// which is what separates "this level does not offer one" from "you
+	// have already bought it".
+	HasReveal() bool
 }
 
 // renderHintReply answers one `hint` request. The returned string uses
@@ -122,30 +127,41 @@ func spendHint(ctx context.Context, h hinter, reveal bool, color bool) string {
 }
 
 // ladderUnavailable explains a peek that had nothing to offer.
+//
+// Distinguishing "this level has no solution tier" from "you have already
+// bought it" matters: they are different situations and the same sentence
+// would be wrong for one of them. Only HasReveal can tell them apart.
+// Asking whether an ordinary tier remains cannot: a level whose reveal tier
+// sits in the middle of its ladder has both a bought reveal and tiers left.
 func ladderUnavailable(h hinter, reveal bool) string {
-	if reveal {
-		// Distinguishing "this level has no solution tier" from "you have
-		// already revealed it" matters: they are different situations and
-		// the same sentence would be wrong for one of them.
-		if _, ok := h.PeekHint(false); ok {
-			return "\nThis level does not offer to reveal its solution, so nothing was spent.\n" +
-				"Run `hint` to see what the next ordinary hint costs.\n"
-		}
+	if reveal && !h.HasReveal() {
+		return noRevealTierReply
 	}
-	return "\nThere are no hints left on this level, and nothing was spent.\n" +
-		"Type `brief` to read the objectives again, or `check` to see how far you have got.\n"
+	if reveal {
+		return "\nYou have already revealed the solution on this level, and nothing was spent.\n" +
+			"Type `brief` to read the objectives again, or `check` to see how far you have got.\n"
+	}
+	return ladderExhaustedReply
 }
+
+// The two replies that are worded identically whether they arrive from a
+// peek or from a refused take, kept in one place so they cannot drift.
+const (
+	noRevealTierReply = "\nThis level does not offer to reveal its solution, so nothing was spent.\n" +
+		"Run `hint` to see what the next ordinary hint costs.\n"
+
+	ladderExhaustedReply = "\nThere are no hints left on this level, and nothing was spent.\n" +
+		"Type `brief` to read the objectives again, or `check` to see how far you have got.\n"
+)
 
 // hintRefused explains a take that was turned down, and says plainly that
 // nothing was spent, which is the first thing somebody wonders.
 func hintRefused(err error, reveal bool) string {
 	switch {
 	case errors.Is(err, game.ErrNoRevealTier):
-		return "\nThis level does not offer to reveal its solution, so nothing was spent.\n" +
-			"Run `hint` to see what the next ordinary hint costs.\n"
+		return noRevealTierReply
 	case errors.Is(err, game.ErrLadderExhausted):
-		return "\nThere are no hints left on this level, and nothing was spent.\n" +
-			"Type `brief` to read the objectives again, or `check` to see how far you have got.\n"
+		return ladderExhaustedReply
 	}
 
 	what := "take a hint"

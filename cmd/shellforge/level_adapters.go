@@ -67,10 +67,36 @@ func (g *gameLevel) StateDir() string { return g.session.StateDir() }
 // Setup opens the attempt, which materializes the level's world on the way.
 func (g *gameLevel) Setup(ctx context.Context) error { return g.orch.Start(ctx) }
 
-// Teardown closes the attempt, which removes the level's world on the way.
-// Safe to call more than once and from any state, which is what lets the
-// run flow defer it before Setup has run.
-func (g *gameLevel) Teardown(ctx context.Context) error { return g.orch.Close(ctx) }
+// Teardown drains the last of the learner's commands, then closes the
+// attempt, which removes the level's world on the way.
+//
+// The drain has to happen here as well as before each check, and it has to
+// happen BEFORE Close. JournalSink.Drain's own contract says "before a check
+// and once at teardown", and without the teardown half every command after
+// the learner's last check is lost: from the events table, from
+// commands_used, and from the achievements that count commands. A learner
+// who never types check at all would record nothing whatsoever.
+//
+// Before Close, because Close is what reads the command count for the last
+// time and writes it to the attempt, and because the Orchestrator stops
+// counting the moment it is closed.
+//
+// Safe to call more than once and from any state, which is what lets the run
+// flow defer it before Setup has run: Drain reports no error for a journal
+// it cannot read, and Close is a no-op after the first.
+func (g *gameLevel) Teardown(ctx context.Context) error {
+	g.drainJournal(ctx)
+	return g.orch.Close(ctx)
+}
+
+// drainJournal pulls the learner's commands out of the sandbox and onto the
+// bus. See gameResponder.drainJournal for why the error is swallowed.
+func (g *gameLevel) drainJournal(ctx context.Context) {
+	if g.sink == nil {
+		return
+	}
+	_ = g.sink.Drain(ctx, g.level.ID, g.orch.AttemptID())
+}
 
 func (g *gameLevel) PrintBriefing(w io.Writer, color bool) {
 	printBriefing(w, g.level, terminalWidth(w), color)
@@ -186,7 +212,8 @@ func (r *gameResponder) check(ctx context.Context) string {
 
 // drainJournal pulls the learner's commands out of the sandbox and onto the
 // bus, where the score's command count and two of the achievements are
-// waiting for them.
+// waiting for them. gameLevel.Teardown does the same once more on the way
+// out, so the tail after the last check is not lost.
 func (r *gameResponder) drainJournal(ctx context.Context) {
 	if r.sink == nil || r.orch == nil {
 		return

@@ -4584,6 +4584,70 @@ installed in this environment. `govulncheck` and `gosec` are not installed
 here either and are left to CI. No container is involved, so nothing was
 skipped for want of a Docker daemon.
 
+### Day 4 follow-up, 2026-09-07: six defects from the pre-merge review
+
+A review pass over the whole branch before merge found six real defects, all
+in code this branch introduced, and all now fixed with a regression test each.
+Every one of those tests was confirmed to go red against the defect it
+describes and green again afterwards, rather than being trusted on sight.
+
+1. **A reveal recorded one hint, not the tiers it bought.** `TakeHint` called
+   the store once per take, but revealing spends every tier below it. On
+   nav-01 that charged 60 XP in memory and persisted `hints_used = 1`, so a
+   replay re-offered and re-sold tiers already paid for, and the scorer
+   subtracted a fraction of what was spent. It broke the exact invariant the
+   ladder's own comment argues for: one integer is enough to persist the
+   ladder only if tiers are always spent contiguously AND the count of them
+   reaches the store. `store.AddHintUsed` is now `AddHintsUsed` and takes a
+   count.
+
+2. **`Close` restored a pass but not a skip.** An abandoned replay of a
+   skipped level downgraded it to `in_progress`, which re-locks everything
+   the skip was unblocking and strands the learner behind a level they had
+   decided to move past. The Orchestrator now remembers the whole prior
+   status and restores either earned one.
+
+3. **`skip` did not refuse a locked level.** `play files-03` correctly
+   refused on a fresh profile while `skip files-03` marked it skipped and
+   unlocked files-04, which walks straight past every prerequisite in
+   between. The guard is now `skipRefusal`, its own function so a test
+   reaches it without a progress database, and it refuses a locked level by
+   naming the same prerequisites `play` names.
+
+4. **The journal was drained before every check and never at teardown**,
+   contrary to `JournalSink.Drain`'s own documented contract. Every command
+   after the learner's last check was lost: from the events table, from
+   `commands_used`, and from the achievements that count commands. A learner
+   who never typed `check` recorded nothing at all. `gameLevel.Teardown` now
+   drains before it closes, and the order is asserted, because Close is what
+   reads the count for the last time.
+
+5. **`hint --reveal` conflated "no reveal tier" with "already revealed".**
+   The check asked whether an ordinary tier remained, which is not the same
+   question. A level whose reveal tier sits in the middle of its ladder has
+   both a bought reveal and tiers left, and got told it had no solution to
+   reveal. `Orchestrator.HasReveal` now answers the question that was
+   actually being asked. Worth recording how this one was caught: the first
+   regression test written for it did not reproduce it, because the test
+   fake put the reveal tier last, where "bought" and "ladder finished"
+   coincide. The fake now models a mid-ladder reveal.
+
+6. **`shellforge hint --reveal` on the host answered "unknown flag".**
+   `inLevelCommand` left cobra's flag parsing on, so the command rejected the
+   flag printed in its own usage line instead of explaining where the verb
+   lives. `DisableFlagParsing` fixes it.
+
+Two things the review raised and deliberately left alone: hint costs
+persisting across replays is intended, and `tab_master` being unearnable is a
+pre-existing `TODO(v0.2)` in `journalsink.go` rather than anything this branch
+introduced.
+
+Also fixed on the way, from CI rather than the review:
+`TestControlChannelAnswersTheShim` held a second copy of a stale `hint`
+expectation. It is Docker-gated, so it skipped on this machine and on the
+Windows leg and only went red on the Linux runner, which is a reminder that a
+green local run says nothing about the gated half of the suite.
+
 ### Day 4, 2026-09-07: the game core, six tickets in one branch
 
 `shellforge play` works. That is the whole point of the day, and it is the

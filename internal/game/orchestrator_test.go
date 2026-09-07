@@ -42,8 +42,9 @@ type fakeProgress struct {
 	setLevelStatusErr   error
 	setLevelStatusArgs  []store.LevelStatus
 
-	addHintUsedCalls int
-	addHintUsedErr   error
+	addHintsUsedCalls int
+	addHintsUsedTotal int
+	addHintsUsedErr   error
 
 	levelState    store.LevelState
 	levelStateOK  bool
@@ -99,18 +100,21 @@ func (p *fakeProgress) SetLevelStatus(_ context.Context, _ int64, _, _ string, _
 	return p.setLevelStatusErr
 }
 
-// AddHintUsed mirrors the real store: it increments the level_state hint
+// AddHintsUsed mirrors the real store: it adds to the level_state hint
 // count that Start reads back to seed the ladder, so a test can take a hint
 // and then rebuild an Orchestrator over the same fake and see the ladder
-// resume where it left off.
-func (p *fakeProgress) AddHintUsed(_ context.Context, _ int64, _, _ string, _ int) error {
+// resume where it left off. It records the total as well as the call count,
+// because a reveal spends several tiers in one call and the difference is
+// exactly what a regression here would hide.
+func (p *fakeProgress) AddHintsUsed(_ context.Context, _ int64, _, _ string, _, n int) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.addHintUsedCalls++
-	if p.addHintUsedErr != nil {
-		return p.addHintUsedErr
+	p.addHintsUsedCalls++
+	if p.addHintsUsedErr != nil {
+		return p.addHintsUsedErr
 	}
-	p.levelState.HintsUsed++
+	p.addHintsUsedTotal += n
+	p.levelState.HintsUsed += n
 	return nil
 }
 

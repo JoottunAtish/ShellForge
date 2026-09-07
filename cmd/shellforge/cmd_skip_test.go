@@ -96,3 +96,66 @@ func TestSkipDeletesNothing(t *testing.T) {
 		}
 	}
 }
+
+// --- regressions found in review ---
+
+// Skipping unlocks whatever the level was blocking, so skipping a LOCKED
+// level walks straight past every prerequisite between here and there.
+// `play` refuses a locked level; `skip` has to refuse it for the same
+// reason and name the same prerequisites.
+func TestSkipRefusesALockedLevel(t *testing.T) {
+	node, _, err := levelToSkip(playPack(), playNodes(t, nil), "files-01")
+	if err != nil {
+		t.Fatalf("levelToSkip: %v", err)
+	}
+	if node.Availability != game.AvailableLocked {
+		t.Fatalf("files-01 is %q on a fresh profile, so this test proves nothing", node.Availability)
+	}
+
+	_, level, err := levelToSkip(playPack(), playNodes(t, nil), "files-01")
+	if err != nil {
+		t.Fatalf("levelToSkip: %v", err)
+	}
+
+	err = skipRefusal(node, level)
+	if err == nil {
+		t.Fatal("skipRefusal accepted a locked level")
+	}
+	assertUserFacing(t, err)
+	remediation := remediationOf(t, err)
+	if !strings.Contains(remediation, "nav-02") {
+		t.Errorf("the refusal does not name the unmet prerequisite: %s", remediation)
+	}
+	if !strings.Contains(remediation, "locked") {
+		t.Errorf("the refusal does not say the level is locked: %s", remediation)
+	}
+}
+
+func TestSkipRefusesAnAlreadyPassedLevel(t *testing.T) {
+	states := map[string]store.LevelState{
+		"nav-01": {LevelID: "nav-01", Status: store.StatusPassed},
+	}
+	node, level, err := levelToSkip(playPack(), playNodes(t, states), "nav-01")
+	if err != nil {
+		t.Fatalf("levelToSkip: %v", err)
+	}
+
+	err = skipRefusal(node, level)
+	if err == nil {
+		t.Fatal("skipRefusal accepted a level that was already passed")
+	}
+	assertUserFacing(t, err)
+	if !strings.Contains(remediationOf(t, err), "already passed") {
+		t.Errorf("the refusal does not explain itself: %s", remediationOf(t, err))
+	}
+}
+
+func TestSkipAcceptsAnAvailableLevel(t *testing.T) {
+	node, level, err := levelToSkip(playPack(), playNodes(t, nil), "nav-01")
+	if err != nil {
+		t.Fatalf("levelToSkip: %v", err)
+	}
+	if err := skipRefusal(node, level); err != nil {
+		t.Errorf("skipRefusal refused an available level: %v", err)
+	}
+}

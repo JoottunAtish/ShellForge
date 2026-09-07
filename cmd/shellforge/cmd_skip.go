@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -71,13 +72,8 @@ func runSkip(ctx context.Context, out io.Writer, levelID string) error {
 		return err
 	}
 
-	if node.Availability == game.AvailablePassed {
-		return ux.Fail(
-			fmt.Sprintf("skip level %q", level.ID),
-			nil,
-			fmt.Sprintf("You have already passed that level, so there is nothing to skip. Run `shellforge play` to carry on, or `shellforge play %s` to replay it.", level.ID),
-			"",
-		)
+	if err := skipRefusal(node, level); err != nil {
+		return err
 	}
 
 	if err := st.SetLevelStatus(ctx, profile.ID, pack.ID, level.ID, level.Version, store.StatusSkipped); err != nil {
@@ -87,6 +83,38 @@ func runSkip(ctx context.Context, out io.Writer, levelID string) error {
 	fmt.Fprintf(out, "Skipped %s, %s. No XP was awarded for it.\n", level.ID, level.Title)
 	fmt.Fprintf(out, "Whatever it was blocking is unlocked now. Run `shellforge play` to carry on, or `shellforge play %s` to come back to it whenever you want.\n", level.ID)
 	return nil
+}
+
+// skipRefusal reports why levelID cannot be skipped, or nil when it can.
+//
+// Its own function so the guard is exercised by a test directly, rather
+// than only through runSkip, which needs a progress database to reach.
+//
+// Two refusals. A locked level is refused for the same reason `play`
+// refuses it: a skip unlocks whatever the level was blocking, so skipping a
+// locked one would walk straight past every prerequisite between here and
+// there and unlock work the learner has not reached. A passed level is
+// refused because there is nothing left to skip.
+func skipRefusal(node game.Node, level *content.Level) error {
+	switch node.Availability {
+	case game.AvailableLocked:
+		return ux.Fail(
+			fmt.Sprintf("skip level %q", level.ID),
+			nil,
+			fmt.Sprintf("That level is locked until you have passed or skipped %s, so there is nothing to skip yet. Run `shellforge map` to see the campaign, or `shellforge skip` on its own to skip the level you are on.",
+				strings.Join(node.BlockedBy, " and ")),
+			docAnchorLevelNotFound,
+		)
+	case game.AvailablePassed:
+		return ux.Fail(
+			fmt.Sprintf("skip level %q", level.ID),
+			nil,
+			fmt.Sprintf("You have already passed that level, so there is nothing to skip. Run `shellforge play` to carry on, or `shellforge play %s` to replay it.", level.ID),
+			"",
+		)
+	default:
+		return nil
+	}
 }
 
 // levelToSkip resolves the level a skip applies to, which is the named one

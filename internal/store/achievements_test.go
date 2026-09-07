@@ -138,12 +138,12 @@ func TestAnUnearnedAchievementReadsBackAsTheZeroTime(t *testing.T) {
 	}
 }
 
-func TestAddHintUsedCreatesTheRowThenIncrementsIt(t *testing.T) {
+func TestAddHintsUsedCreatesTheRowThenAddsToIt(t *testing.T) {
 	s, profileID, ctx := openWithProfile(t)
 
 	for i := 0; i < 3; i++ {
-		if err := s.AddHintUsed(ctx, profileID, "core", "nav-01", 1); err != nil {
-			t.Fatalf("AddHintUsed %d: %v", i, err)
+		if err := s.AddHintsUsed(ctx, profileID, "core", "nav-01", 1, 1); err != nil {
+			t.Fatalf("AddHintsUsed %d: %v", i, err)
 		}
 	}
 
@@ -152,14 +152,14 @@ func TestAddHintUsedCreatesTheRowThenIncrementsIt(t *testing.T) {
 		t.Fatalf("LevelState: %v", err)
 	}
 	if !ok {
-		t.Fatal("AddHintUsed did not create a level_state row")
+		t.Fatal("AddHintsUsed did not create a level_state row")
 	}
 	if st.HintsUsed != 3 {
 		t.Errorf("HintsUsed = %d, want 3", st.HintsUsed)
 	}
 }
 
-// The double counting guard AddHintUsed's doc comment describes: a caller
+// The double counting guard AddHintsUsed's doc comment describes: a caller
 // that records hints as they are taken must pass zero to FinishAttempt, and
 // this test is what proves the two would otherwise collide.
 func TestAddHintUsedAndFinishAttemptDoNotDoubleCount(t *testing.T) {
@@ -170,8 +170,8 @@ func TestAddHintUsedAndFinishAttemptDoNotDoubleCount(t *testing.T) {
 		t.Fatalf("StartAttempt: %v", err)
 	}
 	for i := 0; i < 2; i++ {
-		if err := s.AddHintUsed(ctx, profileID, "core", "nav-01", 1); err != nil {
-			t.Fatalf("AddHintUsed: %v", err)
+		if err := s.AddHintsUsed(ctx, profileID, "core", "nav-01", 1, 1); err != nil {
+			t.Fatalf("AddHintsUsed: %v", err)
 		}
 	}
 
@@ -189,5 +189,36 @@ func TestAddHintUsedAndFinishAttemptDoNotDoubleCount(t *testing.T) {
 	}
 	if st.HintsUsed != 2 {
 		t.Errorf("HintsUsed = %d, want 2: two hints taken must be recorded exactly twice", st.HintsUsed)
+	}
+}
+
+// A reveal spends several tiers in one call, so the count has to travel
+// with it. Recording it as one hint is what would let a learner re-buy, on
+// their next attempt, tiers they had already paid for.
+func TestAddHintsUsedRecordsAWholeRevealInOneCall(t *testing.T) {
+	s, profileID, ctx := openWithProfile(t)
+
+	if err := s.AddHintsUsed(ctx, profileID, "core", "nav-01", 1, 3); err != nil {
+		t.Fatalf("AddHintsUsed: %v", err)
+	}
+	st, _, err := s.LevelState(ctx, profileID, "nav-01", 1)
+	if err != nil {
+		t.Fatalf("LevelState: %v", err)
+	}
+	if st.HintsUsed != 3 {
+		t.Errorf("HintsUsed = %d, want 3", st.HintsUsed)
+	}
+}
+
+func TestAddHintsUsedWritesNothingForAnEmptyCount(t *testing.T) {
+	s, profileID, ctx := openWithProfile(t)
+
+	for _, n := range []int{0, -2} {
+		if err := s.AddHintsUsed(ctx, profileID, "core", "nav-01", 1, n); err != nil {
+			t.Fatalf("AddHintsUsed(%d): %v", n, err)
+		}
+	}
+	if _, ok, err := s.LevelState(ctx, profileID, "nav-01", 1); err != nil || ok {
+		t.Errorf("a zero count created a level_state row (ok=%t, err=%v)", ok, err)
 	}
 }
