@@ -774,14 +774,17 @@ func (v *validator) validateCheckType(lvl *Level, field string, c *CheckSpec, ga
 			c.Type)
 	case journalCheckTypes[c.Type]:
 		// A legitimately optional or severity: warn journal check is exactly
-		// the shape the rule above steers an author toward, and today it is
-		// silently useless: no runtime session in this build wires a real
-		// verify.JournalReader, so every command list this check
-		// sees is empty. That degrades into a wrong answer rather than an
-		// error, which is worse than either check type refusing to load, so
-		// this warns instead of staying quiet.
+		// the shape the rule above steers an author toward. It works for a
+		// learner: cmd_run.go wires a real journal into game.Config as of
+		// #151. It is still invisible to the golden contract, because the
+		// author test harness constructs its session without one and
+		// game.Config.Journal falls back to noJournal, which reports no
+		// commands ever. So the check runs correctly in the game and cannot
+		// be exercised before it ships, which is worth telling an author
+		// rather than leaving them to infer it from a bonus that never ticks
+		// under `author test`.
 		v.warnf(file, id, field,
-			"%s reads the command journal, and no runtime session in this build wires a real one yet (issue #154): every command list it sees is empty. %s until then. This is harmless, since a journal check may never gate passing, but the check verifies nothing yet.",
+			"%s reads the command journal, which `shellforge run` populates but `shellforge author test` does not: the golden harness builds its session without a journal, so every command list it sees there is empty and %s. The check itself is fine and works for a learner. What it cannot do is fail the golden contract, so nothing verifies it before it ships (issue #154).",
 			c.Type, journalNeverOutcome(c.Type))
 	case c.Type == "cwd_is":
 		// env_var used to draw this warning too. It no longer does: the
@@ -798,15 +801,16 @@ func (v *validator) validateCheckType(lvl *Level, field string, c *CheckSpec, ga
 	}
 }
 
-// journalNeverOutcome names what a journal check does today, with nothing
-// populating the journal it reads from. The two check types fail in opposite
+// journalNeverOutcome names what a journal check does under `author test`,
+// where the harness supplies no journal. The two check types fail in opposite
 // directions: command_matched can never pass, and command_not_matched can
-// never fire.
+// never fire. Under `shellforge run`, where a real journal is wired, both
+// behave normally.
 func journalNeverOutcome(checkType string) string {
 	if checkType == "command_not_matched" {
-		return "It can never fire, so the anti-pattern it warns about goes uncaught"
+		return "it can never fire there, so the anti-pattern it warns about goes uncaught"
 	}
-	return "It can never pass"
+	return "it can never pass there"
 }
 
 // validateObjectiveCorrespondence enforces the one-to-one relationship in
