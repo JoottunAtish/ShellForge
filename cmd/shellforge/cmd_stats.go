@@ -108,7 +108,9 @@ func openProgress(ctx context.Context) (*store.Store, store.Profile, error) {
 
 	profile, err := st.EnsureProfile(ctx, progressProfileName)
 	if err != nil {
-		st.Close()
+		// Closed here because this call is abandoning the store it just
+		// opened, and no caller will get a handle to close it themselves.
+		_ = st.Close() // a close failure would replace the error worth reporting
 		return nil, store.Profile{}, ux.Fail("read your learner profile", err, remediationRunDoctor, "")
 	}
 	return st, profile, nil
