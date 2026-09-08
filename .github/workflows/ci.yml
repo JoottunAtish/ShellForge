@@ -402,12 +402,26 @@ jobs:
           $assetName = 'shellforge_v0.1.0-test_windows_amd64.zip'
           Set-Content -LiteralPath (Join-Path $versionDir 'SHA256SUMS') -Value "$digest  $assetName" -NoNewline -Encoding ascii
 
+          # The mismatch fixture is a SECOND release root, built here, rather
+          # than the good SHA256SUMS being swapped out and back in place around
+          # case 2. Swapping restored byte-identical content but not the file's
+          # LastWriteTimeUtc, and case 11 snapshots size plus mtime, so the
+          # restore itself showed up as an unexpected change under fixtureDir
+          # and failed the postcondition. Two roots means the good fixture is
+          # never written to after this point, which is what case 11 is
+          # actually there to assert.
           $flipped = if ($digest[-1] -ne '0') { '0' } else { '1' }
           $wrongDigest = $digest.Substring(0, $digest.Length - 1) + $flipped
-          Set-Content -LiteralPath (Join-Path $versionDir 'SHA256SUMS.wrong') -Value "$wrongDigest  $assetName" -NoNewline -Encoding ascii
+          $mismatchRoot = Join-Path $fixtureDir 'release-mismatch\download'
+          $mismatchVersionDir = Join-Path $mismatchRoot 'v0.1.0-test'
+          New-Item -ItemType Directory -Path $mismatchVersionDir -Force | Out-Null
+          Copy-Item -LiteralPath $zipPath -Destination (Join-Path $mismatchVersionDir $assetName) -Force
+          Set-Content -LiteralPath (Join-Path $mismatchVersionDir 'SHA256SUMS') -Value "$wrongDigest  $assetName" -NoNewline -Encoding ascii
 
-          $baseUrl = ([System.Uri]$downloadRoot).AbsoluteUri
-          Write-Host "fixture base URL: $baseUrl"
+          $fixtureBaseUrl = ([System.Uri]$downloadRoot).AbsoluteUri
+          $mismatchBaseUrl = ([System.Uri]$mismatchRoot).AbsoluteUri
+          Write-Host "fixture base URL: $fixtureBaseUrl"
+          Write-Host "mismatch base URL: $mismatchBaseUrl"
 
           $initialUserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 
@@ -446,7 +460,7 @@ jobs:
             $bin1 = Join-Path $fixtureDir 'bin-happy'
             $ok1 = $true
             try {
-              & $installScript -Version 'v0.1.0-test' -BinDir $bin1 -BaseUrl $baseUrl
+              & $installScript -Version 'v0.1.0-test' -BinDir $bin1 -BaseUrl $fixtureBaseUrl
             }
             catch {
               $ok1 = $false
@@ -463,16 +477,14 @@ jobs:
             Report 'case 1: happy path installs and runs' $ok1
 
             # ---- Case 2: checksum mismatch ----
-            $sumsPath = Join-Path $versionDir 'SHA256SUMS'
-            $wrongPath = Join-Path $versionDir 'SHA256SUMS.wrong'
-            $correctSums = Get-Content -LiteralPath $sumsPath -Raw
-            $wrongSums = Get-Content -LiteralPath $wrongPath -Raw
-            Set-Content -LiteralPath $sumsPath -Value $wrongSums -NoNewline
-
+            # Points at $mismatchBaseUrl, a separate release root whose
+            # SHA256SUMS carries a digest with its last character flipped. The
+            # good fixture is left untouched, so case 11's postcondition stays
+            # honest: see the comment where the mismatch root is built.
             $bin2 = Join-Path $fixtureDir 'bin-mismatch'
             $threw2 = $false
             try {
-              & $installScript -Version 'v0.1.0-test' -BinDir $bin2 -BaseUrl $baseUrl
+              & $installScript -Version 'v0.1.0-test' -BinDir $bin2 -BaseUrl $mismatchBaseUrl
             }
             catch {
               $threw2 = $true
@@ -480,9 +492,7 @@ jobs:
             }
             $exe2 = Join-Path $bin2 'shellforge.exe'
             $ok2 = $threw2 -and (-not (Test-Path -LiteralPath $exe2))
-            Report 'case 2: checksum mismatch (SHA256SUMS.wrong) installs nothing' $ok2
-
-            Set-Content -LiteralPath $sumsPath -Value $correctSums -NoNewline
+            Report 'case 2: checksum mismatch installs nothing' $ok2
 
             # ---- Case 3: refused overwrite ----
             $bin3 = Join-Path $fixtureDir 'bin-existing'
@@ -493,7 +503,7 @@ jobs:
 
             $threw3 = $false
             try {
-              & $installScript -Version 'v0.1.0-test' -BinDir $bin3 -BaseUrl $baseUrl
+              & $installScript -Version 'v0.1.0-test' -BinDir $bin3 -BaseUrl $fixtureBaseUrl
             }
             catch {
               $threw3 = $true
@@ -505,7 +515,7 @@ jobs:
             # ---- Case 4: -Force overwrite ----
             $ok4 = $true
             try {
-              & $installScript -Version 'v0.1.0-test' -BinDir $bin3 -BaseUrl $baseUrl -Force
+              & $installScript -Version 'v0.1.0-test' -BinDir $bin3 -BaseUrl $fixtureBaseUrl -Force
             }
             catch {
               $ok4 = $false
@@ -521,7 +531,7 @@ jobs:
             $bin5 = Join-Path $fixtureDir 'bin-nopathchange'
             $ok5 = $true
             try {
-              & $installScript -Version 'v0.1.0-test' -BinDir $bin5 -BaseUrl $baseUrl -NoPathChange
+              & $installScript -Version 'v0.1.0-test' -BinDir $bin5 -BaseUrl $fixtureBaseUrl -NoPathChange
             }
             catch {
               $ok5 = $false
@@ -536,7 +546,7 @@ jobs:
             $bin6 = Join-Path $fixtureDir 'CON'
             $threw6 = $false
             try {
-              & $installScript -Version 'v0.1.0-test' -BinDir $bin6 -BaseUrl $baseUrl
+              & $installScript -Version 'v0.1.0-test' -BinDir $bin6 -BaseUrl $fixtureBaseUrl
             }
             catch {
               $threw6 = $true
@@ -548,7 +558,7 @@ jobs:
             $bin7 = "$fixtureDir\ads-target:hidden"
             $threw7 = $false
             try {
-              & $installScript -Version 'v0.1.0-test' -BinDir $bin7 -BaseUrl $baseUrl
+              & $installScript -Version 'v0.1.0-test' -BinDir $bin7 -BaseUrl $fixtureBaseUrl
             }
             catch {
               $threw7 = $true
@@ -663,7 +673,7 @@ jobs:
               $bin10 = Join-Path $fixtureDir 'bin-regexpand'
               $ok10 = $true
               try {
-                & $installScript -Version 'v0.1.0-test' -BinDir $bin10 -BaseUrl $baseUrl
+                & $installScript -Version 'v0.1.0-test' -BinDir $bin10 -BaseUrl $fixtureBaseUrl
               }
               catch {
                 $ok10 = $false
