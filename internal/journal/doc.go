@@ -38,15 +38,18 @@
 // rules are a closed list, applied in order:
 //
 //  1. KEY=VALUE, where KEY is a whole shell word matching, case insensitively,
-//     pass, passwd, password, token, secret, api_key or api-key or apikey,
-//     auth, credential, or session: the value becomes [redacted], the key
-//     spelling kept as typed.
+//     pass, passwd, password, pwd, passphrase, token, secret, api_key or
+//     api-key or apikey, auth, credential, or session, or KEY ends in the
+//     whole word "password" with no separator (PGPASSWORD): the value
+//     becomes [redacted], the key spelling kept as typed.
 //  2. --password, --token, --api-key, --secret, --auth, --credential, in both
 //     the "--flag value" and "--flag=value" forms: the value becomes
 //     [redacted], the flag spelling kept as typed.
-//  3. -p immediately after mysql, psql, or mysqldump, attached or spaced: the
-//     value becomes [redacted]. curl -u user:pass keeps the user and redacts
-//     only the password.
+//  3. -p after mysql, psql, or mysqldump, attached or spaced, with up to four
+//     other flags or values allowed in between (mysql -u root -phunter2):
+//     the value becomes [redacted]. curl -u user:pass keeps the user and
+//     redacts only the password; the match is anchored to a preceding curl
+//     so an unrelated -u, such as docker run -u uid:gid, is left alone.
 //  4. Authorization: Bearer or Authorization: Basic, case insensitive on the
 //     header name and the scheme: the value becomes [redacted].
 //  5. Anything between -----BEGIN and -----END, inclusive: the whole block

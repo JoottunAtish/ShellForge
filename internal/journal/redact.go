@@ -13,6 +13,8 @@ var secretKeyWords = map[string]bool{
 	"pass":       true,
 	"passwd":     true,
 	"password":   true,
+	"pwd":        true,
+	"passphrase": true,
 	"token":      true,
 	"secret":     true,
 	"apikey":     true,
@@ -37,13 +39,24 @@ var (
 )
 
 // reMysqlPAttached and reMysqlPSpace match rule 3's bare -p password flag
-// immediately after mysql, psql or mysqldump, attached (-pVALUE) and
-// space-separated (-p VALUE) respectively. reCurlUserPass matches curl's
-// -u user:pass form, keeping the username and redacting only the password.
+// after mysql, psql or mysqldump, attached (-pVALUE) and space-separated
+// (-p VALUE) respectively. The intervening group allows up to four other
+// flags or values (-u root, -h db.internal, and the like) between the
+// command word and -p, which is what the standard "mysql -u root
+// -phunter2" invocation needs: -p need not be the first flag. It is
+// bounded to four tokens, and not left unbounded, so a -p flag belonging to
+// some unrelated later command on the same line is not swept in by
+// accident. reCurlUserPass matches curl's -u user:pass form, keeping the
+// username and redacting only the password; it is anchored to a preceding
+// \bcurl\b so an unrelated -u flag, such as docker run's -u uid:gid, is
+// left alone. Neither anchor can be expressed as a zero-width assertion:
+// RE2 has no lookaround, so both patterns capture the command word and
+// everything between it and the flag, and the replacement re-emits that
+// captured text unchanged.
 var (
-	reMysqlPAttached = regexp.MustCompile(`(?i)\b(mysql|psql|mysqldump)(\s+)-p(\S+)`)
-	reMysqlPSpace    = regexp.MustCompile(`(?i)\b(mysql|psql|mysqldump)(\s+)-p(\s+)\S+`)
-	reCurlUserPass   = regexp.MustCompile(`-u(\s+)([^:\s]+):\S+`)
+	reMysqlPAttached = regexp.MustCompile(`(?i)\b(mysql|psql|mysqldump)\b((?:\s+\S+){0,4}?)(\s+)-p(\S+)`)
+	reMysqlPSpace    = regexp.MustCompile(`(?i)\b(mysql|psql|mysqldump)\b((?:\s+\S+){0,4}?)(\s+)-p(\s+)\S+`)
+	reCurlUserPass   = regexp.MustCompile(`(?i)(\bcurl\b[^\n]*?)\s+-u(\s+)([^:\s]+):\S+`)
 )
 
 // reAuthHeader matches rule 4's Authorization header, case insensitive on
@@ -109,6 +122,16 @@ func isSecretKey(key string) bool {
 			return true
 		}
 	}
+	// A key with no underscore or hyphen to split on can still mash a
+	// secret word onto a prefix, the way PGPASSWORD does. "password" is
+	// long and specific enough that a suffix match on it does not also
+	// catch an unrelated word ending in a shorter fragment: PASSPORT_ID
+	// ends in "id" as its own segment, already handled and rejected above,
+	// and nothing in this codebase's vocabulary ends in the full word
+	// "password" without meaning one.
+	if norm != "password" && strings.HasSuffix(norm, "password") {
+		return true
+	}
 	return false
 }
 
@@ -121,9 +144,9 @@ func redactLongFlags(s string) string {
 
 // redactDBFlags applies rule 3.
 func redactDBFlags(s string) string {
-	s = reMysqlPAttached.ReplaceAllString(s, "$1$2-p [redacted]")
-	s = reMysqlPSpace.ReplaceAllString(s, "$1$2-p$3[redacted]")
-	s = reCurlUserPass.ReplaceAllString(s, "-u$1$2:[redacted]")
+	s = reMysqlPAttached.ReplaceAllString(s, "$1$2$3-p [redacted]")
+	s = reMysqlPSpace.ReplaceAllString(s, "$1$2$3-p$4[redacted]")
+	s = reCurlUserPass.ReplaceAllString(s, "$1 -u$2$3:[redacted]")
 	return s
 }
 

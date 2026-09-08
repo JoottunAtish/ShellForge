@@ -162,12 +162,14 @@ func TestGoldenTestCoversEveryLevelInThePack(t *testing.T) {
 }
 
 // newGoldenGameSession builds a game.Session for a caller that needs
-// one directly rather than through runGoldenLevel.
-func newGoldenGameSession(sess runtime.Session, packFS fs.FS, level *content.Level) (*game.Session, error) {
+// one directly rather than through runGoldenLevel. journal may be nil, which
+// game.Config documents as a reader that reports no commands.
+func newGoldenGameSession(sess runtime.Session, packFS fs.FS, level *content.Level, journal verify.JournalReader) (*game.Session, error) {
 	return game.NewSession(game.Config{
 		Level:    level,
 		Sess:     sess,
 		PackFS:   packFS,
 		Verifier: verify.NewEngine(),
+		Journal:  journal,
 	})
 }

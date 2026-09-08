@@ -67,6 +67,20 @@ def _text() -> str:
     return RELEASE_YML.read_text(encoding="utf-8")
 
 
+def _strip_comments(text: str, *, block: bool = False) -> str:
+    """Strip comment text, so a fragment surviving only in prose does not
+    count as the installer still constructing that asset name.
+
+    `block` also strips PowerShell's `<# ... #>` form, used for the whole
+    .SYNOPSIS and .DESCRIPTION header at the top of install.ps1, which is
+    exactly where the old asset name lived after the real construction line
+    stopped spelling it out.
+    """
+    if block:
+        text = re.sub(r"(?s)<#.*?#>", "", text)
+    return re.sub(r"(?m)^\s*#.*$", "", text)
+
+
 def _workflow() -> dict:
     return yaml.safe_load(_text())
 
@@ -136,6 +150,20 @@ def test_release_yml_stamps_the_same_ldflag_variables_as_the_makefile() -> None:
 
     release_vars = set(re.findall(r"-X main\.(\w+)=", _text()))
     assert release_vars == makefile_vars, (release_vars, makefile_vars)
+
+
+def test_release_yml_runs_the_linux_amd64_binary_and_checks_its_tag() -> None:
+    # The ldflag test above only proves the same -X main.<var> names are
+    # passed here as in the Makefile: a string comparison, not a run. This is
+    # the other half the acceptance criterion asks for: that TAG really
+    # reaches main.version and the binary really prints it. The runner
+    # release.yml runs on is linux/amd64, so the archive it just built can
+    # execute right there.
+    step = _step("shellforge version on the linux/amd64 artifact names the tag")
+    run = step["run"]
+    assert "linux_amd64.tar.gz" in run, run
+    assert re.search(r"\bversion\b", run), run
+    assert "$TAG" in run, run
 
 
 def test_release_yml_reuses_make_rootfs_rather_than_restating_it() -> None:
@@ -225,10 +253,25 @@ def test_asset_names_match_what_install_sh_constructs() -> None:
         "part 3 lands."
     )
     release_text = _text()
-    install_text = INSTALL_SH.read_text(encoding="utf-8")
+    install_code = _strip_comments(INSTALL_SH.read_text(encoding="utf-8"))
+
+    # install.sh builds the Linux asset name from ${OS} and ${ARCH} rather
+    # than spelling out "linux_amd64" or "linux_arm64" anywhere in code, so
+    # the literal fragments below can never appear there: they only make
+    # sense checked against release.yml, which builds concrete archives for
+    # concrete platforms. What install.sh must still contain, comments
+    # stripped, is the construction line itself. Assert on that directly, or
+    # a rename of the archive suffix that leaves the header comment
+    # unedited would pass silently, which is the bug this test exists to
+    # catch.
+    assert "shellforge_" in install_code, "shellforge_ missing from install.sh"
+    assert "_${OS}_${ARCH}.tar.gz" in install_code, (
+        "install.sh's asset construction line no longer builds "
+        "shellforge_${VERSION}_${OS}_${ARCH}.tar.gz. If the archive suffix "
+        "or field order changed, release.yml must build a matching name."
+    )
     for fragment in NAME_FRAGMENTS:
         assert fragment in release_text, f"{fragment} missing from release.yml"
-        assert fragment in install_text, f"{fragment} missing from install.sh"
 
 
 def test_asset_names_match_what_install_ps1_constructs() -> None:
@@ -238,10 +281,22 @@ def test_asset_names_match_what_install_ps1_constructs() -> None:
         "part 3 lands."
     )
     release_text = _text()
-    install_text = INSTALL_PS1.read_text(encoding="utf-8")
+    install_code = _strip_comments(INSTALL_PS1.read_text(encoding="utf-8"), block=True)
+
+    # Unlike install.sh, install.ps1's Windows asset name is not
+    # parameterized: "_windows_amd64.zip" is a literal in the real
+    # construction line. It is also a literal in the .DESCRIPTION header
+    # above it, which is why comments must be stripped first: without that,
+    # a rename of the construction line alone would still find the fragment
+    # in the stale header and report no drift.
+    assert "shellforge_" in install_code, "shellforge_ missing from install.ps1"
+    assert "_windows_amd64.zip" in install_code, (
+        "install.ps1's asset construction line no longer builds "
+        "shellforge_${resolvedVersion}_windows_amd64.zip. If the archive "
+        "suffix changed, release.yml must build a matching name."
+    )
     for fragment in NAME_FRAGMENTS:
         assert fragment in release_text, f"{fragment} missing from release.yml"
-        assert fragment in install_text, f"{fragment} missing from install.ps1"
 
 
 def test_release_yml_builds_no_darwin_target() -> None:

@@ -72,6 +72,34 @@ function Write-Failure {
     throw $Message
 }
 
+function Resolve-FinalUri {
+    # Extracts the resolved URL from an Invoke-WebRequest response,
+    # portably across PowerShell 5.1 and PowerShell 7. On 5.1,
+    # Invoke-WebRequest's BaseResponse is a .NET HttpWebResponse, which
+    # exposes ResponseUri directly. On 7 it is a
+    # System.Net.Http.HttpResponseMessage instead, which has no
+    # ResponseUri property at all: the final URL after redirects lives at
+    # RequestMessage.RequestUri there, because HttpClient rewrites the
+    # request's own RequestUri to match wherever the last redirect landed.
+    # Checking PSObject.Properties rather than dot-referencing a property
+    # that might not exist is required under Set-StrictMode -Version
+    # Latest, set at the top of this script: a bare miss there throws
+    # instead of returning $null, which is why the untested version of
+    # this function could never work on PowerShell 7 at all.
+    param(
+        [Parameter(Mandatory = $true)]$Response
+    )
+    $base = $Response.BaseResponse
+    if ($base.PSObject.Properties['ResponseUri']) {
+        return $base.ResponseUri.AbsoluteUri
+    }
+    if ($base.PSObject.Properties['RequestMessage'] -and $base.RequestMessage -and
+        $base.RequestMessage.PSObject.Properties['RequestUri'] -and $base.RequestMessage.RequestUri) {
+        return $base.RequestMessage.RequestUri.AbsoluteUri
+    }
+    return $null
+}
+
 function Resolve-Version {
     param(
         [string]$RequestedVersion,
@@ -90,7 +118,7 @@ function Resolve-Version {
     $latestUrl = 'https://github.com/JoottunAtish/ShellForge/releases/latest'
     try {
         $response = Invoke-WebRequest -Uri $latestUrl -MaximumRedirection 5 -UseBasicParsing -Method Head
-        $finalUri = $response.BaseResponse.ResponseUri.AbsoluteUri
+        $finalUri = Resolve-FinalUri -Response $response
     }
     catch {
         Write-Failure "could not resolve the latest release" `
@@ -260,6 +288,34 @@ function Install-Binary {
     }
 }
 
+function Get-UserPathRegistryValue {
+    # Reads the RAW, unexpanded Path value straight out of the user
+    # Environment registry key, along with its REG_SZ or REG_EXPAND_SZ
+    # kind. [Environment]::GetEnvironmentVariable always returns the
+    # EXPANDED value and [Environment]::SetEnvironmentVariable always
+    # WRITES REG_SZ, so going through those two together silently
+    # flattens a REG_EXPAND_SZ Path (one carrying a token such as
+    # %USERPROFILE% or %LOCALAPPDATA%, both common) into a literal
+    # expanded path, permanently, the moment this installer runs. Reading
+    # and writing through the registry key directly, and preserving
+    # whichever kind was already there, is what avoids that.
+    #
+    # A missing Path value, or a missing Environment key altogether (rare,
+    # but a brand new profile may not have written to it yet), reads back
+    # as an empty String-kind value: the same starting point
+    # SetEnvironmentVariable would have had on a machine with nothing set.
+    $envKey = Get-Item -LiteralPath 'HKCU:\Environment' -ErrorAction SilentlyContinue
+    if (-not $envKey) {
+        return @{ Value = ''; Kind = [Microsoft.Win32.RegistryValueKind]::String }
+    }
+    $raw = $envKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+    $kind = [Microsoft.Win32.RegistryValueKind]::String
+    if ($envKey.GetValueNames() -contains 'Path') {
+        $kind = $envKey.GetValueKind('Path')
+    }
+    return @{ Value = $raw; Kind = $kind }
+}
+
 function Update-UserPath {
     # The one deliberate asymmetry with install.sh: docs/01-install-windows.md
     # is written for somebody who has never opened a terminal, and "add this
@@ -281,11 +337,11 @@ function Update-UserPath {
         return
     }
 
-    $current = [Environment]::GetEnvironmentVariable('Path', 'User')
-    if ($null -eq $current) { $current = '' }
+    $currentExpanded = [Environment]::GetEnvironmentVariable('Path', 'User')
+    if ($null -eq $currentExpanded) { $currentExpanded = '' }
 
     $normalizedTarget = $TargetBinDir.TrimEnd('\')
-    $alreadyPresent = $current -split ';' | Where-Object {
+    $alreadyPresent = $currentExpanded -split ';' | Where-Object {
         $_.TrimEnd('\') -ieq $normalizedTarget
     }
     if ($alreadyPresent) {
@@ -294,11 +350,21 @@ function Update-UserPath {
         return
     }
 
-    $new = if ($current -eq '') { $TargetBinDir } else { "$current;$TargetBinDir" }
-    [Environment]::SetEnvironmentVariable('Path', $new, 'User')
+    # From here on, work with the RAW value and write the SAME kind back:
+    # appending our own already-absolute $TargetBinDir to a raw value that
+    # still carries %USERPROFILE% or %LOCALAPPDATA% tokens leaves those
+    # tokens exactly as they were, rather than expanding the whole string.
+    $regValue = Get-UserPathRegistryValue
+    $currentRaw = $regValue.Value
+    $new = if ($currentRaw -eq '') { $TargetBinDir } else { "$currentRaw;$TargetBinDir" }
+
+    if (-not (Test-Path -LiteralPath 'HKCU:\Environment')) {
+        New-Item -Path 'HKCU:\Environment' -Force | Out-Null
+    }
+    Set-ItemProperty -LiteralPath 'HKCU:\Environment' -Name 'Path' -Value $new -Type $regValue.Kind
     Write-Host ''
     Write-Host "Added $TargetBinDir to your user PATH."
-    Write-Host "  old length: $($current.Length) characters"
+    Write-Host "  old length: $($currentRaw.Length) characters"
     Write-Host "  new length: $($new.Length) characters"
     Write-Host 'Open a new terminal for this to take effect.'
 }

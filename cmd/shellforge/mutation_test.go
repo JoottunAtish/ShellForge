@@ -8,7 +8,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/JoottunAtish/ShellForge/internal/content"
-	"github.com/JoottunAtish/ShellForge/internal/game"
 	"github.com/JoottunAtish/ShellForge/internal/runtime"
 	"github.com/JoottunAtish/ShellForge/internal/verify"
 )
@@ -385,13 +384,7 @@ func TestLevelsRejectNearMisses(t *testing.T) {
 			}
 
 			sj := newSolutionJournal()
-			session, err := game.NewSession(game.Config{
-				Level:    level,
-				Sess:     sess,
-				PackFS:   packFS,
-				Verifier: verify.NewEngine(),
-				Journal:  sj,
-			})
+			session, err := newGoldenGameSession(sess, packFS, level, sj)
 			if err != nil {
 				t.Fatalf("build the level: %v", err)
 			}
@@ -442,6 +435,40 @@ func TestLevelsRejectNearMisses(t *testing.T) {
 								"      The level accepts something it should not. Tighten the check, and confirm it "+
 								"still accepts every legitimate way to reach the right answer.",
 								c.levelID, miss.name, miss.explain)
+							return
+						}
+
+						// Passed is also false on a timeout or an error, neither
+						// of which means the level judged the near miss and
+						// rejected it. Assert the shape of the rejection, not
+						// just its polarity, or a case can report success
+						// without ever getting an answer: a check that errors
+						// because bash was unreachable, or one that times out
+						// when the shared 25 minute budget runs out mid-run,
+						// both read as a correct rejection if only res.Passed
+						// is checked.
+						if res.PrimaryFailure == nil {
+							t.Fatalf("%s (%s: %s) reported not passed but named no PrimaryFailure objective. "+
+								"finish() should never produce that combination.",
+								c.levelID, miss.name, miss.explain)
+						}
+						switch res.PrimaryFailure.Status {
+						case verify.StatusFail:
+							// The level judged the near miss and rejected it.
+							// This is what a rejection case is supposed to
+							// look like.
+						case verify.StatusTimeout:
+							t.Errorf("%s (%s: %s) never got an answer: objective %q timed out rather than "+
+								"judging the near miss. The level did not reject this answer, it never saw it.",
+								c.levelID, miss.name, miss.explain, res.PrimaryFailure.ID)
+						case verify.StatusError:
+							t.Errorf("%s (%s: %s) never got an answer: objective %q errored rather than "+
+								"judging the near miss (%s). The level did not reject this answer, it never saw it.",
+								c.levelID, miss.name, miss.explain, res.PrimaryFailure.ID, res.PrimaryFailure.Message)
+						default:
+							t.Errorf("%s (%s: %s) reported not passed with PrimaryFailure status %q, which is "+
+								"neither a rejection nor a stall this test knows how to read.",
+								c.levelID, miss.name, miss.explain, res.PrimaryFailure.Status)
 						}
 						return
 					}

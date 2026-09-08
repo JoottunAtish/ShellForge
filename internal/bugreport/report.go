@@ -21,7 +21,18 @@ const DefaultJournalLimit = 500
 // MaxLogBytes is how much of one log file a bundle carries, from the end.
 const MaxLogBytes = 1 << 20 // 1 MB
 
-// MaxZipBytes is the cap on the whole bundle.
+// MaxZipBytes is the cap Write compares the bundle's UNCOMPRESSED content
+// against: README.txt, report.json, doctor.txt, and every *.log file's
+// bytes, summed before zip.Writer ever compresses anything. It is not a
+// cap on the zip file's own size on disk, which is smaller. If the sum
+// exceeds this, Write's only remedy is dropping the logs (Report.Journal
+// and everything else still ships in full), and it records a Note saying
+// so; nothing bounds the result further today, because nothing in this
+// tree writes to platform.LogDir() yet and the journal alone, even at
+// DefaultJournalLimit entries, does not get close to this cap in
+// practice. A second truncation stage for Report.Journal itself is a
+// reasonable future addition, not something this comment should imply
+// already exists.
 const MaxZipBytes = 5 << 20 // 5 MB
 
 // The Note wording Collect and Write produce. Each names what was missing
@@ -33,6 +44,7 @@ const (
 	noteNoDatabase            = "no progress database was found, so the bundle carries no progress. This is normal on a first run."
 	noteProgressFailedFmt     = "reading the progress database failed: %s. The bundle carries no progress."
 	noteJournalNotIncluded    = "the command journal was not included. Run bug-report --journal to include it, with secrets redacted."
+	noteJournalNoDatabase     = "--journal was passed, but no progress database was found, so the bundle carries no commands."
 	noteJournalFailedFmt      = "reading the command journal failed: %s. The bundle carries no commands."
 	noteLogsDroppedFmt        = "the logs were dropped to keep the bundle under %d bytes."
 )
@@ -126,10 +138,9 @@ type Sources struct {
 // this package gathers could need it.
 func Collect(ctx context.Context, s Sources) (Report, error) {
 	r := Report{
-		GeneratedAt:     time.Now().UTC(),
-		Build:           s.Build,
-		Doctor:          s.Doctor,
-		JournalIncluded: s.IncludeJournal,
+		GeneratedAt: time.Now().UTC(),
+		Build:       s.Build,
+		Doctor:      s.Doctor,
 	}
 
 	collectSandbox(ctx, &r, s)
@@ -231,16 +242,22 @@ func readProgress(ctx context.Context, s *store.Store, profileID int64, packID s
 	}, nil
 }
 
-// collectJournal fills Report.Journal and Report.JournalRedacted when
-// s.IncludeJournal is set, redacting every entry's text with journal.Redact.
-// Without --journal, no command text is ever read at all: the Note alone
-// explains why.
+// collectJournal fills Report.Journal, Report.JournalRedacted, and
+// Report.JournalIncluded when s.IncludeJournal is set, redacting every
+// entry's text with journal.Redact. Without --journal, no command text is
+// ever read at all: the Note alone explains why. JournalIncluded is set
+// from whether anything was actually read, not from the flag alone, so a
+// bundle never claims "journal_included": true while carrying zero commands
+// and no Note explaining the gap: every branch that leaves Report.Journal
+// empty records a Note saying why, the same contract collectProgress and
+// collectPack already keep for their own optional sources.
 func collectJournal(ctx context.Context, r *Report, s Sources) {
 	if !s.IncludeJournal {
 		r.Notes = append(r.Notes, noteJournalNotIncluded)
 		return
 	}
 	if s.Store == nil {
+		r.Notes = append(r.Notes, noteJournalNoDatabase)
 		return
 	}
 
@@ -266,6 +283,7 @@ func collectJournal(ctx context.Context, r *Report, s Sources) {
 	}
 	r.Journal = cmds
 	r.JournalRedacted = redacted
+	r.JournalIncluded = true
 }
 
 // recentCommands reads the most recent limit rows of the events table,
@@ -309,31 +327,44 @@ func recentCommands(ctx context.Context, s *store.Store, limit int) ([]Command, 
 
 // scrubReport rewrites the host home directory prefix to "~" everywhere it
 // could appear in r: every Note, every Command's Cwd and Text, every doctor
-// Result's Detail, and the sandbox Detail.
+// Result's Detail and Remediation, and the sandbox Detail. Remediation is
+// the other free-text field on doctor.Result, marshalled into report.json
+// right alongside Detail, so it gets the same treatment: nothing in this
+// codebase's doctor probes writes a path into a remediation string today,
+// which is what let this gap sit unnoticed, but the invariant this
+// function keeps ("every host home directory prefix is rewritten", per
+// doc.go) should hold because this function enforces it, not because every
+// caller happens to avoid the shape that would break it.
+//
+// os.UserHomeDir is resolved exactly once here rather than inside a
+// per-string helper: a bundle with a full journal can carry on the order of
+// a thousand strings across Notes, Journal entries, and Doctor results, and
+// a syscall per string was the wrong price for a lookup that never changes
+// mid-run.
 func scrubReport(r *Report) {
+	home, err := os.UserHomeDir()
+	if err != nil || len(home) <= 1 {
+		return
+	}
 	for i := range r.Notes {
-		r.Notes[i] = scrubHome(r.Notes[i])
+		r.Notes[i] = scrubHome(r.Notes[i], home)
 	}
 	for i := range r.Doctor.Results {
-		r.Doctor.Results[i].Detail = scrubHome(r.Doctor.Results[i].Detail)
+		r.Doctor.Results[i].Detail = scrubHome(r.Doctor.Results[i].Detail, home)
+		r.Doctor.Results[i].Remediation = scrubHome(r.Doctor.Results[i].Remediation, home)
 	}
 	if r.Sandbox != nil {
-		r.Sandbox.Detail = scrubHome(r.Sandbox.Detail)
+		r.Sandbox.Detail = scrubHome(r.Sandbox.Detail, home)
 	}
 	for i := range r.Journal {
-		r.Journal[i].Cwd = scrubHome(r.Journal[i].Cwd)
-		r.Journal[i].Text = scrubHome(r.Journal[i].Text)
+		r.Journal[i].Cwd = scrubHome(r.Journal[i].Cwd, home)
+		r.Journal[i].Text = scrubHome(r.Journal[i].Text, home)
 	}
 }
 
-// scrubHome rewrites every occurrence of the host home directory prefix to
-// "~". It resolves the home directory once with os.UserHomeDir; when that
-// fails, or returns an empty or one-character string, scrubHome is a no-op
-// rather than replacing every "/" in the document.
-func scrubHome(s string) string {
-	home, err := os.UserHomeDir()
-	if err != nil || len(home) <= 1 {
-		return s
-	}
+// scrubHome rewrites every occurrence of home in s to "~". home is the
+// host home directory, resolved once by scrubReport and passed down so
+// this stays a plain string replacement with no syscall of its own.
+func scrubHome(s, home string) string {
 	return strings.ReplaceAll(s, home, "~")
 }

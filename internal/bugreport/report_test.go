@@ -3,6 +3,7 @@ package bugreport
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -189,6 +190,27 @@ func TestCollectWithANilStoreRecordsANote(t *testing.T) {
 	}
 }
 
+// TestCollectWithJournalRequestedButNilStoreRecordsANote asserts that
+// --journal with no progress database (a first run, or a store.Open
+// failure in cmd_bugreport.go) records a Note explaining the gap and
+// reports JournalIncluded as false, rather than claiming the journal was
+// included while carrying zero commands and no explanation.
+func TestCollectWithJournalRequestedButNilStoreRecordsANote(t *testing.T) {
+	report, err := Collect(context.Background(), Sources{IncludeJournal: true})
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if report.JournalIncluded {
+		t.Errorf("JournalIncluded = true, want false: no store was supplied")
+	}
+	if len(report.Journal) != 0 {
+		t.Errorf("len(Journal) = %d, want 0", len(report.Journal))
+	}
+	if !notesContain(report.Notes, "bundle carries no commands") {
+		t.Errorf("Notes = %v, want one about the missing journal source", report.Notes)
+	}
+}
+
 // TestCollectWithANilPackRecordsANote asserts a nil Pack degrades to a note
 // and a zero Pack, with the Store present so the progress note does not
 // also fire and confuse this assertion.
@@ -259,5 +281,39 @@ func TestCollectCountsRedactions(t *testing.T) {
 		if strings.Contains(c.Text, "hunter2") || strings.Contains(c.Text, "abc123") {
 			t.Errorf("command text still carries a secret: %q", c.Text)
 		}
+	}
+}
+
+// TestScrubReportRewritesDoctorRemediation asserts scrubReport rewrites the
+// host home directory prefix inside a doctor Result's Remediation, not only
+// its Detail: both are free-text fields on the same struct, marshalled
+// into report.json side by side, and nothing about Detail makes it more
+// deserving of scrubbing than Remediation is.
+func TestScrubReportRewritesDoctorRemediation(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil || len(home) <= 1 {
+		t.Skip("no usable home directory on this host")
+	}
+
+	r := Report{
+		Doctor: doctor.Report{
+			Results: []doctor.Result{
+				{
+					ID:          "sandbox_health",
+					Detail:      "no marker file at " + home + "/.shellforge",
+					Remediation: "Free up space at " + home + "/.cache, then run doctor again.",
+				},
+			},
+		},
+	}
+	scrubReport(&r)
+
+	got := r.Doctor.Results[0].Remediation
+	if strings.Contains(got, home) {
+		t.Errorf("Remediation = %q, still contains the raw host home directory %q", got, home)
+	}
+	want := "Free up space at ~/.cache, then run doctor again."
+	if got != want {
+		t.Errorf("Remediation = %q, want %q", got, want)
 	}
 }

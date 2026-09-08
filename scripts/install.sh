@@ -232,16 +232,32 @@ place() {
   bin_dir="$2"
 
   extract_dir="$WORKDIR/extract"
-  mkdir -p "$extract_dir"
+  mkdir -p "$extract_dir" || \
+    die "could not create $extract_dir" \
+        "Check that \$TMPDIR (or /tmp) has free space and that you have permission to create directories there."
   tar -xzf "$archive" -C "$extract_dir" shellforge || \
     die "could not extract $archive" \
         "The archive may be corrupted. Delete it and run the installer again."
+
+  # The checksum verified in verify() covers the archive as a whole, not
+  # what kind of filesystem entry its shellforge member is: a tampered
+  # release whose SHA256SUMS was generated from the same tampered archive
+  # would still verify. If that member is a symlink, chmod below would
+  # follow it and change the permissions of whatever it points to, and mv
+  # would then place a symlink to that target on PATH. Refuse before
+  # either happens, rather than after.
+  if [ ! -f "$extract_dir/shellforge" ] || [ -L "$extract_dir/shellforge" ]; then
+    die "the archive's shellforge entry is not a plain file" \
+        "The release may be tampered with. Nothing was installed. Report this and do not run the binary you downloaded."
+  fi
 
   mkdir -p "$bin_dir" || \
     die "could not create $bin_dir" \
         "Check that you have permission to create directories under $(dirname "$bin_dir")."
 
-  chmod 0755 "$extract_dir/shellforge"
+  chmod 0755 "$extract_dir/shellforge" || \
+    die "could not set permissions on the extracted binary" \
+        "Check that you have permission to modify files under $extract_dir."
   mv -f "$extract_dir/shellforge" "$bin_dir/shellforge" || \
     die "could not move the binary into $bin_dir" \
         "Check that you have write permission there."

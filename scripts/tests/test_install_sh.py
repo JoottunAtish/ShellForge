@@ -571,6 +571,56 @@ def test_refuses_a_symlinked_target_path(tmp_path: pathlib.Path) -> None:
     assert "symlink" in (result.stdout + result.stderr).lower()
 
 
+def test_refuses_an_archive_whose_shellforge_member_is_a_symlink(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A release archive whose `shellforge` member is a symlink to some
+    other file must be refused before `chmod` ever runs: `chmod 0755` on a
+    symlink follows it and changes the permission bits of whatever it
+    points to, and `mv` would then place a symlink to that target on PATH.
+    `verify()`'s sha256 check covers the archive as a whole, not what kind
+    of filesystem entry the named member inside it is, so a tampered
+    release whose SHA256SUMS was generated from the same tampered archive
+    still passes verification. This builds exactly that archive: no other
+    fixture helper in this file can, because `_build_fixture_release`
+    always writes a regular file member.
+    """
+    version = DEFAULT_VERSION
+    download_root = tmp_path / "release" / "download"
+    version_dir = download_root / version
+    version_dir.mkdir(parents=True, exist_ok=True)
+
+    home = tmp_path / "home"
+    home.mkdir(parents=True, exist_ok=True)
+    victim = home / "victim.txt"
+    victim.write_text("do not touch\n", encoding="utf-8")
+    victim.chmod(0o600)
+    before_mode = victim.stat().st_mode
+
+    asset_name = ASSET_NAMES["linux_amd64"].format(v=version)
+    archive_path = version_dir / asset_name
+    with tarfile.open(archive_path, "w:gz") as tar:
+        info = tarfile.TarInfo("shellforge")
+        info.type = tarfile.SYMTYPE
+        info.linkname = str(victim)
+        tar.addfile(info)
+
+    digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+    (version_dir / "SHA256SUMS").write_text(
+        f"{digest}  {asset_name}\n", encoding="utf-8"
+    )
+
+    result = _run_install(tmp_path)
+
+    assert result.returncode != 0
+    combined = (result.stdout + result.stderr).lower()
+    assert "not a plain file" in combined
+    assert victim.stat().st_mode == before_mode, (
+        "chmod followed the symlink and changed the victim's permissions"
+    )
+    assert not _bin_path(tmp_path).exists()
+
+
 # ---------------------------------------------------------------------------
 # The script itself
 # ---------------------------------------------------------------------------

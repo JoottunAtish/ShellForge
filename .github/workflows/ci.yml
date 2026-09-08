@@ -266,10 +266,26 @@ jobs:
         # outcomes the Day 6 ticket requires: happy path, checksum mismatch,
         # refused overwrite, -Force overwrite, -NoPathChange, a reserved
         # device name as -BinDir, and an alternate data stream colon in
-        # -BinDir. It prints one line per case and exits non-zero if any
-        # case did not behave as expected, and it restores whatever the
-        # user PATH was before this step ran, so the runner is left as it
-        # was found.
+        # -BinDir. Three more cases follow: two that exercise Resolve-Version's
+        # own default path (no -Version passed at all), which none of the
+        # seven above do, since all seven pass -Version explicitly, and one
+        # that seeds a REG_EXPAND_SZ user PATH value and asserts the
+        # installer preserves it rather than flattening it. Two more close it
+        # out: the postcondition the Unix suite's _snapshot_home enforces on
+        # every one of its own cases, that nothing changed outside the target
+        # -BinDir, checked here against the fixture directory and against the
+        # user profile's own top level entries. It prints one line per case
+        # and exits non-zero if any case did not behave as expected, and it
+        # restores whatever the user PATH was before this step ran, so the
+        # runner is left as it was found.
+        #
+        # Windows cannot run scripts/tests/fixtures/install/fake-shellforge
+        # directly (a #!/bin/sh script cannot stand in for a required
+        # shellforge.exe), so this step compiles its own tiny PE in its place.
+        # That PE's behaviour is read out of the committed fixture's own text
+        # rather than hardcoded a second time, so a rename or a format change
+        # to the real fixture breaks this step with a clear error instead of
+        # the two silently drifting apart.
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
@@ -293,14 +309,31 @@ jobs:
             throw "fixture source not found: $fakeSource"
           }
 
+          # Read the version string and the doctor exit-code variable name out
+          # of the committed fixture itself, rather than hardcoding a second,
+          # independent copy of both in this step's own C# source below.
+          # Windows cannot run scripts/tests/fixtures/install/fake-shellforge
+          # directly: it is a #!/bin/sh script, and install.ps1's contract
+          # fixes the placed file's name at shellforge.exe, which Windows
+          # refuses to run as a plain text file. So the fixture binary here
+          # has to be a real, tiny PE, compiled on the fly rather than
+          # committed. But reading the committed script's content to build
+          # that PE, instead of only checking that the file exists, means a
+          # rename or a format change to the real fixture breaks this step
+          # with a clear error, rather than the two silently drifting apart.
+          $fixtureText = Get-Content -LiteralPath $fakeSource -Raw
+          if ($fixtureText -notmatch '(?s)version\)\s*\n\s*echo\s+"([^"]+)"') {
+            throw "could not find the version) case's echo string in $fakeSource. Its format changed; update the regex this step reads it with."
+          }
+          $fixtureVersionString = $Matches[1]
+          if ($fixtureText -notmatch '(?s)doctor\)\s*\n\s*exit\s+"\$\{([A-Za-z_][A-Za-z0-9_]*):-') {
+            throw "could not find the doctor) case's exit variable in $fakeSource. Its format changed; update the regex this step reads it with."
+          }
+          $fixtureDoctorEnvVar = $Matches[1]
+
           # Build the fixture release under $env:RUNNER_TEMP. Plain text only is
           # committed to the repository; the archive and both SHA256SUMS files are
           # built here, at run time, matching scripts/tests/test_install_sh.py.
-          #
-          # install.ps1's own contract fixes the placed file's name at
-          # shellforge.exe, and Windows refuses to run a plain text file under a
-          # .exe name, so the fixture binary here has to be a real, tiny PE. It is
-          # compiled on the fly rather than committed, so no binary lands in git.
           $fixtureDir = Join-Path $env:RUNNER_TEMP 'sf-install-fixture'
           $downloadRoot = Join-Path $fixtureDir 'release\download'
           $versionDir = Join-Path $downloadRoot 'v0.1.0-test'
@@ -312,8 +345,10 @@ jobs:
 
           # A plain array of lines joined with a newline, not a here string: a here
           # string's closing '@ has to sit at column zero, which would end this
-          # step's YAML block scalar early. Every element below is a single quoted
-          # literal, so nothing needs escaping.
+          # step's YAML block scalar early. Every element is a single quoted
+          # literal except the two that embed a value read from the committed
+          # fixture above, which need double quotes so PowerShell interpolates
+          # them; each embeds its C# double quote with a backtick escape.
           $csharpLines = @(
             'using System;',
             '',
@@ -323,12 +358,12 @@ jobs:
             '    {',
             '        if (args.Length > 0 && args[0] == "version")',
             '        {',
-            '            Console.WriteLine("shellforge v0.1.0-test");',
+            "            Console.WriteLine(`"$fixtureVersionString`");",
             '            return 0;',
             '        }',
             '        if (args.Length > 0 && args[0] == "doctor")',
             '        {',
-            '            string raw = Environment.GetEnvironmentVariable("FAKE_SHELLFORGE_DOCTOR_EXIT");',
+            "            string raw = Environment.GetEnvironmentVariable(`"$fixtureDoctorEnvVar`");",
             '            int code = 0;',
             '            if (!string.IsNullOrEmpty(raw))',
             '            {',
@@ -366,6 +401,36 @@ jobs:
 
           $initialUserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 
+          # The postcondition test_install_sh.py's snapshot_home asserts on the
+          # Unix side: nothing outside the target -BinDir was written. Two
+          # roots matter here. $fixtureDir is where every case's own -BinDir
+          # lives, snapshotted now, after the fixture release is built but
+          # before any case runs install.ps1, so the "before" picture already
+          # contains the fixture's own release and exe-src directories and the
+          # diff below is only what the cases themselves add. $env:USERPROFILE
+          # is snapshotted by its immediate children only, not recursively: a
+          # real user profile holds far too many files to hash on every run,
+          # and the only question worth asking here is whether install.ps1
+          # left a new top level entry in the user's home directory, which
+          # none of its real writes (its own -BinDir, its temporary WorkDir
+          # under $env:TEMP, HKCU:\Environment) would ever do.
+          function Get-FixtureSnapshot {
+            param([string]$Root)
+            $snap = @{}
+            if (-not (Test-Path -LiteralPath $Root)) { return $snap }
+            Get-ChildItem -LiteralPath $Root -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object {
+              $rel = $_.FullName.Substring($Root.Length).TrimStart('\')
+              $stamp = if ($_.PSIsContainer) { 'dir' } else { "$($_.Length)|$($_.LastWriteTimeUtc.Ticks)" }
+              $snap[$rel] = $stamp
+            }
+            return $snap
+          }
+          $fixtureBefore = Get-FixtureSnapshot -Root $fixtureDir
+          $userProfileBefore = @(Get-ChildItem -LiteralPath $env:USERPROFILE -Force -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty Name | Sort-Object)
+
+          $versionPattern = [regex]::Escape($fixtureVersionString)
+
           try {
             # ---- Case 1: happy path ----
             $bin1 = Join-Path $fixtureDir 'bin-happy'
@@ -382,7 +447,7 @@ jobs:
               $ok1 = Test-Path -LiteralPath $exe1 -PathType Leaf
               if ($ok1) {
                 $out1 = & $exe1 version
-                $ok1 = ($LASTEXITCODE -eq 0) -and (($out1 -join "`n") -match 'shellforge v0\.1\.0-test')
+                $ok1 = ($LASTEXITCODE -eq 0) -and (($out1 -join "`n") -match $versionPattern)
               }
             }
             Report 'case 1: happy path installs and runs' $ok1
@@ -480,6 +545,136 @@ jobs:
             }
             $ok7 = $threw7 -and (-not (Test-Path -LiteralPath "$fixtureDir\ads-target"))
             Report 'case 7: alternate data stream colon in -BinDir refuses' $ok7
+
+            # ---- Case 8 and 9: Resolve-Version's own default-version path ----
+            # Every case above passes -Version, so none of them ever calls
+            # Resolve-Version's real branch: the one that runs when a learner
+            # does not pass -Version at all, which is the documented default
+            # and the only path a plain `iwr install.ps1 | iex` ever takes.
+            # That branch was broken on PowerShell 7 (this runner): it read
+            # $response.BaseResponse.ResponseUri, a property that exists only
+            # on 5.1's HttpWebResponse, not on 7's HttpResponseMessage, so it
+            # threw under Set-StrictMode -Version Latest on every single
+            # PowerShell 7 host, which is every host that runs this step.
+            #
+            # There is no tagged release yet for a real, unmocked call to
+            # https://github.com/JoottunAtish/ShellForge/releases/latest to
+            # resolve against, so this sources install.ps1's functions with
+            # its unconditional trailing Invoke-Main call stripped, defines a
+            # fake Invoke-WebRequest in the same scope to stand in for the
+            # network call, and calls Resolve-Version directly with no
+            # -RequestedVersion, exactly as Invoke-Main does when -Version is
+            # not passed. Two shapes are exercised because Resolve-FinalUri
+            # has to keep supporting both: PowerShell 7's real shape here on
+            # the runner, and 5.1's, which is what a machine outside CI most
+            # likely still runs.
+            $testableInstallScript = Join-Path $env:RUNNER_TEMP 'install-testable.ps1'
+            $installScriptText = Get-Content -LiteralPath $installScript -Raw
+            $testableText = $installScriptText -replace '(?m)^Invoke-Main\s*$', ''
+            Set-Content -LiteralPath $testableInstallScript -Value $testableText -NoNewline
+            . $testableInstallScript
+
+            function Invoke-WebRequest {
+              # Stands in for the real cmdlet of the same name: PowerShell
+              # resolves a function ahead of a cmdlet in the same scope, so
+              # Resolve-Version calls this instead of reaching the network.
+              param($Uri, $MaximumRedirection, [switch]$UseBasicParsing, $Method)
+              if ($script:mockShape -eq 'ps7') {
+                # PowerShell 7's real shape: BaseResponse is an
+                # HttpResponseMessage, which has RequestMessage.RequestUri
+                # and no ResponseUri property at all.
+                $requestMessage = [pscustomobject]@{ RequestUri = [Uri]$script:mockTagUrl }
+                $base = [pscustomobject]@{ RequestMessage = $requestMessage }
+              }
+              else {
+                # PowerShell 5.1's real shape: BaseResponse is an
+                # HttpWebResponse, which exposes ResponseUri directly.
+                $base = [pscustomobject]@{ ResponseUri = [Uri]$script:mockTagUrl }
+              }
+              return [pscustomobject]@{ BaseResponse = $base }
+            }
+
+            $script:mockTagUrl = 'https://github.com/JoottunAtish/ShellForge/releases/tag/v9.9.9-mock'
+            $script:mockShape = 'ps7'
+            $tag8 = $null
+            try {
+              $tag8 = Resolve-Version -RequestedVersion '' -EffectiveBaseUrl $DefaultBaseUrl
+            }
+            catch {
+              Write-Host "  case 8 threw: $_"
+            }
+            Report 'case 8: Resolve-Version default path resolves a tag (PS7 HttpResponseMessage shape)' ($tag8 -eq 'v9.9.9-mock')
+
+            $script:mockShape = 'ps51'
+            $tag9 = $null
+            try {
+              $tag9 = Resolve-Version -RequestedVersion '' -EffectiveBaseUrl $DefaultBaseUrl
+            }
+            catch {
+              Write-Host "  case 9 threw: $_"
+            }
+            Report 'case 9: Resolve-Version default path resolves a tag (PS 5.1 HttpWebResponse shape)' ($tag9 -eq 'v9.9.9-mock')
+
+            # The mock only stands in for cases 8 and 9. Cases 10+ below run
+            # the real install.ps1 by path, which inherits functions
+            # defined in this scope, and Get-Asset's file:// branch never
+            # calls Invoke-WebRequest for this fixture anyway, but there is
+            # no reason to leave a fake network cmdlet armed a moment
+            # longer than the two cases that need it.
+            Remove-Item Function:\Invoke-WebRequest -ErrorAction SilentlyContinue
+
+            # ---- Case 10: a REG_EXPAND_SZ user PATH keeps its token ----
+            # [Environment]::GetEnvironmentVariable('Path','User') always
+            # returns the EXPANDED value, and
+            # [Environment]::SetEnvironmentVariable always WRITES REG_SZ.
+            # Update-UserPath used to go through only those two, which
+            # meant a user PATH containing a token such as
+            # %USERPROFILE%\.dotnet\tools or
+            # %LOCALAPPDATA%\Microsoft\WindowsApps (both common) had that
+            # token permanently flattened into a literal expanded path the
+            # moment this installer ran. This seeds exactly that shape
+            # directly in the registry, runs the installer, and asserts
+            # the token and the REG_EXPAND_SZ kind both survive, then
+            # restores whatever this runner's real value and kind were,
+            # through the same raw registry path, not through
+            # [Environment]::SetEnvironmentVariable, which would silently
+            # reintroduce on this runner the exact bug this case checks.
+            $envKeyPath = 'HKCU:\Environment'
+            $envKeyBefore = Get-Item -LiteralPath $envKeyPath
+            $hadPathValue = $envKeyBefore.GetValueNames() -contains 'Path'
+            $savedRawPath = $envKeyBefore.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            $savedPathKind = if ($hadPathValue) { $envKeyBefore.GetValueKind('Path') } else { [Microsoft.Win32.RegistryValueKind]::String }
+
+            try {
+              $testToken = '%USERPROFILE%\sf-install-fixture-marker'
+              $seededRaw = if ($savedRawPath -eq '') { $testToken } else { "$savedRawPath;$testToken" }
+              Set-ItemProperty -LiteralPath $envKeyPath -Name 'Path' -Value $seededRaw -Type ([Microsoft.Win32.RegistryValueKind]::ExpandString)
+
+              $bin10 = Join-Path $fixtureDir 'bin-regexpand'
+              $ok10 = $true
+              try {
+                & $installScript -Version 'v0.1.0-test' -BinDir $bin10 -BaseUrl $baseUrl
+              }
+              catch {
+                $ok10 = $false
+                Write-Host "  case 10 threw: $_"
+              }
+              if ($ok10) {
+                $afterKey = Get-Item -LiteralPath $envKeyPath
+                $afterRaw = $afterKey.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+                $afterKind = $afterKey.GetValueKind('Path')
+                $ok10 = ($afterRaw -like "*$testToken*") -and ($afterKind -eq [Microsoft.Win32.RegistryValueKind]::ExpandString)
+              }
+              Report 'case 10: a REG_EXPAND_SZ user PATH keeps its token and its kind' $ok10
+            }
+            finally {
+              if (-not $hadPathValue) {
+                Remove-ItemProperty -LiteralPath $envKeyPath -Name 'Path' -ErrorAction SilentlyContinue
+              }
+              else {
+                Set-ItemProperty -LiteralPath $envKeyPath -Name 'Path' -Value $savedRawPath -Type $savedPathKind
+              }
+            }
           }
           finally {
             # Leave the runner's own user PATH exactly as this step found it, whether
@@ -487,11 +682,44 @@ jobs:
             [Environment]::SetEnvironmentVariable('Path', $initialUserPath, 'User')
           }
 
+          # ---- Case 11 and 12: nothing was written outside the target directory ----
+          # The postcondition the Unix suite's _snapshot_home enforces on
+          # every case there: only the intended -BinDir changed. bin-existing
+          # legitimately shows a change from case 3's own seeded victim file
+          # and case 4's -Force overwrite, both already under bin-existing, so
+          # the allow list below is by top level directory name, not "no
+          # change at all".
+          $fixtureAfter = Get-FixtureSnapshot -Root $fixtureDir
+          $allowedBinDirs = @('bin-happy', 'bin-mismatch', 'bin-existing', 'bin-nopathchange', 'bin-regexpand')
+          $fixtureKeys = @($fixtureBefore.Keys) + @($fixtureAfter.Keys) | Select-Object -Unique
+          $unexpectedFixtureChanges = @()
+          foreach ($key in $fixtureKeys) {
+            if ($fixtureBefore[$key] -eq $fixtureAfter[$key]) { continue }
+            $topSegment = $key.Split('\')[0]
+            if ($allowedBinDirs -notcontains $topSegment) {
+              $unexpectedFixtureChanges += $key
+            }
+          }
+          $ok11 = ($unexpectedFixtureChanges.Count -eq 0)
+          if (-not $ok11) {
+            Write-Host "  unexpected changes under fixtureDir: $($unexpectedFixtureChanges -join ', ')"
+          }
+          Report 'case 11: only the cases own -BinDir paths changed under fixtureDir' $ok11
+
+          $userProfileAfter = @(Get-ChildItem -LiteralPath $env:USERPROFILE -Force -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty Name | Sort-Object)
+          $userProfileDiff = Compare-Object -ReferenceObject $userProfileBefore -DifferenceObject $userProfileAfter
+          $ok12 = (-not $userProfileDiff)
+          if (-not $ok12) {
+            Write-Host "  unexpected top level change under USERPROFILE: $($userProfileDiff | Out-String)"
+          }
+          Report 'case 12: nothing new appeared directly under USERPROFILE' $ok12
+
           if ($failures -gt 0) {
             Write-Host "FAIL: $failures case(s) failed" -ForegroundColor Red
             exit 1
           }
-          Write-Host 'OK: all seven install.ps1 cases passed'
+          Write-Host 'OK: all twelve install.ps1 cases passed'
       - name: Fuzz the OSC parser
         # The parser consumes an adversarial byte stream by construction: the
         # learner can type any bytes at the prompt, including a forged OSC 133.

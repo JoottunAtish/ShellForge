@@ -31,6 +31,10 @@ sudo usermod -aG docker "$USER"
 curl -fsSL https://raw.githubusercontent.com/JoottunAtish/ShellForge/main/scripts/install.sh | sh
 ```
 
+This works once v0.1.0 is tagged. Until then there is no release for it to
+resolve, and it fails with `could not resolve the latest release`. Build from
+source instead: `make build`.
+
 Read that URL before you run it. It is this repository's own `scripts/install.sh`,
 nothing else, and you can read the whole file at that same address in a browser
 first. What it does:

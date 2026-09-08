@@ -80,6 +80,10 @@ Invoke-WebRequest -Uri https://raw.githubusercontent.com/JoottunAtish/ShellForge
 powershell -ExecutionPolicy Bypass -Scope Process -File install.ps1
 ```
 
+This works once v0.1.0 is tagged. Until then there is no release for it to
+resolve, and it fails with `could not resolve the latest release`. Build from
+source instead, with Go installed: `.\make.ps1 build`.
+
 Read that URL before you run it: `-ExecutionPolicy Bypass -Scope Process`
 affects nothing outside this one window, and it is this repository's own
 `scripts/install.ps1`, which you can read at that same address first. What it

@@ -96,6 +96,29 @@ jobs:
           done
           ls -l dist
 
+      - name: shellforge version on the linux/amd64 artifact names the tag
+        # test_release_yml_stamps_the_same_ldflag_variables_as_the_makefile
+        # only proves the same -X main.<var> names are passed here as in the
+        # Makefile: a string comparison, not a run. This is the other half:
+        # that TAG really reached main.version and the binary really prints
+        # it. The runner is linux/amd64, so the archive just built above can
+        # run right here, no cross compilation or emulation needed.
+        run: |
+          set -euo pipefail
+          tar -xzf "dist/shellforge_${TAG}_linux_amd64.tar.gz" -O shellforge > /tmp/shellforge
+          chmod +x /tmp/shellforge
+          out="$(/tmp/shellforge version)"
+          echo "$out"
+          case "$out" in
+            "shellforge $TAG"*) ;;
+            *)
+              echo "FAIL: shellforge version did not print 'shellforge $TAG' as its first line. Got:" >&2
+              echo "$out" >&2
+              exit 1
+              ;;
+          esac
+          rm -f /tmp/shellforge
+
       - name: Export the WSL rootfs
         # Do not restate the container export and gzip commands here: make
         # rootfs already uses gzip -9 -n, which is what keeps the digest

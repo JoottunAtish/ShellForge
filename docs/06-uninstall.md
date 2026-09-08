@@ -80,10 +80,20 @@ under the user `Path` entry, or from PowerShell:
 
 ```powershell
 $dir = "$env:LOCALAPPDATA\Programs\shellforge"
-$current = [Environment]::GetEnvironmentVariable('Path', 'User')
-$kept = ($current -split ';' | Where-Object { $_.TrimEnd('\') -ne $dir }) -join ';'
-[Environment]::SetEnvironmentVariable('Path', $kept, 'User')
+$key = Get-Item 'HKCU:\Environment'
+$raw = $key.GetValue('Path', '', 'DoNotExpandEnvironmentNames')
+$kind = $key.GetValueKind('Path')
+$kept = ($raw -split ';' | Where-Object { $_.TrimEnd('\') -ne $dir }) -join ';'
+Set-ItemProperty 'HKCU:\Environment' -Name Path -Value $kept -Type $kind
 ```
+
+This reads and writes the registry value directly rather than going through
+`[Environment]::GetEnvironmentVariable` and `SetEnvironmentVariable`, because
+those two always read the expanded value and always write it back as a plain
+string. If anything else on your user `Path`, such as
+`%LOCALAPPDATA%\Microsoft\WindowsApps`, is stored with a `%...%` token, going
+through those two would permanently replace that token with its expanded
+form. The five lines above leave every other entry exactly as it was.
 
 If you passed a custom `SHELLFORGE_BIN_DIR` (Linux) or `-BinDir` (Windows) when
 you installed, remove that directory instead of the default named above.

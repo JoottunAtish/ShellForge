@@ -52,12 +52,19 @@ repository's own scripts, which you can read before running either one.
 curl -fsSL https://raw.githubusercontent.com/JoottunAtish/ShellForge/main/scripts/install.sh | sh
 ```
 
+This resolves the latest tagged release, and there is not one yet: until v0.1.0 is
+tagged, it fails with `could not resolve the latest release`. Build from source
+instead: `make build`.
+
 **Windows**, from an ordinary PowerShell window:
 
 ```powershell
 Invoke-WebRequest -Uri https://raw.githubusercontent.com/JoottunAtish/ShellForge/main/scripts/install.ps1 -OutFile install.ps1
 powershell -ExecutionPolicy Bypass -Scope Process -File install.ps1
 ```
+
+The same applies here: this works once v0.1.0 is tagged, and fails the same way
+until then.
 
 Full detail on what each one does, and the manual verify-and-extract
 alternative, in the [Windows install guide](docs/01-install-windows.md) and the

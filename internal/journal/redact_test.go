@@ -53,6 +53,26 @@ func TestRedactHandlesEveryClosedListPattern(t *testing.T) {
 			raw:  "curl -u admin:hunter2 https://example.com",
 			want: "curl -u admin:[redacted] https://example.com",
 		},
+		{
+			name: "rule3/mysql -p with an intervening -u flag",
+			raw:  "mysql -u root -phunter2 shipping",
+			want: "mysql -u root -p [redacted] shipping",
+		},
+		{
+			name: "rule1/pgpassword has no separator before the word password",
+			raw:  "PGPASSWORD=hunter2 psql -h db.internal -U atlas",
+			want: "PGPASSWORD=[redacted] psql -h db.internal -U atlas",
+		},
+		{
+			name: "rule1/mysql_pwd",
+			raw:  "MYSQL_PWD=hunter2 mysql -u root",
+			want: "MYSQL_PWD=[redacted] mysql -u root",
+		},
+		{
+			name: "rule1/ssh passphrase",
+			raw:  "SSH_PASSPHRASE=hunter2 ssh-add ~/.ssh/id_ed25519",
+			want: "SSH_PASSPHRASE=[redacted] ssh-add ~/.ssh/id_ed25519",
+		},
 
 		// Rule 4: Authorization: Bearer|Basic, case insensitive on the
 		// header name and the scheme.
@@ -130,6 +150,20 @@ func TestRedactLeavesAnOrdinaryCommandByteIdentical(t *testing.T) {
 // rule: PASSPORT_ID must not be caught by the "pass" spelling.
 func TestRedactDoesNotCatchAWordMerelyContainingPass(t *testing.T) {
 	raw := "PASSPORT_ID=abc123 ./enroll.sh"
+	got, changed := Redact(raw)
+	if got != raw {
+		t.Errorf("Redact(%q) = %q, want it byte identical", raw, got)
+	}
+	if changed {
+		t.Errorf("Redact(%q) reported changed = true, want false", raw)
+	}
+}
+
+// TestRedactLeavesDockerRunUidGidAlone pins the fix for reCurlUserPass
+// matching any -u user:pass shape rather than only curl's: docker run's
+// -u uid:gid must survive untouched because the command is not curl.
+func TestRedactLeavesDockerRunUidGidAlone(t *testing.T) {
+	raw := "docker run -u 1000:1000 --rm -it alpine sh"
 	got, changed := Redact(raw)
 	if got != raw {
 		t.Errorf("Redact(%q) = %q, want it byte identical", raw, got)

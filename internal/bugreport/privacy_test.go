@@ -160,18 +160,35 @@ func TestBundleRewritesTheHostHomePrefix(t *testing.T) {
 	if strings.Contains(text, home) {
 		t.Errorf("bundle contains the raw host home directory %q", home)
 	}
-	// filepath.Join, not a hardcoded "~/quest": cwd above was built with
-	// filepath.Join too, so on Windows it is "C:\Users\...\quest" and the
-	// scrubbed form is "~\quest". scrubHome replaces the home prefix and
-	// deliberately does not rewrite separators, because a bundle that
-	// reported a Windows path with forward slashes would misrepresent the
-	// machine to whoever is reading it, which is the one thing a bug report
-	// must not do. Asserting a literal "~/quest" here asserted a separator
-	// rewrite that nothing in this package performs or should.
+	// The scrubbed cwd is asserted on the Report, not by grepping the
+	// serialized bundle, and the reason is worth writing down because the
+	// obvious version of this assertion is wrong on Windows in a way that
+	// looks right on Linux.
+	//
+	// scrubHome replaces the home prefix and deliberately does not rewrite
+	// separators: a bundle that reported a Windows path with forward slashes
+	// would misrepresent the machine to whoever reads it, which is the one
+	// thing a bug report must not do. So on Windows the scrubbed value is
+	// `~\quest`. But report.json goes through json.Marshal, which escapes a
+	// backslash, so the bytes in the bundle are `~\\quest` and a
+	// strings.Contains for `~\quest` can never match there. Both a hardcoded
+	// "~/quest" and a filepath.Join("~", "quest") fail on Windows, for two
+	// different reasons.
+	//
+	// Checking the struct field tests what this package actually promises,
+	// and leaves JSON's own escaping to encoding/json where it belongs. The
+	// raw-home grep above still covers the whole serialized bundle, which is
+	// the half that matters for privacy.
 	wantCwd := filepath.Join("~", "quest")
-	if !strings.Contains(text, wantCwd) {
-		t.Errorf("bundle does not contain the scrubbed cwd %s: %s", wantCwd, text)
+	if len(report.Journal) != 1 {
+		t.Fatalf("len(report.Journal) = %d, want 1", len(report.Journal))
 	}
+	if got := report.Journal[0].Cwd; got != wantCwd {
+		t.Errorf("Journal[0].Cwd = %q, want %q", got, wantCwd)
+	}
+	// The note keeps its literal forward slash: the fake prober's error text
+	// hardcodes one above, so scrubbing only replaces the home prefix and
+	// this assertion is separator independent.
 	if !strings.Contains(text, "~/.shellforge") {
 		t.Errorf("bundle does not contain the scrubbed note path ~/.shellforge: %s", text)
 	}
