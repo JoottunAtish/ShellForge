@@ -160,8 +160,17 @@ func TestBundleRewritesTheHostHomePrefix(t *testing.T) {
 	if strings.Contains(text, home) {
 		t.Errorf("bundle contains the raw host home directory %q", home)
 	}
-	if !strings.Contains(text, "~/quest") {
-		t.Errorf("bundle does not contain the scrubbed cwd ~/quest: %s", text)
+	// filepath.Join, not a hardcoded "~/quest": cwd above was built with
+	// filepath.Join too, so on Windows it is "C:\Users\...\quest" and the
+	// scrubbed form is "~\quest". scrubHome replaces the home prefix and
+	// deliberately does not rewrite separators, because a bundle that
+	// reported a Windows path with forward slashes would misrepresent the
+	// machine to whoever is reading it, which is the one thing a bug report
+	// must not do. Asserting a literal "~/quest" here asserted a separator
+	// rewrite that nothing in this package performs or should.
+	wantCwd := filepath.Join("~", "quest")
+	if !strings.Contains(text, wantCwd) {
+		t.Errorf("bundle does not contain the scrubbed cwd %s: %s", wantCwd, text)
 	}
 	if !strings.Contains(text, "~/.shellforge") {
 		t.Errorf("bundle does not contain the scrubbed note path ~/.shellforge: %s", text)

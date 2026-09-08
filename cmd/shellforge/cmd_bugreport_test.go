@@ -265,6 +265,13 @@ func TestBugReportSucceedsWithNoSandboxAndNoDatabase(t *testing.T) {
 		t.Fatalf("seed XDG_DATA_HOME blocker: %v", err)
 	}
 	t.Setenv("XDG_DATA_HOME", blocker)
+	// LOCALAPPDATA as well, because platform.DataDir does not read
+	// XDG_DATA_HOME on Windows: it goes through os.UserCacheDir, which reads
+	// LOCALAPPDATA. Setting only the XDG variable left the real user
+	// database reachable on the Windows runner, so the test asserted a note
+	// about a missing database while the database was found. Blocking both
+	// creates the same condition on both platforms.
+	t.Setenv("LOCALAPPDATA", blocker)
 
 	dir := t.TempDir()
 	out := filepath.Join(dir, "report.zip")

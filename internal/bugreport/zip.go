@@ -3,10 +3,8 @@ package bugreport
 import (
 	"archive/zip"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -126,10 +124,15 @@ func collectLogs(logDir string) ([]logFile, error) {
 	}
 	entries, err := os.ReadDir(logDir)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, err
+		// Any failure to list the log directory means no logs, never a
+		// failed bundle. fs.ErrNotExist is the common case (nothing writes
+		// there yet), but it is not the only one: a cache path shadowed by
+		// a regular file gives ENOTDIR on Unix, and an unreadable directory
+		// gives EACCES. Logs are a nicety on top of the report, so letting
+		// one of those abort the whole command would deny a learner the
+		// bundle over the least valuable thing in it, which is the opposite
+		// of what this package is for.
+		return nil, nil
 	}
 
 	var out []logFile
@@ -137,6 +140,11 @@ func collectLogs(logDir string) ([]logFile, error) {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".log") {
 			continue
 		}
+		// #nosec G304 -- logDir is platform.LogDir(), a Shellforge-resolved
+		// path under CacheDir(), and e.Name() is a single directory entry
+		// name that os.ReadDir just returned for that same directory, so it
+		// carries no separator and cannot traverse. Neither half comes from
+		// a level pack, a flag, or anything else a learner controls.
 		data, err := os.ReadFile(filepath.Join(logDir, e.Name()))
 		if err != nil {
 			return nil, fmt.Errorf("read log %q: %w", e.Name(), err)

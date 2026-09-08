@@ -78,6 +78,13 @@ func runBugReport(ctx context.Context, w io.Writer, v VersionInfo, prober bugrep
 		)
 	}
 
+	// #nosec G304 -- absPath is the path the learner chose with --out, made
+	// absolute just above. Scoping it under a fixed root, as gosec's autofix
+	// suggests, would defeat the flag: a bug report the learner cannot put
+	// where they want is a bug report they cannot attach. O_EXCL is what
+	// makes this safe rather than a root: the call can only ever create a
+	// new file, so it can neither overwrite an existing one nor follow a
+	// symlink to somewhere else.
 	f, err := os.OpenFile(absPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		if errors.Is(err, os.ErrExist) {
@@ -130,8 +137,8 @@ func runBugReport(ctx context.Context, w io.Writer, v VersionInfo, prober bugrep
 		// today; if it ever does, the partial file is removed the same
 		// way a Write failure below removes it, rather than leaving a
 		// zero-byte bundle for a learner to attach by mistake.
-		f.Close()
-		os.Remove(absPath)
+		_ = f.Close()          // already failing through ux.Fail; a close error adds nothing the learner can act on
+		_ = os.Remove(absPath) // best effort, and only ever the file O_EXCL created a moment ago
 		return ux.Fail(
 			"collect the bug report",
 			err,
@@ -145,7 +152,7 @@ func runBugReport(ctx context.Context, w io.Writer, v VersionInfo, prober bugrep
 	writeErr := writeBundle(f, report, logDir)
 	closeErr := f.Close()
 	if writeErr != nil || closeErr != nil {
-		os.Remove(absPath)
+		_ = os.Remove(absPath) // best effort, and only ever the file O_EXCL created a moment ago
 		if writeErr == nil {
 			writeErr = closeErr
 		}

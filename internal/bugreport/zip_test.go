@@ -136,6 +136,40 @@ func TestWriteToleratesAMissingLogDir(t *testing.T) {
 	}
 }
 
+// TestWriteToleratesALogDirShadowedByAFile asserts that a log directory whose
+// path runs through a regular file still produces a bundle.
+//
+// This is not a hypothetical. platform.LogDir() sits under CacheDir(), and a
+// learner whose cache path is shadowed, or simply unreadable, would otherwise
+// be refused a bug report over the least valuable thing in it. The first
+// version of collectLogs returned every error but fs.ErrNotExist, so this
+// case (ENOTDIR on Unix) aborted the whole command.
+func TestWriteToleratesALogDirShadowedByAFile(t *testing.T) {
+	stamp := time.Date(2026, 9, 8, 12, 30, 0, 0, time.UTC)
+	r := testReport(stamp)
+
+	blocker := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatalf("seed the blocking file: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := Write(&buf, r, filepath.Join(blocker, "logs")); err != nil {
+		t.Fatalf("Write with a shadowed log dir: %v", err)
+	}
+
+	entries := readZip(t, buf.Bytes())
+	prefix := strings.TrimSuffix(BundleName(stamp), ".zip") + "/"
+	if _, ok := entries[prefix+"report.json"]; !ok {
+		t.Error("the bundle has no report.json, so a shadowed log dir cost the learner the whole report")
+	}
+	for name := range entries {
+		if strings.HasPrefix(name, prefix+"logs/") {
+			t.Errorf("unexpected logs/ entry %q for a shadowed log directory", name)
+		}
+	}
+}
+
 // TestWriteTruncatesALargeLog asserts a log over MaxLogBytes is carried as
 // exactly MaxLogBytes plus the truncation marker line, not the whole file.
 func TestWriteTruncatesALargeLog(t *testing.T) {
