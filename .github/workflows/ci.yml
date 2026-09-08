@@ -343,46 +343,56 @@ jobs:
           New-Item -ItemType Directory -Path $exeSourceDir -Force | Out-Null
           $exePath = Join-Path $exeSourceDir 'shellforge.exe'
 
+          # Go, not C# through Add-Type. `Add-Type -OutputType ConsoleApplication`
+          # exists only in Windows PowerShell 5.1: PowerShell 7, which is what
+          # `shell: pwsh` runs here and what every modern Windows box has, refuses
+          # it outright with "Both the assembly types 'ConsoleApplication' and
+          # 'WindowsApplication' are not currently supported", so the fixture
+          # could never be built and this whole step failed before install.ps1
+          # was invoked once. This job already ran actions/setup-go, so a Go
+          # toolchain is right there, and `go build` on a single file works
+          # outside a module.
+          #
           # A plain array of lines joined with a newline, not a here string: a here
           # string's closing '@ has to sit at column zero, which would end this
           # step's YAML block scalar early. Every element is a single quoted
           # literal except the two that embed a value read from the committed
           # fixture above, which need double quotes so PowerShell interpolates
-          # them; each embeds its C# double quote with a backtick escape.
-          $csharpLines = @(
-            'using System;',
+          # them; each embeds its Go double quote with a backtick escape.
+          $goLines = @(
+            'package main',
             '',
-            'class Program',
-            '{',
-            '    static int Main(string[] args)',
-            '    {',
-            '        if (args.Length > 0 && args[0] == "version")',
-            '        {',
-            "            Console.WriteLine(`"$fixtureVersionString`");",
-            '            return 0;',
-            '        }',
-            '        if (args.Length > 0 && args[0] == "doctor")',
-            '        {',
-            "            string raw = Environment.GetEnvironmentVariable(`"$fixtureDoctorEnvVar`");",
-            '            int code = 0;',
-            '            if (!string.IsNullOrEmpty(raw))',
-            '            {',
-            '                int.TryParse(raw, out code);',
-            '            }',
-            '            return code;',
-            '        }',
-            '        Console.Error.WriteLine("fake-shellforge: unknown command");',
-            '        return 1;',
-            '    }',
+            'import (',
+            '	"fmt"',
+            '	"os"',
+            '	"strconv"',
+            ')',
+            '',
+            'func main() {',
+            '	if len(os.Args) > 1 && os.Args[1] == "version" {',
+            "		fmt.Println(`"$fixtureVersionString`")",
+            '		os.Exit(0)',
+            '	}',
+            '	if len(os.Args) > 1 && os.Args[1] == "doctor" {',
+            "		raw := os.Getenv(`"$fixtureDoctorEnvVar`")",
+            '		code := 0',
+            '		if raw != "" {',
+            '			if n, err := strconv.Atoi(raw); err == nil {',
+            '				code = n',
+            '			}',
+            '		}',
+            '		os.Exit(code)',
+            '	}',
+            '	fmt.Fprintln(os.Stderr, "fake-shellforge: unknown command")',
+            '	os.Exit(1)',
             '}'
           )
-          $csharpSource = $csharpLines -join "`n"
-          try {
-            Add-Type -TypeDefinition $csharpSource -OutputType ConsoleApplication -OutputAssembly $exePath
-          }
-          catch {
-            Write-Host "FAIL: could not compile the fixture binary: $_" -ForegroundColor Red
-            throw
+          $goSourcePath = Join-Path $exeSourceDir 'main.go'
+          Set-Content -LiteralPath $goSourcePath -Value ($goLines -join "`n") -Encoding ascii -NoNewline
+          go build -o $exePath $goSourcePath
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $exePath)) {
+            Write-Host "FAIL: could not build the fixture binary from $goSourcePath" -ForegroundColor Red
+            exit 1
           }
 
           $zipPath = Join-Path $versionDir 'shellforge_v0.1.0-test_windows_amd64.zip'
