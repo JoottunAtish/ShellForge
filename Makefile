@@ -28,7 +28,8 @@ CONTAINER_ENGINE := $(shell command -v docker 2>/dev/null || command -v podman 2
 
 .DEFAULT_GOAL := help
 .PHONY: help build install test race fuzz cover lint fmt vet punct allowlist links arch \
-        cli labels sec vuln gosec image rootfs run golden golden-image golden-go validate clean tools ci
+        cli labels sec vuln gosec image rootfs run golden golden-image golden-go validate \
+        dist clean tools ci
 
 ## help: Show this help.
 help:
@@ -47,6 +48,37 @@ build:
 ## install: Install the binary into GOBIN.
 install:
 	go install -trimpath -ldflags "$(LDFLAGS)" $(PKG)
+
+# DIST_DIR is a literal, never a `?=` override: an overridable `rm -rf`
+# target is exactly the shape the destructive-safety skill forbids. It is
+# never derived from git and never empty, because a make variable assigned
+# a literal cannot be.
+DIST_DIR     := dist
+DIST_TARGETS := linux/amd64 linux/arm64 windows/amd64
+
+## dist: Cross-compile the release archives into dist/, the same matrix release.yml builds.
+#
+# Deliberately does NOT export the WSL rootfs: that needs a Docker daemon,
+# `make rootfs` already exists for it, and coupling the two would make
+# `make dist` unusable on a machine with no daemon, which is this one.
+dist:
+	@rm -rf $(DIST_DIR)
+	@mkdir -p $(DIST_DIR)
+	@for t in $(DIST_TARGETS); do \
+	  os=$${t%%/*}; arch=$${t##*/}; \
+	  bin=$(BINARY); if [ "$$os" = "windows" ]; then bin=$(BINARY).exe; fi; \
+	  CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "$(LDFLAGS)" \
+	    -o $(DIST_DIR)/$$bin $(PKG) || exit 1; \
+	  if [ "$$os" = "windows" ]; then \
+	    (cd $(DIST_DIR) && zip -q -j shellforge_$(VERSION)_$${os}_$${arch}.zip $$bin); \
+	  else \
+	    (cd $(DIST_DIR) && tar -czf shellforge_$(VERSION)_$${os}_$${arch}.tar.gz $$bin); \
+	  fi; \
+	  rm -f $(DIST_DIR)/$$bin; \
+	done
+	@cd $(DIST_DIR) && sha256sum shellforge_*.tar.gz shellforge_*.zip > SHA256SUMS
+	@cd $(DIST_DIR) && sha256sum -c SHA256SUMS
+	@ls -l $(DIST_DIR)
 
 ## test: Run unit tests.
 test:
@@ -176,7 +208,7 @@ golden: build golden-image
 
 ## golden-go: The same contract as a Go test. Needs a Linux Docker daemon.
 golden-go: golden-image
-	SHELLFORGE_GOLDEN=1 go test -run '^TestEveryLevelGoldenPath$$|^TestPipe05RejectsNearMisses$$' -timeout 30m ./cmd/shellforge/...
+	SHELLFORGE_GOLDEN=1 go test -run '^TestEveryLevelGoldenPath$$|^TestLevelsRejectNearMisses$$' -timeout 30m ./cmd/shellforge/...
 
 ## tools: Report the toolchain versions this repo expects.
 tools:
@@ -186,7 +218,7 @@ tools:
 
 ## clean: Remove build output.
 clean:
-	rm -rf $(BIN_DIR) images/out coverage.out coverage.html
+	rm -rf $(BIN_DIR) $(DIST_DIR) images/out coverage.out coverage.html
 	go clean -testcache
 
 ## ci: Everything CI runs.

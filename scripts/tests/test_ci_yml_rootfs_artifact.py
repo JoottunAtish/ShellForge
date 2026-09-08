@@ -10,12 +10,18 @@ downstream (the WSL runtime import path, a release page, a learner's own
 `wsl --import`) could ever depend on one existing.
 
 This file pins the shape of the fix in `ci.yml`, not the shape of the tarball
-itself: the tag trigger that makes the `image` job run on a version tag, the
-`contents: write` permission that job needs to attach a release asset, the
-upload step's name, path, and `uses:` pin, and the release-attach step's
-condition and command. A step that moves, gets renamed, or loses its pin
-would otherwise fail silently: the job could still go green while publishing
-nothing, which is exactly the failure this ticket exists to close.
+itself: the tag trigger that makes the `image` job run on a version tag, and
+the upload step's name, path, and `uses:` pin. A step that moves, gets
+renamed, or loses its pin would otherwise fail silently: the job could still
+go green while publishing nothing, which is exactly the failure this ticket
+exists to close.
+
+Publishing to a GitHub Release moved to `.github/workflows/release.yml`
+(issue #105: scope the `image` job's `contents: write` down rather than
+narrow it, since GitHub has no per-step permission scope). The `image` job
+itself keeps no elevated permission and no release-attach step; see
+`scripts/tests/test_release_yml.py` for the tests that moved there with that
+behaviour.
 
 Run from the repository root:
 
@@ -26,7 +32,6 @@ from __future__ import annotations
 
 import importlib.util
 import pathlib
-import re
 
 import yaml
 
@@ -68,14 +73,17 @@ def test_workflow_runs_on_a_version_tag_push() -> None:
     assert "v*" in tags, tags
 
 
-def test_image_job_can_write_release_assets() -> None:
-    # The workflow level permission is `contents: read`. Attaching a release
-    # asset needs `contents: write`, and only this one job should have it:
-    # scoping the elevated permission to the job that needs it, rather than
-    # raising it workflow wide, is what keeps every other job's token at
-    # read-only.
+def test_image_job_no_longer_writes_release_assets() -> None:
+    # Issue #105 asked to scope the image job's contents: write down to the
+    # release-attach step only. GitHub has no per-step permission scope, so
+    # the implementable form of that intent is to remove the permission
+    # entirely: publishing moved to release.yml, which now holds its own
+    # scoped contents: write in the one job that needs it. See
+    # scripts/tests/test_release_yml.py.
     data = _workflow()
-    assert data["jobs"]["image"]["permissions"]["contents"] == "write"
+    permissions = data["jobs"]["image"].get("permissions")
+    if permissions is not None:
+        assert permissions.get("contents") == "read", permissions
 
 
 def test_upload_rootfs_artifacts_step_exists_with_both_files() -> None:
@@ -112,27 +120,10 @@ def test_upload_rootfs_artifacts_uses_the_pinned_upload_artifact_action() -> Non
     assert len(refs) == 1, f"actions/upload-artifact is pinned to more than one ref: {refs}"
 
 
-def test_release_attach_step_runs_after_upload_on_tag_push_only() -> None:
+def test_image_job_has_no_release_step() -> None:
+    # The release-attach step moved to release.yml (see
+    # test_release_attach_step_runs_after_upload_on_tag_push_only there).
+    # This job should not mention publishing a GitHub Release at all.
     steps = _image_job_steps()
-    upload_index = next(
-        i for i, s in enumerate(steps) if s.get("name") == UPLOAD_STEP_NAME
-    )
-
-    release_step = None
-    for step in steps[upload_index + 1 :]:
-        if "release" in step.get("name", "").lower():
-            release_step = step
-            break
-    assert release_step is not None, "no release-attach step found after the upload step"
-
-    condition = str(release_step["if"])
-    assert "github.event_name == 'push'" in condition
-    assert "refs/tags/" in condition
-
-    # Not just that both commands appear, but that upload is tried first and
-    # create is the fallback: a reordering, an unconditional pair, or `&&`
-    # instead of `||` are all broken in a real way (create errors against an
-    # existing release; upload can never reach an unconditional create) and
-    # two independent `in` checks would not catch any of them.
-    run = release_step["run"]
-    assert re.search(r"gh release upload.*\|\|\s*\n?\s*gh release create", run, re.DOTALL), run
+    for step in steps:
+        assert "gh release" not in step.get("run", ""), step

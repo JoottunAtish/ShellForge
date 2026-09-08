@@ -40,6 +40,7 @@ git clone https://github.com/JoottunAtish/ShellForge.git
 cd ShellForge
 make build
 make test
+make dist       # cross-compiles the release archives into dist/, no Docker needed
 ```
 
 On Windows, `make` is usually not installed. Use the PowerShell equivalent, which
@@ -178,8 +179,9 @@ wrong.
 ## Reporting bugs
 
 Once the binary builds, `shellforge bug-report` bundles the doctor output, logs,
-versions, and a redacted command journal into a zip. Attach it. It contains no
-command output, only the commands themselves.
+and version and sandbox information into a zip. Attach it. Your commands are
+not included unless you add `--journal`, and even then every command goes
+through a redaction pass first. The bundle never contains command output.
 
 For install failures, tell us the exact step number in the install guide where you
 got stuck. That is the single most useful bug report this project can receive.

@@ -26,6 +26,7 @@ var layers = map[string]int{
 	"internal/game/bus":          4,
 	"internal/game/score":        4,
 	"internal/game/achievements": 4,
+	"internal/bugreport":         4,
 
 	"internal/content":           3,
 	"internal/content/setup":     3,

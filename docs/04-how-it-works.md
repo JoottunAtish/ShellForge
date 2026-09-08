@@ -54,8 +54,12 @@ and none are planned.
 
 One honest caveat, stated plainly: the command journal records what you type, and
 people sometimes type passwords into shells. It is stored with restrictive file
-permissions and it is never transmitted. `shellforge bug-report` includes the
-commands you ran but not their output, and never the environment snapshot.
+permissions and it is never transmitted. `shellforge bug-report` never includes
+your commands by default: only `shellforge bug-report --journal` does, and even
+then every command is run through a redaction step first, a closed list that
+strips out things like `PASSWORD=...` assignments, `--token` and similar flags,
+`Authorization` headers, and PEM key blocks. The bundle never includes command
+output, and never the environment snapshot.
 
 ## 5. What does it install on my system?
 

@@ -1,0 +1,25 @@
+#!/bin/sh
+# A tiny stand in for the real shellforge binary, used only by
+# scripts/tests/test_install_sh.py and the matching pwsh step in
+# .github/workflows/ci.yml. It is packed into the fixture archives that
+# those tests build at run time, never committed as a binary.
+#
+# "version" prints a fixed string an installer test can assert on.
+# "doctor" exits 0 by default, but the doctor failure test overwrites this
+# file with FAKE_SHELLFORGE_DOCTOR_EXIT set to a non-zero value first, so
+# the same script also covers the failing-doctor-does-not-fail-install case.
+set -eu
+
+case "${1:-}" in
+  version)
+    echo "shellforge v0.1.0-test"
+    exit 0
+    ;;
+  doctor)
+    exit "${FAKE_SHELLFORGE_DOCTOR_EXIT:-0}"
+    ;;
+  *)
+    echo "fake-shellforge: unknown command: ${1:-}" >&2
+    exit 1
+    ;;
+esac

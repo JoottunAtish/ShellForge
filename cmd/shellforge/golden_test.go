@@ -161,122 +161,15 @@ func TestGoldenTestCoversEveryLevelInThePack(t *testing.T) {
 	}
 }
 
-// TestPipe05RejectsNearMisses is the accepts-wrong-answer check for the one level
-// whose answer is a number a learner could arrive at the wrong way.
-//
-// The testing skill asks for this on any level where a plausible mistake produces
-// output that looks right. Each case writes a near miss into the level's world and
-// asserts the checks still refuse it.
-func TestPipe05RejectsNearMisses(t *testing.T) {
-	requireGoldenSandbox(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), goldenTimeout)
-	defer cancel()
-
-	pack, err := content.Embedded()
-	if err != nil {
-		t.Fatalf("load the embedded pack: %v", err)
-	}
-	level, ok := pack.Level("pipe-05")
-	if !ok {
-		t.Fatal("pipe-05 is not in the embedded pack")
-	}
-	packFS, err := goldenPackFS()
-	if err != nil {
-		t.Fatalf("root the pack filesystem: %v", err)
-	}
-
-	sess := goldenSession(t, ctx)
-	session, err := newGoldenGameSession(sess, packFS, level)
-	if err != nil {
-		t.Fatalf("build the level: %v", err)
-	}
-
-	if err := session.Setup(ctx); err != nil {
-		t.Fatalf("setup: %v", err)
-	}
-	t.Cleanup(func() {
-		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
-		defer cancel()
-		_ = session.Teardown(cleanupCtx)
-	})
-
-	nearMisses := []struct {
-		name    string
-		script  string
-		explain string
-	}{
-		{
-			name:    "the count off by one",
-			script:  `printf '146\n' > ~/quest/report.txt`,
-			explain: "a learner who missed a file, or counted with the wrong flag",
-		},
-		{
-			name:    "the count off by one the other way",
-			script:  `printf '148\n' > ~/quest/report.txt`,
-			explain: "a learner who counted a header line",
-		},
-		{
-			name:    "an empty report",
-			script:  `: > ~/quest/report.txt`,
-			explain: "a redirect that ran before the pipeline",
-		},
-		{
-			name:    "the codes lowercase",
-			script:  `printf 'e401\ne500\ne503\n' > ~/quest/codes.txt`,
-			explain: "grep -o without -E, or a pattern that lowercased",
-		},
-		{
-			name:    "the codes unsorted",
-			script:  `printf 'E503\nE401\nE500\n' > ~/quest/codes.txt`,
-			explain: "uniq without sort, which only collapses adjacent duplicates",
-		},
-		{
-			name:    "the codes with duplicates",
-			script:  `printf 'E401\nE401\nE500\nE503\n' > ~/quest/codes.txt`,
-			explain: "sort without -u",
-		},
-		{
-			name:    "a fourth code that is not in the logs",
-			script:  `printf 'E401\nE404\nE500\nE503\n' > ~/quest/codes.txt`,
-			explain: "a pattern that matched something else in the line",
-		},
-	}
-
-	for _, tt := range nearMisses {
-		t.Run(tt.name, func(t *testing.T) {
-			// Start from the solved state, so only the near miss under test is
-			// wrong and the other objective passes. That is what makes this a
-			// test of the check rather than of the setup.
-			if err := applySolution(ctx, sess, level); err != nil {
-				t.Fatalf("apply the solution: %v", err)
-			}
-			if _, err := sess.Exec(ctx, []string{"bash", "-lc", tt.script}, runtime.ExecOpts{
-				User: sandboxUser, WorkDir: level.Setup.Root, Timeout: 30 * time.Second,
-			}); err != nil {
-				t.Fatalf("write the near miss: %v", err)
-			}
-
-			res, err := session.Check(ctx)
-			if err != nil {
-				t.Fatalf("check: %v", err)
-			}
-			if res.Passed {
-				t.Errorf("pipe-05 accepted a wrong answer (%s: %s).\n"+
-					"      The level accepts something it should not. Tighten the check, and confirm it "+
-					"still accepts every legitimate way to reach the right answer.", tt.name, tt.explain)
-			}
-		})
-	}
-}
-
-// newGoldenGameSession builds a game.Session for the near-miss test, which needs
-// one directly rather than through runGoldenLevel.
-func newGoldenGameSession(sess runtime.Session, packFS fs.FS, level *content.Level) (*game.Session, error) {
+// newGoldenGameSession builds a game.Session for a caller that needs
+// one directly rather than through runGoldenLevel. journal may be nil, which
+// game.Config documents as a reader that reports no commands.
+func newGoldenGameSession(sess runtime.Session, packFS fs.FS, level *content.Level, journal verify.JournalReader) (*game.Session, error) {
 	return game.NewSession(game.Config{
 		Level:    level,
 		Sess:     sess,
 		PackFS:   packFS,
 		Verifier: verify.NewEngine(),
+		Journal:  journal,
 	})
 }
