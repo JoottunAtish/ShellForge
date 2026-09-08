@@ -258,6 +258,240 @@ jobs:
             exit $LASTEXITCODE
           }
 
+      - name: install.ps1 against a local fixture release (Windows)
+        # install.ps1's only execution witness: there is no pwsh on the
+        # machine that wrote it. This step builds the same shape of fixture
+        # release scripts/tests/test_install_sh.py builds for install.sh,
+        # under $env:RUNNER_TEMP, and drives install.ps1 through the seven
+        # outcomes the Day 6 ticket requires: happy path, checksum mismatch,
+        # refused overwrite, -Force overwrite, -NoPathChange, a reserved
+        # device name as -BinDir, and an alternate data stream colon in
+        # -BinDir. It prints one line per case and exits non-zero if any
+        # case did not behave as expected, and it restores whatever the
+        # user PATH was before this step ran, so the runner is left as it
+        # was found.
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $failures = 0
+
+          function Report {
+            param([string]$Name, [bool]$Ok)
+            if ($Ok) {
+              Write-Host "OK    $Name"
+            }
+            else {
+              Write-Host "FAIL  $Name" -ForegroundColor Red
+              $script:failures++
+            }
+          }
+
+          $installScript = Join-Path (Get-Location).Path 'scripts\install.ps1'
+          $fakeSource = Join-Path (Get-Location).Path 'scripts\tests\fixtures\install\fake-shellforge'
+          if (-not (Test-Path -LiteralPath $fakeSource)) {
+            throw "fixture source not found: $fakeSource"
+          }
+
+          # Build the fixture release under $env:RUNNER_TEMP. Plain text only is
+          # committed to the repository; the archive and both SHA256SUMS files are
+          # built here, at run time, matching scripts/tests/test_install_sh.py.
+          #
+          # install.ps1's own contract fixes the placed file's name at
+          # shellforge.exe, and Windows refuses to run a plain text file under a
+          # .exe name, so the fixture binary here has to be a real, tiny PE. It is
+          # compiled on the fly rather than committed, so no binary lands in git.
+          $fixtureDir = Join-Path $env:RUNNER_TEMP 'sf-install-fixture'
+          $downloadRoot = Join-Path $fixtureDir 'release\download'
+          $versionDir = Join-Path $downloadRoot 'v0.1.0-test'
+          New-Item -ItemType Directory -Path $versionDir -Force | Out-Null
+
+          $exeSourceDir = Join-Path $fixtureDir 'exe-src'
+          New-Item -ItemType Directory -Path $exeSourceDir -Force | Out-Null
+          $exePath = Join-Path $exeSourceDir 'shellforge.exe'
+
+          # A plain array of lines joined with a newline, not a here string: a here
+          # string's closing '@ has to sit at column zero, which would end this
+          # step's YAML block scalar early. Every element below is a single quoted
+          # literal, so nothing needs escaping.
+          $csharpLines = @(
+            'using System;',
+            '',
+            'class Program',
+            '{',
+            '    static int Main(string[] args)',
+            '    {',
+            '        if (args.Length > 0 && args[0] == "version")',
+            '        {',
+            '            Console.WriteLine("shellforge v0.1.0-test");',
+            '            return 0;',
+            '        }',
+            '        if (args.Length > 0 && args[0] == "doctor")',
+            '        {',
+            '            string raw = Environment.GetEnvironmentVariable("FAKE_SHELLFORGE_DOCTOR_EXIT");',
+            '            int code = 0;',
+            '            if (!string.IsNullOrEmpty(raw))',
+            '            {',
+            '                int.TryParse(raw, out code);',
+            '            }',
+            '            return code;',
+            '        }',
+            '        Console.Error.WriteLine("fake-shellforge: unknown command");',
+            '        return 1;',
+            '    }',
+            '}'
+          )
+          $csharpSource = $csharpLines -join "`n"
+          try {
+            Add-Type -TypeDefinition $csharpSource -OutputType ConsoleApplication -OutputAssembly $exePath
+          }
+          catch {
+            Write-Host "FAIL: could not compile the fixture binary: $_" -ForegroundColor Red
+            throw
+          }
+
+          $zipPath = Join-Path $versionDir 'shellforge_v0.1.0-test_windows_amd64.zip'
+          Compress-Archive -Path $exePath -DestinationPath $zipPath -Force
+
+          $digest = (Get-FileHash -Algorithm SHA256 -LiteralPath $zipPath).Hash.ToLowerInvariant()
+          $assetName = 'shellforge_v0.1.0-test_windows_amd64.zip'
+          Set-Content -LiteralPath (Join-Path $versionDir 'SHA256SUMS') -Value "$digest  $assetName" -NoNewline -Encoding ascii
+
+          $flipped = if ($digest[-1] -ne '0') { '0' } else { '1' }
+          $wrongDigest = $digest.Substring(0, $digest.Length - 1) + $flipped
+          Set-Content -LiteralPath (Join-Path $versionDir 'SHA256SUMS.wrong') -Value "$wrongDigest  $assetName" -NoNewline -Encoding ascii
+
+          $baseUrl = ([System.Uri]$downloadRoot).AbsoluteUri
+          Write-Host "fixture base URL: $baseUrl"
+
+          $initialUserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+
+          try {
+            # ---- Case 1: happy path ----
+            $bin1 = Join-Path $fixtureDir 'bin-happy'
+            $ok1 = $true
+            try {
+              & $installScript -Version 'v0.1.0-test' -BinDir $bin1 -BaseUrl $baseUrl
+            }
+            catch {
+              $ok1 = $false
+              Write-Host "  case 1 threw: $_"
+            }
+            if ($ok1) {
+              $exe1 = Join-Path $bin1 'shellforge.exe'
+              $ok1 = Test-Path -LiteralPath $exe1 -PathType Leaf
+              if ($ok1) {
+                $out1 = & $exe1 version
+                $ok1 = ($LASTEXITCODE -eq 0) -and (($out1 -join "`n") -match 'shellforge v0\.1\.0-test')
+              }
+            }
+            Report 'case 1: happy path installs and runs' $ok1
+
+            # ---- Case 2: checksum mismatch ----
+            $sumsPath = Join-Path $versionDir 'SHA256SUMS'
+            $wrongPath = Join-Path $versionDir 'SHA256SUMS.wrong'
+            $correctSums = Get-Content -LiteralPath $sumsPath -Raw
+            $wrongSums = Get-Content -LiteralPath $wrongPath -Raw
+            Set-Content -LiteralPath $sumsPath -Value $wrongSums -NoNewline
+
+            $bin2 = Join-Path $fixtureDir 'bin-mismatch'
+            $threw2 = $false
+            try {
+              & $installScript -Version 'v0.1.0-test' -BinDir $bin2 -BaseUrl $baseUrl
+            }
+            catch {
+              $threw2 = $true
+              Write-Host "  case 2 message: $_"
+            }
+            $exe2 = Join-Path $bin2 'shellforge.exe'
+            $ok2 = $threw2 -and (-not (Test-Path -LiteralPath $exe2))
+            Report 'case 2: checksum mismatch (SHA256SUMS.wrong) installs nothing' $ok2
+
+            Set-Content -LiteralPath $sumsPath -Value $correctSums -NoNewline
+
+            # ---- Case 3: refused overwrite ----
+            $bin3 = Join-Path $fixtureDir 'bin-existing'
+            New-Item -ItemType Directory -Path $bin3 -Force | Out-Null
+            $target3 = Join-Path $bin3 'shellforge.exe'
+            Set-Content -LiteralPath $target3 -Value 'not a real shellforge binary' -NoNewline
+            $before3 = Get-Content -LiteralPath $target3 -Raw
+
+            $threw3 = $false
+            try {
+              & $installScript -Version 'v0.1.0-test' -BinDir $bin3 -BaseUrl $baseUrl
+            }
+            catch {
+              $threw3 = $true
+            }
+            $after3 = Get-Content -LiteralPath $target3 -Raw
+            $ok3 = $threw3 -and ($after3 -ceq $before3)
+            Report 'case 3: refused overwrite without -Force' $ok3
+
+            # ---- Case 4: -Force overwrite ----
+            $ok4 = $true
+            try {
+              & $installScript -Version 'v0.1.0-test' -BinDir $bin3 -BaseUrl $baseUrl -Force
+            }
+            catch {
+              $ok4 = $false
+            }
+            if ($ok4) {
+              $after4 = Get-Content -LiteralPath $target3 -Raw
+              $ok4 = ($after4 -cne $before3)
+            }
+            Report 'case 4: -Force overwrites the existing file' $ok4
+
+            # ---- Case 5: -NoPathChange ----
+            $beforePath5 = [Environment]::GetEnvironmentVariable('Path', 'User')
+            $bin5 = Join-Path $fixtureDir 'bin-nopathchange'
+            $ok5 = $true
+            try {
+              & $installScript -Version 'v0.1.0-test' -BinDir $bin5 -BaseUrl $baseUrl -NoPathChange
+            }
+            catch {
+              $ok5 = $false
+            }
+            $afterPath5 = [Environment]::GetEnvironmentVariable('Path', 'User')
+            if ($ok5) {
+              $ok5 = ($afterPath5 -ceq $beforePath5)
+            }
+            Report 'case 5: -NoPathChange leaves the user PATH untouched' $ok5
+
+            # ---- Case 6: reserved device name ----
+            $bin6 = Join-Path $fixtureDir 'CON'
+            $threw6 = $false
+            try {
+              & $installScript -Version 'v0.1.0-test' -BinDir $bin6 -BaseUrl $baseUrl
+            }
+            catch {
+              $threw6 = $true
+            }
+            $ok6 = $threw6 -and (-not (Test-Path -LiteralPath $bin6))
+            Report 'case 6: reserved device name as -BinDir refuses' $ok6
+
+            # ---- Case 7: alternate data stream colon ----
+            $bin7 = "$fixtureDir\ads-target:hidden"
+            $threw7 = $false
+            try {
+              & $installScript -Version 'v0.1.0-test' -BinDir $bin7 -BaseUrl $baseUrl
+            }
+            catch {
+              $threw7 = $true
+            }
+            $ok7 = $threw7 -and (-not (Test-Path -LiteralPath "$fixtureDir\ads-target"))
+            Report 'case 7: alternate data stream colon in -BinDir refuses' $ok7
+          }
+          finally {
+            # Leave the runner's own user PATH exactly as this step found it, whether
+            # every case passed or not.
+            [Environment]::SetEnvironmentVariable('Path', $initialUserPath, 'User')
+          }
+
+          if ($failures -gt 0) {
+            Write-Host "FAIL: $failures case(s) failed" -ForegroundColor Red
+            exit 1
+          }
+          Write-Host 'OK: all seven install.ps1 cases passed'
       - name: Fuzz the OSC parser
         # The parser consumes an adversarial byte stream by construction: the
         # learner can type any bytes at the prompt, including a forged OSC 133.
@@ -366,8 +600,6 @@ jobs:
   image:
     name: Sandbox image
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -434,7 +666,7 @@ jobs:
         run: |
           set -euo pipefail
           docker tag shellforge-sandbox:ci shellforge-authortest:latest
-          go test -run '^TestEveryLevelGoldenPath$|^TestPipe05RejectsNearMisses$|^TestSandboxHasNoHostMounts$|^TestSandboxIsolationLeavesTheHostUntouched$|^TestSudoIsRefusedByNoNewPrivileges$|^TestInstrumentationEmitsMarkersForARealSession$' -timeout 60m -v ./cmd/shellforge/...
+          go test -run '^TestEveryLevelGoldenPath$|^TestLevelsRejectNearMisses$|^TestSandboxHasNoHostMounts$|^TestSandboxIsolationLeavesTheHostUntouched$|^TestSudoIsRefusedByNoNewPrivileges$|^TestInstrumentationEmitsMarkersForARealSession$' -timeout 60m -v ./cmd/shellforge/...
 
       - name: The rootfs tarball exports cleanly and has what WSL import needs
         # The WSL runtime verifies a sha256 before `wsl --import` and refuses on
@@ -489,20 +721,6 @@ jobs:
           path: |
             rootfs.tar.gz
             rootfs.tar.gz.sha256
-
-      - name: Attach rootfs artifacts to the release
-        # Tag pushes only. `gh` is preinstalled on GitHub-hosted runners, so
-        # this needs no new third party Action pinned into the supply chain.
-        # Upload first, because a release may already exist (created by hand
-        # from the GitHub UI); fall back to creating one only when the upload
-        # finds nothing to attach to.
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          gh release upload "$GITHUB_REF_NAME" rootfs.tar.gz rootfs.tar.gz.sha256 --clobber \
-            || gh release create "$GITHUB_REF_NAME" rootfs.tar.gz rootfs.tar.gz.sha256 --generate-notes
 
   # -------------------------------------------------------------------------
   # The merge gate.

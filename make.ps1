@@ -126,6 +126,7 @@ function Show-Help {
         'rootfs'   = 'Export the WSL rootfs tarball'
         'run'      = 'Play one level (-Level <id>)'
         'validate' = 'Validate the content pack'
+        'dist'      = 'Cross-compile the release archives into dist\, the same matrix release.yml builds'
         'golden-image' = 'Tag the sandbox image as the one author test provisions'
         'golden'    = 'Run the golden test for every level, through the CLI'
         'golden-go' = 'The same contract as a Go test. Needs a Linux Docker daemon'
@@ -273,13 +274,78 @@ switch ($Target.ToLowerInvariant()) {
         & "$BinDir\$Binary" author test --all
     }
 
+    # DistDir is a literal, never a parameter or an override: an overridable
+    # Remove-Item -Recurse -Force target is exactly the shape the
+    # destructive-safety skill forbids. Keep in sync with the Makefile's
+    # DIST_DIR, which carries the same rule.
+    #
+    # Deliberately does NOT export the WSL rootfs: that needs a Docker
+    # daemon and `.\make.ps1 rootfs` already exists for it.
+    'dist' {
+        $DistDir = 'dist'
+        $targets = @('linux/amd64', 'linux/arm64', 'windows/amd64')
+        if (Test-Path $DistDir) { Remove-Item -Recurse -Force $DistDir }
+        New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
+
+        foreach ($target in $targets) {
+            $parts = $target -split '/'
+            $os = $parts[0]
+            $arch = $parts[1]
+            $bin = 'shellforge'
+            if ($os -eq 'windows') { $bin = 'shellforge.exe' }
+
+            $env:CGO_ENABLED = '0'
+            $env:GOOS = $os
+            $env:GOARCH = $arch
+            try {
+                Invoke-Step "build ($target)" { go build -trimpath -ldflags $LdFlags -o "$DistDir\$bin" $Pkg }
+            } finally {
+                Remove-Item Env:\GOOS, Env:\GOARCH, Env:\CGO_ENABLED -ErrorAction SilentlyContinue
+            }
+
+            $archiveName = "shellforge_${Version}_${os}_${arch}"
+            if ($os -eq 'windows') {
+                Compress-Archive -Path (Join-Path $DistDir $bin) -DestinationPath (Join-Path $DistDir "$archiveName.zip") -Force
+            } else {
+                # Windows 10 and later ships tar. Same archive shape as the
+                # Makefile and release.yml: cd into dist first so the
+                # binary sits at the archive root with no directory prefix.
+                Push-Location $DistDir
+                try {
+                    & tar -czf "$archiveName.tar.gz" $bin
+                } finally {
+                    Pop-Location
+                }
+            }
+            Remove-Item (Join-Path $DistDir $bin) -ErrorAction SilentlyContinue
+        }
+
+        $archives = Get-ChildItem -Path $DistDir -File |
+            Where-Object { $_.Name -like '*.tar.gz' -or $_.Name -like '*.zip' } |
+            Sort-Object Name
+        $sumLines = foreach ($f in $archives) {
+            # Lowercase hex, two spaces, filename: sha256sum's own line
+            # shape, written with an explicit LF, so one file shape works
+            # unchanged with `sha256sum -c` on either platform.
+            $hash = (Get-FileHash -Algorithm SHA256 $f.FullName).Hash.ToLowerInvariant()
+            "$hash  $($f.Name)"
+        }
+        [System.IO.File]::WriteAllText(
+            (Join-Path (Resolve-Path $DistDir) 'SHA256SUMS'),
+            (($sumLines -join "`n") + "`n")
+        )
+
+        Get-Content (Join-Path $DistDir 'SHA256SUMS')
+        Write-Host "built $DistDir" -ForegroundColor Green
+    }
+
     'golden-go' {
         $engine = Get-ContainerEngine
         Invoke-Step "image ($engine)" { & $engine build -f images/Containerfile -t "${Image}:${Tag}" images/ }
         Invoke-Step 'tag' { & $engine tag "${Image}:${Tag}" "${GoldenImage}:latest" }
         $env:SHELLFORGE_GOLDEN = '1'
         try {
-            go test -run '^TestEveryLevelGoldenPath$|^TestPipe05RejectsNearMisses$' -timeout 30m ./cmd/shellforge/...
+            go test -run '^TestEveryLevelGoldenPath$|^TestLevelsRejectNearMisses$' -timeout 30m ./cmd/shellforge/...
         } finally {
             Remove-Item Env:\SHELLFORGE_GOLDEN -ErrorAction SilentlyContinue
         }

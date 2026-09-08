@@ -1,0 +1,152 @@
+name: Release
+
+# Hand rolled, not GoReleaser: one job, plain shell, so the whole pipeline is
+# readable top to bottom without learning a second tool's config format.
+#
+# `ci.yml`'s own tag trigger still runs the full gate suite on a tag push, it
+# just no longer publishes anything (see the `image` job there). This is the
+# only workflow with permission to write a release.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build. Leave empty on a tag push."
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  # Dependency changes must arrive through a reviewed commit, never as a side
+  # effect of a build. This is the default since Go 1.16; setting it
+  # explicitly means a future change to that default cannot weaken it.
+  GOFLAGS: -mod=readonly
+
+jobs:
+  release:
+    name: Build and publish the release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Resolve the version
+        # On a tag push, GITHUB_REF_NAME is the tag itself. On
+        # workflow_dispatch there is no tag, so the tag input names one, and
+        # when that is also empty a description from git still produces
+        # named assets a person can inspect on the branch. An empty TAG
+        # refuses rather than silently building
+        # shellforge__linux_amd64.tar.gz.
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "push" ]; then
+            TAG="$GITHUB_REF_NAME"
+          else
+            TAG="${{ inputs.tag }}"
+            if [ -z "$TAG" ]; then
+              TAG="$(git describe --tags --always)"
+            fi
+          fi
+          if [ -z "$TAG" ]; then
+            echo "FAIL: could not resolve a tag." >&2
+            echo "  Pass the 'tag' input when running this workflow by hand." >&2
+            exit 1
+          fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "resolved TAG=$TAG"
+
+      - name: Build the three binaries and archive them
+        # No darwin target. Nothing in this repository has ever run on
+        # darwin and internal/doctor has no darwin probes, so an untested
+        # binary would generate install reports nobody here can reproduce.
+        #
+        # CGO_ENABLED=0 is safe because modernc.org/sqlite is pure Go; that
+        # is why it was chosen over mattn/go-sqlite3.
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          for target in linux/amd64 linux/arm64 windows/amd64; do
+            os="${target%%/*}"
+            arch="${target##*/}"
+            binname=shellforge
+            if [ "$os" = "windows" ]; then
+              binname=shellforge.exe
+            fi
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath \
+              -ldflags "-s -w -X main.version=$TAG -X main.commit=$GITHUB_SHA -X main.buildDate=$BUILD_DATE" \
+              -o "dist/$binname" ./cmd/shellforge
+            if [ "$os" = "windows" ]; then
+              (cd dist && zip -q -j "shellforge_${TAG}_${os}_${arch}.zip" "$binname")
+            else
+              (cd dist && tar -czf "shellforge_${TAG}_${os}_${arch}.tar.gz" "$binname")
+            fi
+            rm -f "dist/$binname"
+          done
+          ls -l dist
+
+      - name: Export the WSL rootfs
+        # Do not restate the container export and gzip commands here: make
+        # rootfs already uses gzip -9 -n, which is what keeps the digest
+        # reproducible, and a second spelling would drift from it.
+        run: |
+          set -euo pipefail
+          make rootfs
+          cp images/out/rootfs.tar.gz dist/rootfs.tar.gz
+          cp images/out/rootfs.tar.gz.sha256 dist/rootfs.tar.gz.sha256
+
+      - name: One SHA256SUMS for every archive
+        # Named explicitly rather than globbing everything, so SHA256SUMS
+        # can never end up listing itself and the line order is stable.
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum \
+            "shellforge_${TAG}_linux_amd64.tar.gz" \
+            "shellforge_${TAG}_linux_arm64.tar.gz" \
+            "shellforge_${TAG}_windows_amd64.zip" \
+            rootfs.tar.gz \
+            > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Verify SHA256SUMS against what was built
+        # The release's own self-check, and what makes the installers'
+        # verification of it meaningful.
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum -c SHA256SUMS
+
+      - name: Upload the release assets as a CI artifact
+        # Makes a workflow_dispatch run inspectable without creating a
+        # release at all, which is how this branch is proven before a tag
+        # push ever depends on it.
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-assets
+          path: dist/
+
+      - name: Attach the assets to the GitHub Release
+        # Tag pushes only. gh is preinstalled on GitHub-hosted runners, so
+        # this needs no new third party Action pinned into the supply
+        # chain. Upload first, because a release may already exist (created
+        # by hand from the GitHub UI); fall back to creating one only when
+        # the upload finds nothing to attach to.
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" dist/* --clobber \
+            || gh release create "$TAG" dist/* --generate-notes

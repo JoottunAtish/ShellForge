@@ -1,5 +1,5 @@
 id: script-01
-version: 1
+version: 2
 title: "Your First Script"
 act: act6
 
@@ -60,13 +60,17 @@ setup:
   root: /home/learner/toolbox
   script: |
     set -e
-    mkdir -p bin logs empty
+    mkdir -p bin logs empty logs/archive
 
     for f in api-gateway billing dispatch router warehouse; do
       printf 'nothing interesting in here\n' > "logs/$f.log"
     done
     printf 'not a log\n'      > logs/README.md
     printf 'retention=30\n'   > logs/rotate.conf
+    # A nested log, so -maxdepth 1 is the difference between 5 and 6. The
+    # level's own on_fail already promises this distinction; before this file
+    # existed, an implementation missing -maxdepth 1 passed.
+    printf 'rotated out on 2025-11-30\n' > logs/archive/2025-11-30.log
 
     printf 'Kofi kept this empty on purpose. Do not delete it.\n' > empty/.keep
 
