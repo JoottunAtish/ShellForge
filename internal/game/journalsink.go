@@ -3,6 +3,7 @@ package game
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/JoottunAtish/ShellForge/internal/game/bus"
@@ -22,6 +23,20 @@ import (
 // A JournalSink is not wired into the orchestrator. Whoever wires it owns
 // calling Drain; see Drain for when.
 type JournalSink struct {
+	// mu serializes Drain end to end. Collector.Since, Journal.Append and
+	// Bus.Publish each already guard their own state with their own mutex,
+	// so nothing here is a data race the -race detector would catch on its
+	// own. What is unsafe without this lock is the ORDER two concurrent
+	// Drain calls publish in: each call's own loop over its own batch stays
+	// in order regardless, but with no lock around the whole call a slower
+	// call's earlier batch can finish publishing after a faster call's
+	// later batch, so a subscriber (scoring, an achievement) can see a
+	// learner's commands out of sequence. Locking the whole function is
+	// what makes "whoever starts Drain first finishes it before the other
+	// one's Since call even runs" true, which is what keeps batches from
+	// interleaving at all.
+	mu sync.Mutex
+
 	c *journal.Collector
 	j *journal.Journal
 	b *bus.Bus
@@ -54,7 +69,21 @@ func NewJournalSink(c *journal.Collector, j *journal.Journal, b *bus.Bus) *Journ
 // those records: a store that cannot be written has ended the session's
 // record keeping either way, and buying a retry would mean holding the
 // learner's command text in a second place to hold it in.
+//
+// Safe for concurrent use: two callers may call Drain at the same time, from
+// different goroutines. That matters now that two do: gameResponder.check's
+// own drain, for a learner who typed `check`, and a live drain goroutine that
+// fires on every command event while the learner is still typing. Drain
+// serializes the two end to end rather than only protecting its own fields,
+// because the property that matters is that one caller's whole batch
+// publishes before the other's, not merely that Collector's offset stays
+// consistent. A caller that needs throughput, a poll on a timer rather than
+// an event, should not be calling this per keystroke: see the doc comment
+// above for why a timer is the wrong trigger regardless.
 func (s *JournalSink) Drain(ctx context.Context, levelID string, attemptID int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	entries, err := s.c.Since(ctx, levelID)
 	if err != nil {
 		// Deliberately swallowed, and deliberately not logged: the failure

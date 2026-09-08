@@ -112,7 +112,7 @@ func NewRootCommand(v VersionInfo) *cobra.Command {
 // ticket rewriting logic it was not asked to touch.
 func newRunCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:                "run <level-id> [--log-level=debug]",
+		Use:                "run <level-id> [--log-level=debug] [--live-check=off]",
 		GroupID:            groupPlaying,
 		Short:              "Play one specific level",
 		DisableFlagParsing: true,

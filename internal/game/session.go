@@ -73,12 +73,15 @@ type Config struct {
 	// means a reader that reports no commands, which is the default today.
 	//
 	// Issue #88 moved Scope down to internal/scope, so journal.Journal now
-	// satisfies verify.JournalReader outright. Nothing wires a real journal
-	// into internal/game yet, though; that remains a separate piece of work.
-	// Until it lands a no-op reader is safe, because the pack validator
-	// requires every journal check to be optional or severity: warn, so a
-	// reader that reports nothing can only fail to award a bonus objective.
-	// It can never gate passing.
+	// satisfies verify.JournalReader outright. cmd/shellforge wires a real
+	// one in: `run` and `play` hand in journal.Journal backed by the
+	// progress database, and `author test` hands in a solution-derived
+	// reader built from the level's own solution, since applying a solution
+	// non-interactively never triggers the shell instrumentation that would
+	// otherwise write one. A caller with neither still gets a no-op reader,
+	// which is safe because the pack validator requires every journal check
+	// to be optional or severity: warn, so a reader that reports nothing can
+	// only fail to award a bonus objective. It can never gate passing.
 	Journal verify.JournalReader
 
 	// StateDir overrides SF_STATE. Empty means setup.DefaultStateDir.

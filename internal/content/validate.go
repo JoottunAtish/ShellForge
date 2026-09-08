@@ -772,20 +772,6 @@ func (v *validator) validateCheckType(lvl *Level, field string, c *CheckSpec, ga
 		v.errorf(file, id, field, c.Line,
 			"a %s check must not decide whether a level is passed. The journal records what the learner typed, and the learner can forge it from inside the sandbox. Set optional: true on this check's objective, or severity: warn on the check itself, or move this check into an objective of its own.",
 			c.Type)
-	case journalCheckTypes[c.Type]:
-		// A legitimately optional or severity: warn journal check is exactly
-		// the shape the rule above steers an author toward. It works for a
-		// learner: cmd_run.go wires a real journal into game.Config as of
-		// #151. It is still invisible to the golden contract, because the
-		// author test harness constructs its session without one and
-		// game.Config.Journal falls back to noJournal, which reports no
-		// commands ever. So the check runs correctly in the game and cannot
-		// be exercised before it ships, which is worth telling an author
-		// rather than leaving them to infer it from a bonus that never ticks
-		// under `author test`.
-		v.warnf(file, id, field,
-			"%s reads the command journal, which `shellforge run` populates but `shellforge author test` does not: the golden harness builds its session without a journal, so every command list it sees there is empty and %s. The check itself is fine and works for a learner. What it cannot do is fail the golden contract, so nothing verifies it before it ships (issue #154).",
-			c.Type, journalNeverOutcome(c.Type))
 	case c.Type == "cwd_is":
 		// env_var used to draw this warning too. It no longer does: the
 		// golden harness writes the env snapshot itself after applying a
@@ -795,22 +781,17 @@ func (v *validator) validateCheckType(lvl *Level, field string, c *CheckSpec, ga
 		// between the solution and the checks, so a cd in the solution has
 		// nothing to persist in and PWD is always the directory the harness
 		// runs from.
+		//
+		// command_matched and command_not_matched used to draw a parallel
+		// warning here too, naming the same "author test builds no journal"
+		// gap. Issue #154 closed it: the golden harness now supplies a
+		// solution-derived journal, so a journal check is exercised by
+		// `author test` the same as any other, and there is nothing left to
+		// warn an author about.
 		v.warnf(file, id, field,
 			"cwd_is reads the working directory of the learner's interactive shell, and `shellforge author test` has none: it applies the solution in one shell and then runs the checks, so PWD is always %s and a cd in the solution leaves no trace. The check works for a real learner, but the golden contract cannot exercise it, which means nothing verifies this level before it ships.",
 			"the learner's home")
 	}
-}
-
-// journalNeverOutcome names what a journal check does under `author test`,
-// where the harness supplies no journal. The two check types fail in opposite
-// directions: command_matched can never pass, and command_not_matched can
-// never fire. Under `shellforge run`, where a real journal is wired, both
-// behave normally.
-func journalNeverOutcome(checkType string) string {
-	if checkType == "command_not_matched" {
-		return "it can never fire there, so the anti-pattern it warns about goes uncaught"
-	}
-	return "it can never pass there"
 }
 
 // validateObjectiveCorrespondence enforces the one-to-one relationship in

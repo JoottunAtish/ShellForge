@@ -7,6 +7,7 @@ import (
 	"testing/fstest"
 
 	"github.com/JoottunAtish/ShellForge/internal/platform"
+	"github.com/JoottunAtish/ShellForge/internal/verify"
 )
 
 // validateFixture loads and validates a fixture pack with the fake registry.
@@ -407,11 +408,11 @@ func TestValidateJournalChecksCannotGatePassing(t *testing.T) {
 
 			report := validateFixture(t, fixturePack("", lvl))
 
-			// Legal, but this build wires no runtime journal yet (issue #154),
-			// so the check is a warning rather than a clean pass: it verifies
-			// nothing until then, and that gap must stay visible to the
-			// author rather than passing silently.
-			requireProblem(t, report, "nav-01", "checks[1]", ProblemWarning, "reads the command journal")
+			// Legal, and a clean pass with no warning: cmd/shellforge wires a
+			// real journal during `run` (#151) and the golden harness now
+			// supplies a solution-derived one during `author test` (#154), so
+			// nothing about this check is incomplete any more.
+			requireNoProblem(t, report, "nav-01", "checks[1]")
 			if !report.OK() {
 				t.Errorf("an optional journal check should be legal:\n%s", formatReport(report))
 			}
@@ -425,12 +426,36 @@ func TestValidateJournalChecksCannotGatePassing(t *testing.T) {
 
 			report := validateFixture(t, fixturePack("", lvl))
 
-			// Same gap as above: legal, but not yet functional.
-			requireProblem(t, report, "nav-01", "checks[1]", ProblemWarning, "reads the command journal")
+			// Same as above: legal, and now functional, with no warning.
+			requireNoProblem(t, report, "nav-01", "checks[1]")
 			if !report.OK() {
 				t.Errorf("a severity: warn journal check should be legal:\n%s", formatReport(report))
 			}
 		})
+	}
+}
+
+// TestPackHasNoJournalWarnings is the acceptance criterion for issue #154's
+// second half: the golden harness now supplies a journal, so the warning
+// that used to fire on every journal check because nothing exercised it
+// before shipping is gone. cwd_is is explicitly excluded from this
+// assertion: nothing in this ticket rescues it, and it still warns for the
+// reason validateCheckType gives.
+func TestPackHasNoJournalWarnings(t *testing.T) {
+	pack, err := Embedded()
+	if err != nil {
+		t.Fatalf("Embedded: %v", err)
+	}
+
+	report := Validate(pack, verify.TypeChecker{})
+
+	for _, p := range report.Problems {
+		if p.Level != ProblemWarning {
+			continue
+		}
+		if strings.Contains(p.Message, "command_matched") || strings.Contains(p.Message, "command_not_matched") {
+			t.Errorf("a journal warning survived: %s", p.Message)
+		}
 	}
 }
 
@@ -448,61 +473,8 @@ func TestValidateGatingReadsEachObjectivesOwnOptionalFlag(t *testing.T) {
 
 	report := validateFixture(t, fixturePack("", lvl))
 
-	requireProblem(t, report, "nav-01", "checks[1]", ProblemWarning, "reads the command journal")
-	for _, p := range report.Problems {
-		if p.LevelID == "nav-01" && p.Field == "checks[1]" && p.Level == ProblemError {
-			t.Errorf("checks[1]'s objective is optional: true, so it must not also get the gating error: %s", p.Message)
-		}
-	}
+	requireNoProblem(t, report, "nav-01", "checks[1]")
 	requireProblem(t, report, "nav-01", "checks[2]", ProblemError, "must not decide whether a level is passed")
-}
-
-// TestValidateJournalChecksWarnTheirEmptyOutcome is the regression test for
-// the wiring gap issue #154 tracks: no runtime session in this build supplies
-// a real verify.JournalReader, so a legal journal check degrades into a wrong
-// answer rather than an error. command_matched can never pass and
-// command_not_matched can never fire; the validator must say so rather than
-// stay quiet, so the gap is visible to an author instead of only to a
-// learner who plays the level.
-func TestValidateJournalChecksWarnTheirEmptyOutcome(t *testing.T) {
-	t.Run("command_matched names that it can never pass", func(t *testing.T) {
-		lvl := defaultLevel()
-		lvl.Objectives += "  - id: bonus\n    text: \"Did it in one command\"\n    optional: true\n"
-		lvl.Checks += "  - id: bonus\n    type: command_matched" +
-			"\n    pattern: '^\\s*pwd\\s*$'\n    on_fail: \"There is a shorter way.\"\n"
-
-		report := validateFixture(t, fixturePack("", lvl))
-
-		requireProblem(t, report, "nav-01", "checks[1]", ProblemWarning, "can never pass")
-	})
-
-	t.Run("command_not_matched names that it can never fire", func(t *testing.T) {
-		lvl := defaultLevel()
-		lvl.Checks += "  - id: nocheat\n    severity: warn\n    type: command_not_matched" +
-			"\n    pattern: '^\\s*echo\\s'\n    on_fail: \"Hardcoding works today, not at 3 AM.\"\n"
-
-		report := validateFixture(t, fixturePack("", lvl))
-
-		requireProblem(t, report, "nav-01", "checks[1]", ProblemWarning, "can never fire")
-	})
-
-	t.Run("a gating journal check gets the error, not the warning too", func(t *testing.T) {
-		lvl := defaultLevel()
-		lvl.Checks = `checks:
-  - id: obj1
-    type: command_matched
-    pattern: '^\s*pwd\s*$'
-    on_fail: "Print the working directory first."
-`
-		report := validateFixture(t, fixturePack("", lvl))
-
-		requireProblem(t, report, "nav-01", "checks[0]", ProblemError, "must not decide whether a level is passed")
-		for _, p := range report.Problems {
-			if p.LevelID == "nav-01" && p.Field == "checks[0]" && p.Level == ProblemWarning {
-				t.Errorf("a gating journal check should get only the error, not the empty-journal warning too: %s", p.Message)
-			}
-		}
-	})
 }
 
 // TestValidateJournalChecksCannotHideInsideAComposite is the regression test
@@ -578,9 +550,9 @@ func TestValidateJournalChecksCannotHideInsideAComposite(t *testing.T) {
 `
 		report := validateFixture(t, fixturePack("", lvl))
 
-		// Legal, but the same runtime gap as the top-level cases: the branch
-		// still reads a journal nothing wires yet.
-		requireProblem(t, report, "nav-01", "checks[1].any_of[0]", ProblemWarning, "reads the command journal")
+		// Legal, and no warning either: the branch reads a journal that is
+		// wired for a learner and modelled for the golden harness alike.
+		requireNoProblem(t, report, "nav-01", "checks[1].any_of[0]")
 		if !report.OK() {
 			t.Errorf("a journal check inside an optional objective should be legal:\n%s", formatReport(report))
 		}

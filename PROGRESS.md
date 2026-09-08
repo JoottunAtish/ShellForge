@@ -5362,6 +5362,56 @@ needs a machine with Docker, and the friction notes it produces belong in this
 file. `author record`, block 5.5 of the Day 5 plan, is cut: it was marked "only
 if time" there and it is the sixth rung of the cut ladder.
 
+### Day 5 follow-up, 2026-09-08: the journal is drained on every command, and the golden harness gets one
+
+Issue #154's Context section named a wiring gap that PR #151 had already
+closed: `cmd_run.go` already builds a real `journal.Journal` and hands it into
+`game.Config` for a learner playing `run` or `play`. What #154 actually still
+needed, per its own follow-up comment, was to drain the sandbox journal on
+every command rather than only when the learner types `check` (the wire live
+checking needs), give the golden harness a journal at all, and use the first
+of those to re-verify a level live. This entry covers the drain and the
+harness; live checking itself is the follow-up entry after it.
+
+**What now works.** A finished command inside a level's PTY session reaches
+`JournalSink.Drain` off the single goroutine that reads `mux.Events()`, never
+on it: `gameLevel.CommandRan` does a non-blocking send into a capacity-1
+channel, and `StartLive`'s own goroutine is what actually calls Drain, so a
+slow drain can never make `pty.Mux.emit` start dropping events. `Drain` itself
+is now safe for two callers at once (a live drain and `check`'s own drain
+reaching it from different goroutines), serialized end to end rather than only
+protecting its own fields, which is what stops one caller's batch publishing
+out of order behind a slower one's.
+
+Separately, `shellforge author test` now supplies a journal too: a
+`solutionJournal` built from the level's own `solution`, one command per
+non-empty non-comment line, recorded only after the solution has run so the
+pre-check phase still sees the empty history a fresh sandbox really has. A
+`command_matched` or `command_not_matched` bonus is exercised by the golden
+contract for the first time; the validator's warning naming this exact gap
+(issue #154) is deleted rather than reworded, because there is nothing left to
+warn an author about. Thirteen shipped optional objectives are backed entirely
+by a journal check and all thirteen pass their own level's solution under this
+model, pinned by a pure Go test that needs no Docker.
+
+**What it does not do, named rather than hidden.** The solution-derived
+journal does not model a multi-line shell construct (a `for`, an `if`, a
+heredoc) as one command, only as its fragment lines, so a `command_matched`
+pattern written to match the whole construct will not match under
+`author test` even though it matches for a learner who typed it at a real
+prompt; no shipped level's pattern needs that today. `CommandEvent.UsedTab`
+and `UsedHistory` still are not joined to journal records, an unchanged gap
+from issue #123.
+
+**Gates not run locally, and why:** `make golden`, `shellforge author test`,
+and any test gated on `SHELLFORGE_GOLDEN=1` could not run in this environment
+because the Docker daemon was down (`/var/run/docker.sock` absent). CI's
+`Sandbox image` job is authoritative for those; the pure Go pin
+(`TestEveryShippedJournalObjectivePassesItsOwnSolution`) covers the same
+check-plus-journal composition without a container, which is why it exists.
+`govulncheck`, `gosec` and the `scripts/tests` pytest suite are not installed
+here either; CI is authoritative for all three.
+
 ## Day 6: hardening, CI, packaging
 
 - [ ] CI green on both platforms

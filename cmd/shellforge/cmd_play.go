@@ -41,12 +41,16 @@ type playOptions struct {
 
 	// Debug is --log-level=debug, threaded into the shared run flow.
 	Debug bool
+
+	// Live is --live-check, threaded into the shared run flow. Defaults to
+	// on, matching `run`.
+	Live bool
 }
 
 // newPlayCommand returns `shellforge play`.
 func newPlayCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:                "play [level-id] [--next] [--log-level=debug]",
+		Use:                "play [level-id] [--next] [--log-level=debug] [--live-check=off]",
 		GroupID:            groupPlaying,
 		Short:              "Start, or resume at the next level",
 		DisableFlagParsing: true,
@@ -67,13 +71,13 @@ func newPlayCommand() *cobra.Command {
 // "unknown flag" wording is not the voice the rest of this program speaks
 // in.
 func parsePlayArgs(args []string) (playOptions, error) {
-	var opts playOptions
+	opts := playOptions{Live: true}
 
 	badFlag := func(a string) error {
 		return ux.Fail(
 			fmt.Sprintf("understand the option %q", a),
 			nil,
-			"Run `shellforge help play` for the usage. The options are --next and --log-level=debug.",
+			"Run `shellforge help play` for the usage. The options are --next, --log-level=debug and --live-check=off.",
 			"",
 		)
 	}
@@ -91,6 +95,22 @@ func parsePlayArgs(args []string) (playOptions, error) {
 			opts.Debug = args[i] == "debug"
 		case strings.HasPrefix(a, "--log-level="):
 			opts.Debug = strings.TrimPrefix(a, "--log-level=") == "debug"
+		case a == "--live-check":
+			if i+1 >= len(args) {
+				return opts, badFlag(a)
+			}
+			i++
+			live, ok := parseLiveCheckValue(args[i])
+			if !ok {
+				return opts, badFlag(a + " " + args[i])
+			}
+			opts.Live = live
+		case strings.HasPrefix(a, "--live-check="):
+			live, ok := parseLiveCheckValue(strings.TrimPrefix(a, "--live-check="))
+			if !ok {
+				return opts, badFlag(a)
+			}
+			opts.Live = live
 		case strings.HasPrefix(a, "-"):
 			return opts, badFlag(a)
 		case opts.LevelID != "":
@@ -161,7 +181,7 @@ func runPlay(ctx context.Context, out io.Writer, opts playOptions) error {
 		return err
 	}
 
-	return runLevel(ctx, runOptions{levelID: choice.ID, debug: opts.Debug}, pack, choice)
+	return runLevel(ctx, runOptions{levelID: choice.ID, debug: opts.Debug, live: opts.Live}, pack, choice)
 }
 
 // chooseLevel decides which level to play and why.

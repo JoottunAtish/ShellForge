@@ -58,6 +58,15 @@ type gameLevel struct {
 	level   *content.Level
 	sink    *game.JournalSink
 	pass    *passContext
+
+	// commandRan carries one signal per finished command from CommandRan,
+	// the single goroutine draining mux.Events(), to StartLive's own drain
+	// goroutine. Capacity 1 with a non-blocking send: CommandRan must never
+	// block, because pty.Mux.emit drops events once its consumer falls
+	// behind, and a burst of commands collapses to one pending drain rather
+	// than a queue of them, which is fine because Drain is itself
+	// incremental.
+	commandRan chan struct{}
 }
 
 func (g *gameLevel) LevelID() string  { return g.session.LevelID() }
@@ -96,6 +105,46 @@ func (g *gameLevel) drainJournal(ctx context.Context) {
 		return
 	}
 	_ = g.sink.Drain(ctx, g.level.ID, g.orch.AttemptID())
+}
+
+// CommandRan reports that the PTY saw a command finish. It never blocks: it
+// is called from the single goroutine draining mux.Events(), and
+// pty.Mux.emit drops events once that consumer falls behind, so a call here
+// that blocked would make CommandRan itself the reason events start being
+// dropped. A non-blocking send into a capacity-1 channel is what keeps that
+// true: a notify arriving while one is already pending is coalesced into it,
+// never queued, because the drain that is about to run picks up every
+// record Collector.Since has seen so far regardless of how many commands
+// asked for it.
+func (g *gameLevel) CommandRan() {
+	select {
+	case g.commandRan <- struct{}{}:
+	default:
+	}
+}
+
+// StartLive starts the level's live verification, bounded by ctx, and
+// returns the channel a live checker will report transitions on.
+//
+// This commit wires only the drain half: the returned channel is always
+// nil, so a caller's select on it blocks forever, which is exactly what
+// makes the feature cost nothing before the checker itself exists. The
+// goroutine started here owns commandRan and calls the same drainJournal a
+// `check` reply already used, so live drains and check-triggered drains
+// reach JournalSink.Drain the same way; Drain's own mutex is what keeps the
+// two safe to run at once.
+func (g *gameLevel) StartLive(ctx context.Context) <-chan []verify.ObjectiveResult {
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-g.commandRan:
+				g.drainJournal(ctx)
+			}
+		}
+	}()
+	return nil
 }
 
 func (g *gameLevel) PrintBriefing(w io.Writer, color bool) {

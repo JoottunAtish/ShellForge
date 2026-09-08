@@ -106,6 +106,10 @@ const (
 type runOptions struct {
 	levelID string
 	debug   bool
+
+	// live is --live-check, on by default. See parseLiveCheckValue for the
+	// accepted spellings and startLiveChecking for what it gates.
+	live bool
 }
 
 // controlResponder answers one control request from inside the sandbox.
@@ -133,6 +137,44 @@ type playable interface {
 	Teardown(ctx context.Context) error
 	Responder(color bool) controlResponder
 	PrintBriefing(w io.Writer, color bool)
+}
+
+// liveLevel is the optional half of playable: a level that can re-verify
+// itself while the learner works. play type-asserts to it, so a playable
+// that does not implement it plays exactly as it did before this existed.
+type liveLevel interface {
+	// StartLive starts the level's live verification, bounded by ctx, and
+	// returns the channel transitions arrive on. A nil channel means the
+	// level has nothing to report live, and a select on a nil channel
+	// blocks forever, which is how the disabled path costs nothing.
+	StartLive(ctx context.Context) <-chan []verify.ObjectiveResult
+
+	// CommandRan reports that the PTY saw a command finish. It must never
+	// block: it is called from the single goroutine draining
+	// mux.Events(), and pty.Mux.emit drops events when that consumer falls
+	// behind.
+	CommandRan()
+}
+
+// startLiveChecking decides whether to start a level's live re-verification
+// and returns what the rest of play needs: the callback logCommandEvents
+// calls once per finished command, and the channel a printer reads
+// transitions from. Both are nil when live checking is off, or when lvl does
+// not implement liveLevel, which is what makes a playable that predates the
+// feature play exactly as it did before.
+//
+// Factored out of play so this decision is testable without a host pseudo
+// terminal: neither opts.live nor a type assertion touches the sandbox, so a
+// fake playable is enough, unlike play itself, which needs a real Attach.
+func startLiveChecking(ctx context.Context, opts runOptions, lvl playable) (onCommand func(), transitions <-chan []verify.ObjectiveResult) {
+	if !opts.live {
+		return nil, nil
+	}
+	live, ok := lvl.(liveLevel)
+	if !ok {
+		return nil, nil
+	}
+	return live.CommandRan, live.StartLive(ctx)
 }
 
 // cmdRun implements `shellforge run <level-id>`.
@@ -274,13 +316,13 @@ func checkInteractiveShellSupported(levelID string) error {
 // campaign order. Passing it in is what removed the three hardcoded references
 // to the demo level that used to be here: the suggestion now follows the pack.
 func parseRunArgs(args []string, firstLevel string) (runOptions, error) {
-	var opts runOptions
+	opts := runOptions{live: true}
 
 	badFlag := func(a string) error {
 		return ux.Fail(
 			fmt.Sprintf("understand the option %q", a),
 			nil,
-			"Run `shellforge help run` for the usage. The only option today is --log-level=debug.",
+			"Run `shellforge help run` for the usage. The options are --log-level=debug and --live-check=off.",
 			"",
 		)
 	}
@@ -296,6 +338,22 @@ func parseRunArgs(args []string, firstLevel string) (runOptions, error) {
 			opts.debug = args[i] == "debug"
 		case strings.HasPrefix(a, "--log-level="):
 			opts.debug = strings.TrimPrefix(a, "--log-level=") == "debug"
+		case a == "--live-check":
+			if i+1 >= len(args) {
+				return opts, badFlag(a)
+			}
+			i++
+			live, ok := parseLiveCheckValue(args[i])
+			if !ok {
+				return opts, badFlag(a + " " + args[i])
+			}
+			opts.live = live
+		case strings.HasPrefix(a, "--live-check="):
+			live, ok := parseLiveCheckValue(strings.TrimPrefix(a, "--live-check="))
+			if !ok {
+				return opts, badFlag(a)
+			}
+			opts.live = live
 		case strings.HasPrefix(a, "-"):
 			return opts, badFlag(a)
 		case opts.levelID != "":
@@ -319,6 +377,22 @@ func parseRunArgs(args []string, firstLevel string) (runOptions, error) {
 		)
 	}
 	return opts, nil
+}
+
+// parseLiveCheckValue parses one --live-check value, shared by parseRunArgs
+// and parsePlayArgs so the two flags accept exactly the same spellings. ok
+// is false for anything else, which the caller turns into a ux.Fail naming
+// the two flags this program actually has: there is no anchor a learner
+// could follow to fix a typo in a flag, only the remediation itself.
+func parseLiveCheckValue(v string) (live bool, ok bool) {
+	switch v {
+	case "off", "false":
+		return false, true
+	case "on", "true":
+		return true, true
+	default:
+		return false, false
+	}
 }
 
 // runLevel plays one level loaded from the pack.
@@ -421,10 +495,11 @@ func buildLevel(ctx context.Context, pack *content.Pack, level *content.Level, s
 	}
 
 	return &gameLevel{
-		orch:    orch,
-		session: session,
-		level:   level,
-		sink:    game.NewJournalSink(collector, j, b),
+		orch:       orch,
+		session:    session,
+		level:      level,
+		sink:       game.NewJournalSink(collector, j, b),
+		commandRan: make(chan struct{}, 1),
 		pass: &passContext{
 			pack:      pack,
 			store:     st,
@@ -612,12 +687,14 @@ func play(ctx context.Context, opts runOptions, sess runtime.Session, lvl playab
 	// served closes when the control loop has returned, which is after it has
 	// killed whatever it left running inside the sandbox. Waiting on it is what
 	// makes the comment above true rather than merely likely.
+	onCommand, _ := startLiveChecking(runCtx, opts, lvl)
+
 	served := make(chan struct{})
 	go func() {
 		defer close(served)
 		serveControlRequests(runCtx, sess, lvl.Responder(color), reqPath, resPath)
 	}()
-	go logCommandEvents(runCtx, mux.Events(), os.Stderr, opts.debug)
+	go logCommandEvents(runCtx, mux.Events(), os.Stderr, opts.debug, onCommand)
 
 	runErr := mux.Run(runCtx)
 	cancel()
@@ -759,21 +836,33 @@ func parseControlRequest(line string) (verb, args string) {
 }
 
 // logCommandEvents drains the multiplexer's event channel for the whole
-// session, and prints each event only when --log-level=debug asked for it.
+// session, calls onCommand once per event, and prints each event only when
+// --log-level=debug asked for it.
 //
 // Draining unconditionally is not optional. The channel is buffered, and a
 // consumer that stops reading makes the multiplexer start dropping events and
 // warning about it on the learner's terminal mid-level.
 //
+// onCommand is how live checking learns a command finished, without this
+// function knowing anything about a level, a journal, or a checker: `play`
+// passes lvl.CommandRan when live checking is on and nil when it is off, so
+// this file stays the one place that drains the channel either way. It is
+// called before the debug print so a slow write never delays the notify, and
+// it must never block: CommandRan's own contract is a non-blocking send, and
+// a nil onCommand is tolerated so every call site that does not want live
+// checking need not build a no-op closure.
+//
 // Every line ends "\r\n". Run has the host terminal in raw mode, which turns
 // off the line discipline that would otherwise supply the carriage return, so
 // a bare "\n" renders as a corrupted staircase line.
 //
-// CommandEvent.Raw is deliberately NOT logged. It is always empty today,
-// pending the journal wiring, and it is the one field that would carry text the
+// CommandEvent.Raw is deliberately NOT logged. It is always empty on the PTY
+// event pty.Mux produces, and it is the one field that would carry text the
 // learner typed: a password on a command line lands there. Logging it needs a
-// redaction decision that belongs with the journal work, not here.
-func logCommandEvents(ctx context.Context, events <-chan pty.CommandEvent, w io.Writer, debug bool) {
+// redaction decision that belongs with the journal work, not here; #154 wired
+// a real journal into internal/game but nothing here reads CommandEvent.Raw,
+// so the redaction rule stands exactly as it did before that landed.
+func logCommandEvents(ctx context.Context, events <-chan pty.CommandEvent, w io.Writer, debug bool, onCommand func()) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -781,6 +870,9 @@ func logCommandEvents(ctx context.Context, events <-chan pty.CommandEvent, w io.
 		case ev, ok := <-events:
 			if !ok {
 				return
+			}
+			if onCommand != nil {
+				onCommand()
 			}
 			if !debug {
 				continue

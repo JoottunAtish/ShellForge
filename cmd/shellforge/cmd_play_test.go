@@ -174,13 +174,13 @@ func TestParsePlayArgs(t *testing.T) {
 		want    playOptions
 		wantErr bool
 	}{
-		{name: "no arguments resumes", args: nil, want: playOptions{}},
-		{name: "a level id", args: []string{"nav-02"}, want: playOptions{LevelID: "nav-02"}},
-		{name: "next", args: []string{"--next"}, want: playOptions{DryRun: true}},
-		{name: "next with an id", args: []string{"nav-02", "--next"}, want: playOptions{LevelID: "nav-02", DryRun: true}},
-		{name: "log level joined", args: []string{"--log-level=debug"}, want: playOptions{Debug: true}},
-		{name: "log level split", args: []string{"--log-level", "debug"}, want: playOptions{Debug: true}},
-		{name: "log level something else", args: []string{"--log-level", "info"}, want: playOptions{}},
+		{name: "no arguments resumes", args: nil, want: playOptions{Live: true}},
+		{name: "a level id", args: []string{"nav-02"}, want: playOptions{LevelID: "nav-02", Live: true}},
+		{name: "next", args: []string{"--next"}, want: playOptions{DryRun: true, Live: true}},
+		{name: "next with an id", args: []string{"nav-02", "--next"}, want: playOptions{LevelID: "nav-02", DryRun: true, Live: true}},
+		{name: "log level joined", args: []string{"--log-level=debug"}, want: playOptions{Debug: true, Live: true}},
+		{name: "log level split", args: []string{"--log-level", "debug"}, want: playOptions{Debug: true, Live: true}},
+		{name: "log level something else", args: []string{"--log-level", "info"}, want: playOptions{Live: true}},
 		{name: "an unknown flag", args: []string{"--turbo"}, wantErr: true},
 		{name: "two level ids", args: []string{"nav-01", "nav-02"}, wantErr: true},
 		{name: "log level with nothing after it", args: []string{"--log-level"}, wantErr: true},
@@ -204,6 +204,44 @@ func TestParsePlayArgs(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestParsePlayArgsLiveCheck is the same table shape TestParseRunArgsLiveCheck
+// pins for `run`: cmd_play.go builds the shared runOptions from this parse,
+// so without this a learner could not turn live checking off for `play`.
+func TestParsePlayArgsLiveCheck(t *testing.T) {
+	cases := []struct {
+		name     string
+		args     []string
+		wantLive bool
+		wantErr  bool
+	}{
+		{"no flag defaults to on", nil, true, false},
+		{"off with an equals sign", []string{"--live-check=off"}, false, false},
+		{"off as two arguments", []string{"--live-check", "off"}, false, false},
+		{"on with an equals sign", []string{"--live-check=on"}, true, false},
+		{"alongside --next and a level id", []string{"nav-02", "--next", "--live-check=off"}, false, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parsePlayArgs(tc.args)
+			if err != nil {
+				t.Fatalf("parsePlayArgs(%v): %v", tc.args, err)
+			}
+			if got.Live != tc.wantLive {
+				t.Errorf("Live = %v, want %v", got.Live, tc.wantLive)
+			}
+		})
+	}
+
+	t.Run("a bogus value", func(t *testing.T) {
+		_, err := parsePlayArgs([]string{"--live-check=sometimes"})
+		if err == nil {
+			t.Fatal("parsePlayArgs accepted a bogus --live-check value")
+		}
+		assertUserFacing(t, err)
+	})
 }
 
 // --next must not provision anything. This asserts it where it can be
