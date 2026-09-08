@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/JoottunAtish/ShellForge/internal/game/bus"
 	"github.com/JoottunAtish/ShellForge/internal/journal"
@@ -440,6 +441,97 @@ func TestDrainLosesTheRestOfTheBatchWhenAnAppendFailsPartWayThrough(t *testing.T
 	}
 	if n := sess.pullCount(); n != 2 {
 		t.Errorf("Drain read the journal %d times across two calls, want 2", n)
+	}
+}
+
+// TestDrainIsSafeForConcurrentUse is the honest red test for design point 8:
+// a live drain goroutine and gameResponder.check's own drain now reach the
+// same JournalSink from two different goroutines, so Drain has to be safe
+// for that.
+//
+// A single pair of concurrent Drain calls against a static journal does not
+// expose anything: Collector.Since already serializes its own offset with
+// its own mutex, so whichever call wins the race consumes everything and the
+// other finds nothing new. What is not safe without a lock around the whole
+// of Drain is the PUBLISH order across two calls that each got a real batch:
+// Collector.Since guarantees no entry is handed out twice, but nothing
+// stopped one goroutine's slower append-and-publish loop from finishing
+// after a second goroutine's faster one, so the bus could see a later
+// command before an earlier one. That is not a data race Go's race detector
+// can see, since every shared component here already guards its own state
+// with its own mutex; it is an ordering bug, so this test proves it by
+// driving real concurrent contention (many drainers against a journal a
+// separate goroutine keeps growing) and checking the sequence numbers the
+// bus actually received, in the order it received them, rather than by
+// hoping -race happens to trip over it.
+func TestDrainIsSafeForConcurrentUse(t *testing.T) {
+	sink, sess, j, rec, _ := newTestSink(t, "")
+	ctx := context.Background()
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+
+	// One goroutine keeps the journal growing, so more than one Drain call
+	// finds a real, non-empty batch while the others are still working.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			sess.appendContent(sinkTSVLine("1755000000.000000", 0, "/home/learner", "cmd"))
+			_ = i
+		}
+	}()
+
+	// Each drainer loops until stop closes, the same as the writer, rather
+	// than a fixed iteration count: a fixed count can race ahead of the
+	// writer entirely on a slow or heavily loaded machine (every drainer
+	// finishes its quota before the writer has appended anything at all),
+	// which would leave nothing running by the time this test's own sleep
+	// elapses and make it assert nothing by accident.
+	const drainers = 4
+	for g := 0; g < drainers; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				_ = sink.Drain(ctx, "nav-01", 1)
+			}
+		}()
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+
+	events := commandEvents(rec)
+	if len(events) == 0 {
+		t.Fatal("no events were published; the test drove no real contention")
+	}
+
+	var last int64
+	for _, ev := range events {
+		if ev.Seq <= last {
+			t.Fatalf("event with Seq %d was published after Seq %d: Drain published two concurrent batches out of order", ev.Seq, last)
+		}
+		last = ev.Seq
+	}
+
+	rows, err := j.Level(ctx, "nav-01")
+	if err != nil {
+		t.Fatalf("Level: %v", err)
+	}
+	if len(rows) != len(events) {
+		t.Errorf("events table holds %d rows but the bus carried %d events; they must agree", len(rows), len(events))
 	}
 }
 

@@ -274,6 +274,42 @@ func (c colours) wrap(code, s string) string {
 	return code + s + ansiReset
 }
 
+// renderTransitions turns the objectives a live pass found changed into the
+// short line printed without the learner ever typing `check`.
+//
+// One objective per line, marked and worded with the exact same objectiveLine
+// and palette renderCheckReply uses, so a live tick and a check reply read as
+// one visual language rather than two. It is deliberately the only thing a
+// live pass ever writes: no summary line, no on_fail body, because `check`
+// stays the one place a learner reads why something failed.
+//
+// The returned string is already CRLF terminated, matching renderCheckReply:
+// `play` holds the host terminal in raw mode for as long as a live pass can
+// fire, so a bare "\n" here would render as a staircase exactly as it would
+// there.
+//
+// It also opens with one blank line, the same leading "\n" renderCheckReply
+// itself writes before its own first objective. A live pass can land at any
+// moment, including while the learner has typed a command and not yet
+// pressed Enter, so without that prefix a tick would be appended to the end
+// of their unfinished prompt line instead of starting on a fresh one.
+func renderTransitions(objs []verify.ObjectiveResult, color bool) string {
+	if len(objs) == 0 {
+		return ""
+	}
+	p := palette(color)
+	var b strings.Builder
+	b.WriteString("\n")
+	for _, obj := range objs {
+		b.WriteString("  ")
+		b.WriteString(p.mark(obj))
+		b.WriteString(" ")
+		b.WriteString(objectiveLine(obj))
+		b.WriteString("\n")
+	}
+	return crlf(b.String())
+}
+
 // mark returns the coloured status mark for one objective.
 func (c colours) mark(obj verify.ObjectiveResult) string {
 	switch obj.Status {

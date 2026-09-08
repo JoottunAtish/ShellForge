@@ -2,8 +2,20 @@ package main
 
 import (
 	"context"
+	"errors"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/JoottunAtish/ShellForge/internal/content"
+	"github.com/JoottunAtish/ShellForge/internal/game"
+	"github.com/JoottunAtish/ShellForge/internal/game/bus"
+	"github.com/JoottunAtish/ShellForge/internal/journal"
+	"github.com/JoottunAtish/ShellForge/internal/runtime"
+	"github.com/JoottunAtish/ShellForge/internal/store"
+	"github.com/JoottunAtish/ShellForge/internal/verify"
 )
 
 // TestGameResponderBriefIncludesTheChecklist is the regression test for the
@@ -80,6 +92,252 @@ func TestGameResponderHintPointsAtBriefTruthfully(t *testing.T) {
 }
 
 // --- regressions found in review ---
+
+// --- the live drain wire ---
+
+// liveFakeSession answers Exec generically with a zero exit, which is all
+// setup.Runner needs to materialize a level's world, and serves journal.tsv
+// content through PullFile, which is what lets a real journal.Collector find
+// commands with no sandbox at all.
+type liveFakeSession struct {
+	mu   sync.Mutex
+	data []byte
+}
+
+func (f *liveFakeSession) Exec(_ context.Context, argv []string, _ runtime.ExecOpts) (runtime.ExecResult, error) {
+	// setup.Runner resolves the level root with `readlink -m -- <path>` and
+	// refuses unless the answer echoes the operand back, which is what a
+	// real readlink -m does for a path with no symlink on it.
+	if len(argv) > 0 && argv[0] == "readlink" {
+		return runtime.ExecResult{ExitCode: 0, Stdout: []byte(argv[len(argv)-1] + "\n")}, nil
+	}
+	// file_exists (and every other fs check) resolves state with
+	// `stat -c "%F|%a|%U|%G" -- path`; answering it as an existing regular
+	// file is what lets a cheap check actually report StatusPass here.
+	if len(argv) > 0 && argv[0] == "stat" {
+		return runtime.ExecResult{ExitCode: 0, Stdout: []byte("regular file|644|learner|learner\n")}, nil
+	}
+	return runtime.ExecResult{ExitCode: 0}, nil
+}
+
+func (f *liveFakeSession) Attach(context.Context, runtime.AttachOpts) (runtime.PTY, error) {
+	return nil, errors.New("liveFakeSession: Attach is not implemented")
+}
+
+func (f *liveFakeSession) PushFiles(context.Context, runtime.FileManifest) error { return nil }
+
+func (f *liveFakeSession) PullFile(context.Context, string) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]byte, len(f.data))
+	copy(out, f.data)
+	return out, nil
+}
+
+func (f *liveFakeSession) Close() error { return nil }
+
+// waitUntil polls cond until it reports true or budget elapses, failing the
+// test on a timeout. It exists because the live drain runs on its own
+// goroutine and reports nothing back directly: what a caller can observe is
+// the state it left behind, which takes an unknown, short amount of time to
+// appear.
+func waitUntil(t *testing.T, budget time.Duration, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(budget)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if !cond() {
+		t.Fatal("condition was not satisfied within the budget")
+	}
+}
+
+// TestGameLevelCommandRanDrainsTheJournal is the AC1 test for the drain wire:
+// a command event reaching CommandRan must make its way, through StartLive's
+// own drain goroutine, into a real Drain call naming this level and this
+// attempt.
+func TestGameLevelCommandRanDrainsTheJournal(t *testing.T) {
+	ctx := context.Background()
+
+	sess := &liveFakeSession{data: []byte("1755000000.000000\t0\t/home/learner\tpwd\n")}
+
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "progress.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	level := &content.Level{ID: "nav-01", Setup: content.Setup{Root: "/home/learner/quest"}}
+
+	session, err := game.NewSession(game.Config{
+		Level: level, Sess: sess, Verifier: verify.NewEngine(),
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	b := bus.New()
+	var mu sync.Mutex
+	var events []bus.CommandExecuted
+	b.Subscribe("test", func(_ context.Context, ev bus.Event) {
+		if ce, ok := ev.(bus.CommandExecuted); ok {
+			mu.Lock()
+			events = append(events, ce)
+			mu.Unlock()
+		}
+	})
+
+	orch, err := game.NewOrchestrator(game.OrchestratorConfig{
+		Session: session, Bus: b, Progress: st, ProfileID: 1, PackID: "core-linux-basics",
+	})
+	if err != nil {
+		t.Fatalf("NewOrchestrator: %v", err)
+	}
+	if err := orch.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = orch.Close(context.Background()) })
+
+	collector, err := journal.NewCollector(sess, setupStateDir())
+	if err != nil {
+		t.Fatalf("journal.NewCollector: %v", err)
+	}
+	sink := game.NewJournalSink(collector, journal.New(st), b)
+
+	g := &gameLevel{
+		orch:       orch,
+		session:    session,
+		level:      level,
+		sink:       sink,
+		eventBus:   b,
+		commandRan: make(chan struct{}, 1),
+	}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	ch, wait := g.StartLive(runCtx)
+	if ch == nil {
+		t.Error("StartLive returned a nil transition channel; it must return the live checker's own Transitions()")
+	}
+	if wait == nil {
+		t.Fatal("StartLive returned a nil wait function")
+	}
+	// cancel before wait, in that order: wait blocks until StartLive's own
+	// goroutines return, and they only return once ctx is done.
+	defer func() {
+		cancel()
+		wait()
+	}()
+
+	g.CommandRan()
+
+	waitUntil(t, 2*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(events) > 0
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) != 1 {
+		t.Fatalf("got %d CommandExecuted events, want exactly 1", len(events))
+	}
+	if events[0].LevelID != "nav-01" {
+		t.Errorf("LevelID = %q, want %q", events[0].LevelID, "nav-01")
+	}
+	if events[0].AttemptID != orch.AttemptID() {
+		t.Errorf("AttemptID = %d, want %d (orch.AttemptID())", events[0].AttemptID, orch.AttemptID())
+	}
+}
+
+// TestGameLevelStartLiveReportsATransitionWhenACommandRuns is the wire this
+// commit adds end to end: a level with one cheap check, a command finishing,
+// and a transition arriving on the channel StartLive returned, with no `check`
+// ever typed. It is the same construction TestGameLevelCommandRanDrainsTheJournal
+// uses, with one cheap objective added so there is something for the live
+// checker to report.
+func TestGameLevelStartLiveReportsATransitionWhenACommandRuns(t *testing.T) {
+	ctx := context.Background()
+
+	sess := &liveFakeSession{data: []byte("1755000000.000000\t0\t/home/learner\tpwd\n")}
+
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "progress.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	level := &content.Level{
+		ID:    "nav-01",
+		Setup: content.Setup{Root: "/home/learner/quest"},
+		Objectives: []content.Objective{
+			{ID: "location", Text: "quest/answer.txt exists"},
+		},
+		Checks: []content.CheckSpec{
+			{ID: "location", Type: "file_exists", OnFail: "answer.txt is missing",
+				Params: map[string]any{"path": "/home/learner/quest/answer.txt"}},
+		},
+	}
+
+	session, err := game.NewSession(game.Config{
+		Level: level, Sess: sess, Verifier: verify.NewEngine(),
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	b := bus.New()
+	orch, err := game.NewOrchestrator(game.OrchestratorConfig{
+		Session: session, Bus: b, Progress: st, ProfileID: 1, PackID: "core-linux-basics",
+	})
+	if err != nil {
+		t.Fatalf("NewOrchestrator: %v", err)
+	}
+	if err := orch.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = orch.Close(context.Background()) })
+
+	collector, err := journal.NewCollector(sess, setupStateDir())
+	if err != nil {
+		t.Fatalf("journal.NewCollector: %v", err)
+	}
+	sink := game.NewJournalSink(collector, journal.New(st), b)
+
+	g := &gameLevel{
+		orch:       orch,
+		session:    session,
+		level:      level,
+		sink:       sink,
+		eventBus:   b,
+		commandRan: make(chan struct{}, 1),
+	}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	transitions, wait := g.StartLive(runCtx)
+	if transitions == nil {
+		t.Fatal("StartLive returned a nil transition channel")
+	}
+	// cancel before wait, in that order: wait blocks until StartLive's own
+	// goroutines return, and they only return once ctx is done.
+	defer func() {
+		cancel()
+		wait()
+	}()
+
+	g.CommandRan()
+
+	select {
+	case objs := <-transitions:
+		if len(objs) != 1 || objs[0].ID != "location" || objs[0].Status != verify.StatusPass {
+			t.Errorf("transition = %+v, want the location objective reporting StatusPass", objs)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no transition arrived after a command ran")
+	}
+}
 
 // JournalSink.Drain's contract is "before a check and once at teardown".
 // Only the check half was wired, so every command after the learner's last

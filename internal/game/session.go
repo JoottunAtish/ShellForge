@@ -37,7 +37,15 @@ const (
 // a Session can be built in a unit test with a two-method fake, so the
 // orchestration is testable without a registry, a sandbox, or a real level.
 type Verifier interface {
-	// Build turns specs into runnable checks, once, at load.
+	// Build turns specs into runnable checks, once, at load. It returns
+	// exactly one Check per Spec, in the same order.
+	//
+	// That one-check-per-spec contract is not just documentation: NewSession
+	// joins each Spec's own Cheap() classification to its built Check by
+	// index, to construct the cheap subset a live pass runs, and it refuses
+	// to build a Session at all when Build's returned count disagrees with
+	// the specs it was given, rather than silently mis-attributing a check
+	// to the wrong objective.
 	Build(specs []verify.Spec) ([]verify.Check, error)
 
 	// Run evaluates checks and assembles the level result.
@@ -73,12 +81,15 @@ type Config struct {
 	// means a reader that reports no commands, which is the default today.
 	//
 	// Issue #88 moved Scope down to internal/scope, so journal.Journal now
-	// satisfies verify.JournalReader outright. Nothing wires a real journal
-	// into internal/game yet, though; that remains a separate piece of work.
-	// Until it lands a no-op reader is safe, because the pack validator
-	// requires every journal check to be optional or severity: warn, so a
-	// reader that reports nothing can only fail to award a bonus objective.
-	// It can never gate passing.
+	// satisfies verify.JournalReader outright. cmd/shellforge wires a real
+	// one in: `run` and `play` hand in journal.Journal backed by the
+	// progress database, and `author test` hands in a solution-derived
+	// reader built from the level's own solution, since applying a solution
+	// non-interactively never triggers the shell instrumentation that would
+	// otherwise write one. A caller with neither still gets a no-op reader,
+	// which is safe because the pack validator requires every journal check
+	// to be optional or severity: warn, so a reader that reports nothing can
+	// only fail to award a bonus objective. It can never gate passing.
 	Journal verify.JournalReader
 
 	// StateDir overrides SF_STATE. Empty means setup.DefaultStateDir.
@@ -100,6 +111,11 @@ type Session struct {
 	verifier Verifier
 	checks   []verify.Check
 	journal  verify.JournalReader
+
+	// cheap is the subset of checks whose Spec reported Cheap() true, built
+	// once in NewSession by the same index join documented on Verifier.Build.
+	// It is what checkCheap runs; nothing outside this package ever sees it.
+	cheap []verify.Check
 }
 
 // noJournal reports no commands, ever.
@@ -153,6 +169,25 @@ func NewSession(cfg Config) (*Session, error) {
 			docAnchorLevelPackInvalid,
 		)
 	}
+	if len(checks) != len(specs) {
+		// A contract violation between this package and a Verifier,
+		// reachable only from a programming mistake rather than pack data:
+		// the pack validator and verifySpecs above have already run by this
+		// point. A plain error, not ux.Fail, matching NewSession's other
+		// nil-field checks: there is no remediation a learner or an author
+		// could act on for a Verifier that breaks its own contract.
+		return nil, fmt.Errorf("game: Verifier.Build returned %d checks for %d specs", len(checks), len(specs))
+	}
+
+	// The cheap subset is built once, here, by joining each Spec's own
+	// Cheap() classification to Build's same-index Check. See Verifier.Build's
+	// doc comment for why the index join is sound.
+	var cheap []verify.Check
+	for i, spec := range specs {
+		if spec.Cheap() {
+			cheap = append(cheap, checks[i])
+		}
+	}
 
 	journal := cfg.Journal
 	if journal == nil {
@@ -166,6 +201,7 @@ func NewSession(cfg Config) (*Session, error) {
 		verifier: cfg.Verifier,
 		checks:   checks,
 		journal:  journal,
+		cheap:    cheap,
 	}, nil
 }
 
@@ -247,4 +283,30 @@ func (s *Session) Check(ctx context.Context) (verify.LevelResult, error) {
 		Journal:   s.journal,
 		LevelID:   s.level.ID,
 	}), nil
+}
+
+// checkCheap runs only the level's cheap checks and returns their objective
+// results. It returns nil, without touching the sandbox or the verifier, when
+// the level has no cheap checks.
+//
+// Unexported on purpose, and returning objectives rather than a
+// verify.LevelResult on purpose. Engine.Run over a SUBSET produces a result
+// whose Passed and PrimaryFailure describe only that subset, so a caller
+// handed one could decide a level from a partial run; there is no exported
+// path to a partial verdict, and TestCheckCheapReturnsObjectivesAndNoVerdict
+// asserts there is not. This is what a live pass calls: it is a nicety on a
+// background timer, never the answer a learner reads, and `check` above is
+// still the only method that returns a full LevelResult.
+func (s *Session) checkCheap(ctx context.Context) []verify.ObjectiveResult {
+	if len(s.cheap) == 0 {
+		return nil
+	}
+	res := s.verifier.Run(ctx, s.cheap, verify.Env{
+		Session:   s.sess,
+		Root:      s.level.Setup.Root,
+		Snapshots: verify.Snapshots{Dir: s.runner.StateDir()},
+		Journal:   s.journal,
+		LevelID:   s.level.ID,
+	})
+	return res.Objectives
 }

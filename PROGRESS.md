@@ -5362,6 +5362,228 @@ needs a machine with Docker, and the friction notes it produces belong in this
 file. `author record`, block 5.5 of the Day 5 plan, is cut: it was marked "only
 if time" there and it is the sixth rung of the cut ladder.
 
+### Day 5 follow-up, 2026-09-08: the journal is drained on every command, and the golden harness gets one
+
+Issue #154's Context section named a wiring gap that PR #151 had already
+closed: `cmd_run.go` already builds a real `journal.Journal` and hands it into
+`game.Config` for a learner playing `run` or `play`. What #154 actually still
+needed, per its own follow-up comment, was to drain the sandbox journal on
+every command rather than only when the learner types `check` (the wire live
+checking needs), give the golden harness a journal at all, and use the first
+of those to re-verify a level live. This entry covers the drain and the
+harness; live checking itself is the follow-up entry after it.
+
+**What now works.** A finished command inside a level's PTY session reaches
+`JournalSink.Drain` off the single goroutine that reads `mux.Events()`, never
+on it: `gameLevel.CommandRan` does a non-blocking send into a capacity-1
+channel, and `StartLive`'s own goroutine is what actually calls Drain, so a
+slow drain can never make `pty.Mux.emit` start dropping events. `Drain` itself
+is now safe for two callers at once (a live drain and `check`'s own drain
+reaching it from different goroutines), serialized end to end rather than only
+protecting its own fields, which is what stops one caller's batch publishing
+out of order behind a slower one's.
+
+Separately, `shellforge author test` now supplies a journal too: a
+`solutionJournal` built from the level's own `solution`, one command per
+non-empty non-comment line, recorded only after the solution has run so the
+pre-check phase still sees the empty history a fresh sandbox really has. A
+`command_matched` or `command_not_matched` bonus is exercised by the golden
+contract for the first time; the validator's warning naming this exact gap
+(issue #154) is deleted rather than reworded, because there is nothing left to
+warn an author about. Thirteen shipped optional objectives are backed entirely
+by a journal check and all thirteen pass their own level's solution under this
+model, pinned by a pure Go test that needs no Docker.
+
+**What it does not do, named rather than hidden.** The solution-derived
+journal does not model a multi-line shell construct (a `for`, an `if`, a
+heredoc) as one command, only as its fragment lines, so a `command_matched`
+pattern written to match the whole construct will not match under
+`author test` even though it matches for a learner who typed it at a real
+prompt; no shipped level's pattern needs that today. `CommandEvent.UsedTab`
+and `UsedHistory` still are not joined to journal records, an unchanged gap
+from issue #123.
+
+**Gates not run locally, and why:** `make golden`, `shellforge author test`,
+and any test gated on `SHELLFORGE_GOLDEN=1` could not run in this environment
+because the Docker daemon was down (`/var/run/docker.sock` absent). CI's
+`Sandbox image` job is authoritative for those; the pure Go pin
+(`TestEveryShippedJournalObjectivePassesItsOwnSolution`) covers the same
+check-plus-journal composition without a container, which is why it exists.
+`govulncheck`, `gosec` and the `scripts/tests` pytest suite are not installed
+here either; CI is authoritative for all three.
+
+### Day 5 follow-up, 2026-09-08: objectives tick on their own while the learner works
+
+The second half of #154, built on the drain wire above: a `LiveChecker` that
+re-verifies a level's cheap checks whenever a command finishes, so an
+objective a learner has already satisfied ticks without them ever typing
+`check`. `check` itself is untouched: it still runs every check, still
+decides pass or fail, and still shows the authored `on_fail`. Nothing here
+changes non-negotiable 3; a live pass is a nicety on a background timer, not
+a second way to pass a level.
+
+**What now works.** `verify.Spec.Cheap()` classifies each of the 14 registered
+check types once: twelve are cheap enough for the live path (one
+`Session.Exec` or an in-memory journal read), `dir_tree` and `script` are
+not, held back because the first walks a tree recursively and the second is
+author-supplied bash of unbounded cost. `game.Session` builds the cheap
+subset once at load, by joining each spec's classification to its built
+check by index, the same index `Verifier.Build`'s own contract now
+documents. A new unexported `checkCheap` runs only that subset and returns
+objectives, never a `verify.LevelResult`: there is no exported path from a
+partial run to a pass verdict, which a reflection-based test in
+`session_test.go` holds to.
+
+`game.LiveChecker` owns the pass loop: `Attach` subscribes it to the same
+bus `JournalSink.Drain` already publishes on, so a finished command reaches
+it with no second wire invented for it, and its bus handler does nothing but
+a non-blocking `Notify`, because the handler runs synchronously on the
+goroutine that called `Drain`. The throttle is leading edge plus one
+coalesced trailing edge: N commands inside one debounce window (750ms by
+default) produce exactly two passes, never one and never N, which a
+fake-clock test pins directly. Two live passes never overlap each other, by
+construction (`Run` is single-goroutine, so there is nothing to lock), and a
+slow pass never blocks `Notify`, the bus handler, or the drain goroutine
+upstream of it, each pinned by its own test under `-race`. A live pass also
+never overlaps the pass behind a learner's own `check`, or a `reset` rebuild:
+`LiveChecker` never calls `Session.checkCheap` directly, only through a small
+`CheckCheapSession` interface `*game.Orchestrator` satisfies, and that method
+takes the same `resetMu` `Check` already holds around `Session.Check` and
+`Reset` already holds around its rebuild. That is a lock, not a construction
+argument, and it is what fixed a real, reproducible data race a review of
+this ticket found between `Session.Check` and `Session.checkCheap`, plus the
+worse failure it enabled: a live pass evaluating a half-deleted level root
+mid-`reset` and printing an unprompted regression line. The transition rule
+reports an objective ticking from unknown or failing to passing, and a
+regression from passing to failing; it stays quiet on the first failure,
+which would otherwise print the whole checklist on the very first command,
+and on a transient error or timeout on either side of the transition, which
+is not news.
+
+`gameLevel.StartLive` wires all of this into the run flow: `--live-check`,
+default on, on both `run` and `play`, accepting `off`/`false` and `on`/`true`
+in both `--live-check=X` and `--live-check X` form, matching `--log-level`'s
+existing shape. The decision to start live checking at all is factored into
+its own function, `startLiveChecking`, specifically so it is testable
+without a host pseudo terminal: no fake session in this package's tests can
+get `play` past `Attach`, so the guarantee that live checking never starts
+with `--live-check=off` is pinned there rather than through `play` itself.
+One goroutine prints a transition line, CRLF-terminated and coloured the
+same way a `check` reply is, so the two read as one visual language.
+
+**What it does not do, named rather than hidden.** The transition line can
+land after bash has already redrawn the next prompt, because a pass costs
+90ms to 1.5s and readline still owns the input buffer; fixing that properly
+means owning the screen, which CLAUDE.md cuts for v0.1, so it is carried as a
+`// TODO(v0.2):` next to the printer instead. No objective backed by
+`script` or `dir_tree` ever ticks live; `check` still reports on those
+exactly as before. Section 4 of `docs/LEVEL-FORMAT.md` still promises a
+fully populated checklist from `check`; a live pass is never presented as
+that answer, and the new subsection in section 7 says so explicitly rather
+than leaving a reader to infer it.
+
+**Left out on purpose.** No PTY-scripted integration test drives a level's
+solution one command at a time and watches objectives tick in order: there
+is no such harness in this repository, and building one is a larger piece of
+work than this feature. The structural properties it would have observed
+(the drain never blocks the PTY consumer, a pass never overlaps another, the
+bus handler does no work on the publishing goroutine) are each a Go test
+that runs on every pull request instead of only in a manual playthrough. No
+polling fallback either: only the `CommandExecuted` event triggers a pass,
+which is the cheaper of the two options the design record names, and the
+2-second-poll alternative it also names is not built.
+
+**Not a response to a measured complaint, stated plainly:** the "whole
+campaign played start to finish, friction noted" exit criterion above is
+still open, so this entry does not claim a recorded playthrough found
+retyping `check` the loudest friction. The friction is the one this
+project's own design record already gives as the reason live checking
+exists: a learner who does not know whether a command worked keeps retyping
+`check` to find out, and every one of those is a full verification pass.
+This is what removes the retyping, not a fix for a specific observed
+complaint.
+
+**Gates not run locally, and why:** `go test -race ./internal/game/...
+./cmd/...` was run explicitly, in addition to the whole-repo `go test -race
+./...`, since AC5's proof is the race detector; both are clean. `make
+golden`, `shellforge author test`, and any `SHELLFORGE_GOLDEN=1` test still
+could not run, for the same Docker-daemon-down reason as the entry above.
+`govulncheck`, `gosec` and the `scripts/tests` pytest suite remain not
+installed here; CI is authoritative for all three.
+
+### Day 5 follow-up, 2026-09-08: review findings on #154 fixed
+
+A review of the two entries above found four blocking defects, all fixed on
+the same branch before merge.
+
+**The unmet acceptance criterion.** A live pass and the pass behind a
+learner's own `check` were not serialized at all: `LiveChecker.Run` called
+`Session.checkCheap` directly, while `check` went `Orchestrator.Check` to
+`Session.Check`, and the two shared no lock. `go test -race` reproduced a
+real data race between them. Worse, `checkCheap` did not take `resetMu`
+either, so typing `reset` could have a live pass evaluate a half-deleted
+level root and print an unprompted regression line while the world was
+mid-rebuild. Fixed by giving `*Orchestrator` a `CheckCheap` method that takes
+`resetMu` the same way `Check` does, refuses (returns nil) outside
+`StateActive`, and only then delegates to `session.checkCheap`; `LiveChecker`
+now depends on a small `CheckCheapSession` interface satisfied by
+`*Orchestrator`, declared in `internal/game`, rather than on `*Session`
+directly, matching the pattern this package already uses for `Verifier` and
+`Progress`. `NewLiveChecker`'s parameter type changed accordingly; production
+code (`gameLevel.StartLive`) now passes the Orchestrator, not the Session. A
+new test starts a live pass and a real `Check` concurrently against a
+`fakeVerifier` that flags re-entrance and proves neither ever overlaps.
+
+**The rendering claim that was not true.** `printLiveTransitions`'s comment
+and the PR body both claimed `renderTransitions` opened with `"\r"`. It did
+not: the rendered block began `"  [ok] ..."` with no fresh-line prefix at
+all, so a live tick completing while the learner had typed a command and not
+yet pressed Enter would land appended to their own unfinished prompt line.
+Fixed in the code, not the comment: `renderTransitions` now opens with the
+same leading `"\n"` `renderCheckReply` already uses, so a tick always starts
+on its own line.
+
+**The transition rule not matching its own doc comment.** The comment said
+the reported set is unknown-to-pass, fail-to-pass and pass-to-fail, with
+error and timeout suppressed; the code reported any change where either side
+was `StatusPass`, which included pass-to-error and pass-to-timeout, a
+transient sandbox hiccup dressed up as a visible regression that then ticked
+back silently. Fixed to match the comment, with `pass to error is silent`
+and `pass to timeout is silent` added to the table test.
+
+**A measured flake in the debounce test**, found independently of the
+review: `TestTenCommandsInsideTheDebounceWindowRunTwoPasses` advanced its
+fake clock before `Run` had necessarily read it again, so `Run` could
+sometimes compute an already-elapsed debounce remainder and skip the wait
+entirely, leaving nothing to receive on `afterCh`. Measured at roughly 1
+failure in 20 under `-race`. Fixed by having the `l.after` seam announce that
+it was called, and waiting for that announcement before advancing the clock,
+plus a new assertion that the wait wanted the whole 750ms window. Re-run 30
+times after the fix, `-race`, `-count=1` each time: 0 failures.
+
+Six suggestions and three nits from the same review were also applied: a
+dropped live-transition batch now rolls the affected objectives back out of
+the checker's memory instead of losing their tick for the rest of the level;
+`solutionJournal.Commands`'s default branch now names `ScopeLevel` explicitly
+and returns no commands, not the whole history, for an unrecognized
+`ScopeKind`; `TestPackHasNoJournalWarnings` moved from `internal/content` to
+`cmd/shellforge`, dropping a test-only import that crossed the
+`internal/content`/`internal/verify` peer boundary invisibly to
+`archtest` (`collectImports` skips `_test.go` files); the three ctx-bounded
+but previously unowned goroutines behind `--live-check` (the drain
+goroutine, `LiveChecker.Run`, and `printLiveTransitions`) are now waited on
+before `play`'s own teardown runs, the same way the control loop already is;
+and two misplaced doc comments were moved back to sit against the code they
+describe.
+
+Gates: `gofmt -s -w .`, `go vet ./...`, `go test ./...`, `go test -race
+./...`, `go test ./internal/archtest/...`,
+`./scripts/check-punctuation.sh`, `./scripts/check-allowlist-regexp.sh`,
+`./scripts/check-links.sh`, `./scripts/check-cli-package.sh`, and
+`python3 scripts/check-ci-gates.py` all ran clean. The Docker daemon was
+down and `govulncheck`, `gosec` and the `scripts/tests` pytest suite are not
+installed here, same as both entries above; CI is authoritative for those.
+
 ## Day 6: hardening, CI, packaging
 
 - [ ] CI green on both platforms

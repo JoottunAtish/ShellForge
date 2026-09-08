@@ -398,6 +398,53 @@ func TestObjectiveWithNoTextFallsBackToItsID(t *testing.T) {
 	}
 }
 
+// TestRenderTransitionsIsCRLFTerminatedAndHonoursColour is AC3's rendering
+// half: a live pass writes into the same raw-mode terminal renderCheckReply
+// does, and must honour NO_COLOR the same way.
+func TestRenderTransitionsIsCRLFTerminatedAndHonoursColour(t *testing.T) {
+	objs := []verify.ObjectiveResult{
+		{ID: "location", Text: "quest/answer.txt holds the folder you are standing in", Status: verify.StatusPass},
+	}
+
+	out := renderTransitions(objs, false)
+
+	if !strings.HasPrefix(out, "\r\n") {
+		t.Fatalf("renderTransitions does not open on a fresh line; a tick would land at the end of whatever the learner has typed so far:\n%q", out)
+	}
+	if !strings.Contains(out, "quest/answer.txt holds the folder you are standing in") {
+		t.Errorf("the transition line does not name the objective: %q", out)
+	}
+	if got := strings.Count(out, "\n"); got != 2 {
+		t.Fatalf("one input objective produced %d lines, want 2 (the leading fresh-line prefix, then the objective):\n%q", got, out)
+	}
+	for i := 0; i < len(out); i++ {
+		if out[i] != '\n' {
+			continue
+		}
+		if i == 0 || out[i-1] != '\r' {
+			t.Fatalf("a newline at byte %d is not preceded by a carriage return; raw mode would render this as a staircase:\n%q", i, out)
+		}
+	}
+	if strings.Contains(out, "\x1b[") {
+		t.Errorf("escape codes leaked into an uncoloured transition line:\n%q", out)
+	}
+
+	coloured := renderTransitions(objs, true)
+	if !strings.Contains(coloured, "\x1b[") {
+		t.Error("no escape codes in a coloured transition line")
+	}
+}
+
+// TestRenderTransitionsOnEmptyIsEmpty keeps a caller that races an empty
+// slice through from printing a blank line: Run only ever sends a non-empty
+// transition batch, but the renderer should not depend on that to stay
+// harmless.
+func TestRenderTransitionsOnEmptyIsEmpty(t *testing.T) {
+	if out := renderTransitions(nil, false); out != "" {
+		t.Errorf("renderTransitions(nil) = %q, want empty", out)
+	}
+}
+
 // findLine returns the first line containing want, or "".
 func findLine(out, want string) string {
 	for _, line := range strings.Split(out, "\n") {

@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	goruntime "runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -50,6 +52,64 @@ func TestParseRunArgs(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestParseRunArgsLiveCheck covers AC8: `run` with live checking disabled
+// must behave exactly as it did before this ticket, and the switch defaults
+// to on so the feature reaches a learner who never reads a flag list.
+func TestParseRunArgsLiveCheck(t *testing.T) {
+	cases := []struct {
+		name     string
+		args     []string
+		wantLive bool
+		wantErr  bool
+	}{
+		{"no flag defaults to on", []string{"nav-01"}, true, false},
+		{"off with an equals sign", []string{"nav-01", "--live-check=off"}, false, false},
+		{"off as two arguments", []string{"nav-01", "--live-check", "off"}, false, false},
+		{"on with an equals sign", []string{"nav-01", "--live-check=on"}, true, false},
+		{"on as two arguments", []string{"nav-01", "--live-check", "on"}, true, false},
+		{"false is accepted as off", []string{"nav-01", "--live-check=false"}, false, false},
+		{"true is accepted as on", []string{"nav-01", "--live-check=true"}, true, false},
+		{"the flag before the level id", []string{"--live-check=off", "nav-01"}, false, false},
+		{"alongside --log-level", []string{"nav-01", "--log-level=debug", "--live-check=off"}, false, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts, err := parseRunArgs(tc.args, "nav-01")
+			if err != nil {
+				t.Fatalf("parseRunArgs(%q): %v", tc.args, err)
+			}
+			if opts.live != tc.wantLive {
+				t.Errorf("live = %v, want %v", opts.live, tc.wantLive)
+			}
+		})
+	}
+
+	t.Run("a bogus value joined", func(t *testing.T) {
+		_, err := parseRunArgs([]string{"nav-01", "--live-check=sometimes"}, "nav-01")
+		if err == nil {
+			t.Fatal("parseRunArgs accepted a bogus --live-check value")
+		}
+		assertUserFacing(t, err)
+	})
+
+	t.Run("a bogus value split", func(t *testing.T) {
+		_, err := parseRunArgs([]string{"nav-01", "--live-check", "sometimes"}, "nav-01")
+		if err == nil {
+			t.Fatal("parseRunArgs accepted a bogus --live-check value")
+		}
+		assertUserFacing(t, err)
+	})
+
+	t.Run("--live-check with nothing after it", func(t *testing.T) {
+		_, err := parseRunArgs([]string{"nav-01", "--live-check"}, "nav-01")
+		if err == nil {
+			t.Fatal("parseRunArgs accepted --live-check with no value")
+		}
+		assertUserFacing(t, err)
+	})
 }
 
 func TestParseRunArgsRejections(t *testing.T) {
@@ -373,7 +433,16 @@ var _ game.Verifier = (*fakeVerifier)(nil)
 
 func (f *fakeVerifier) Build(specs []verify.Spec) ([]verify.Check, error) {
 	if f.build == nil {
-		return nil, nil
+		// One Check per Spec, per Verifier.Build's own contract: NewSession
+		// now refuses a Verifier that returns a different count, so a
+		// default that always answered nil (however many specs it was
+		// given) would fail every level this fake builds, not exercise the
+		// one this test wants.
+		checks := make([]verify.Check, 0, len(specs))
+		for range specs {
+			checks = append(checks, nil)
+		}
+		return checks, nil
 	}
 	return f.build(specs)
 }
@@ -476,7 +545,7 @@ func TestLogCommandEventsEndsEveryLineWithCarriageReturn(t *testing.T) {
 	close(events)
 
 	var buf bytes.Buffer
-	logCommandEvents(context.Background(), events, &buf, true)
+	logCommandEvents(context.Background(), events, &buf, true, nil)
 
 	out := buf.String()
 	if out == "" {
@@ -502,7 +571,7 @@ func TestLogCommandEventsNeverLogsRawCommandText(t *testing.T) {
 	close(events)
 
 	var buf bytes.Buffer
-	logCommandEvents(context.Background(), events, &buf, true)
+	logCommandEvents(context.Background(), events, &buf, true, nil)
 
 	if strings.Contains(buf.String(), "SuperSecret") {
 		t.Errorf("the debug log leaked raw command text: %q", buf.String())
@@ -520,7 +589,7 @@ func TestLogCommandEventsDrainsWithoutDebug(t *testing.T) {
 	var buf bytes.Buffer
 	done := make(chan struct{})
 	go func() {
-		logCommandEvents(context.Background(), events, &buf, false)
+		logCommandEvents(context.Background(), events, &buf, false, nil)
 		close(done)
 	}()
 
@@ -534,13 +603,102 @@ func TestLogCommandEventsDrainsWithoutDebug(t *testing.T) {
 	}
 }
 
+// TestLogCommandEventsCallsOnCommandOncePerEvent is AC1's trigger half: the
+// journal wiring and the drain are already proved elsewhere, so what this
+// pins is that every event on the channel calls onCommand exactly once, in
+// order, and that logCommandEvents still returns when the channel closes.
+func TestLogCommandEventsCallsOnCommandOncePerEvent(t *testing.T) {
+	events := make(chan pty.CommandEvent, 3)
+	events <- pty.CommandEvent{ExitCode: 0}
+	events <- pty.CommandEvent{ExitCode: 1}
+	events <- pty.CommandEvent{ExitCode: 0}
+	close(events)
+
+	var calls int32
+	onCommand := func() { atomic.AddInt32(&calls, 1) }
+
+	done := make(chan struct{})
+	go func() {
+		logCommandEvents(context.Background(), events, io.Discard, false, onCommand)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("logCommandEvents did not return after its channel closed")
+	}
+
+	if got := atomic.LoadInt32(&calls); got != 3 {
+		t.Errorf("onCommand was called %d times, want exactly 3", got)
+	}
+}
+
+// TestLogCommandEventsToleratesANilOnCommand covers the default, disabled
+// path: `run` without --live-check passes no callback, and that must not
+// panic on the very first event.
+func TestLogCommandEventsToleratesANilOnCommand(t *testing.T) {
+	events := make(chan pty.CommandEvent, 1)
+	events <- pty.CommandEvent{ExitCode: 0}
+	close(events)
+
+	done := make(chan struct{})
+	go func() {
+		logCommandEvents(context.Background(), events, io.Discard, false, nil)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("logCommandEvents did not return with a nil onCommand")
+	}
+}
+
+// TestLogCommandEventsKeepsDrainingWhenOnCommandIsSaturated is design point
+// 1(b) made into a test: pty.Mux.emit drops events when its consumer falls
+// behind, so logCommandEvents must never block waiting for onCommand, even
+// when nothing is reading what onCommand tries to report.
+func TestLogCommandEventsKeepsDrainingWhenOnCommandIsSaturated(t *testing.T) {
+	const n = 200
+	events := make(chan pty.CommandEvent, n)
+	for i := 0; i < n; i++ {
+		events <- pty.CommandEvent{ExitCode: 0}
+	}
+	close(events)
+
+	// A capacity-1 channel nobody ever reads: the first non-blocking send
+	// fills it, and every send after that hits the default branch. If
+	// onCommand's own contract were violated by a blocking implementation,
+	// this would hang instead of returning.
+	saturated := make(chan struct{}, 1)
+	onCommand := func() {
+		select {
+		case saturated <- struct{}{}:
+		default:
+		}
+	}
+
+	done := make(chan struct{})
+	go func() {
+		logCommandEvents(context.Background(), events, io.Discard, false, onCommand)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("logCommandEvents did not drain 200 events with a saturated onCommand consumer")
+	}
+}
+
 func TestLogCommandEventsStopsOnContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	events := make(chan pty.CommandEvent) // never written, never closed
 
 	done := make(chan struct{})
 	go func() {
-		logCommandEvents(ctx, events, &bytes.Buffer{}, true)
+		logCommandEvents(ctx, events, &bytes.Buffer{}, true, nil)
 		close(done)
 	}()
 
@@ -549,6 +707,148 @@ func TestLogCommandEventsStopsOnContextCancellation(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("logCommandEvents ignored context cancellation and would outlive the session")
+	}
+}
+
+// --------------------------------------------------------------------------
+// Wiring live checking into the run flow
+// --------------------------------------------------------------------------
+//
+// play itself is not driven directly here: every fakeSession in this package
+// refuses Attach (there is no fake host pseudo terminal in this repository),
+// so play always returns at that step before it would ever reach the point
+// this wiring lives at. The decision play makes there, whether to start live
+// checking at all, is exactly what startLiveChecking factors out, and that
+// factoring is what makes the decision testable without a PTY.
+
+// fakeLiveLevel is a playable that also implements liveLevel, recording
+// whether StartLive and CommandRan were reached.
+type fakeLiveLevel struct {
+	plainPlayable
+	startLiveCalls  int
+	commandRanCalls int
+}
+
+func (f *fakeLiveLevel) StartLive(context.Context) (<-chan []verify.ObjectiveResult, func()) {
+	f.startLiveCalls++
+	return nil, func() {}
+}
+
+func (f *fakeLiveLevel) CommandRan() { f.commandRanCalls++ }
+
+// plainPlayable implements playable and nothing else, standing in for a
+// level that predates live checking.
+type plainPlayable struct{}
+
+func (plainPlayable) LevelID() string                 { return "nav-01" }
+func (plainPlayable) Root() string                    { return "/home/learner/quest" }
+func (plainPlayable) StateDir() string                { return "" }
+func (plainPlayable) Setup(context.Context) error     { return nil }
+func (plainPlayable) Teardown(context.Context) error  { return nil }
+func (plainPlayable) Responder(bool) controlResponder { return nil }
+func (plainPlayable) PrintBriefing(io.Writer, bool)   {}
+
+func TestStartLiveCheckingHonoursOptsLive(t *testing.T) {
+	t.Run("live checking off starts nothing", func(t *testing.T) {
+		f := &fakeLiveLevel{}
+		onCommand, transitions, wait := startLiveChecking(context.Background(), runOptions{live: false}, f)
+		if onCommand != nil {
+			t.Error("startLiveChecking returned a callback with live checking off")
+		}
+		if transitions != nil {
+			t.Error("startLiveChecking returned a transition channel with live checking off")
+		}
+		if wait == nil {
+			t.Fatal("startLiveChecking returned a nil wait function with live checking off; it must be a callable no-op")
+		}
+		wait()
+		if f.startLiveCalls != 0 || f.commandRanCalls != 0 {
+			t.Errorf("StartLive was called %d times and CommandRan %d times with live checking off, want 0 and 0",
+				f.startLiveCalls, f.commandRanCalls)
+		}
+	})
+
+	t.Run("live checking on starts the level's live checker", func(t *testing.T) {
+		f := &fakeLiveLevel{}
+		onCommand, _, wait := startLiveChecking(context.Background(), runOptions{live: true}, f)
+		if onCommand == nil {
+			t.Fatal("no onCommand callback with live checking on")
+		}
+		onCommand()
+		if f.commandRanCalls != 1 {
+			t.Errorf("onCommand called CommandRan %d times, want 1", f.commandRanCalls)
+		}
+		if f.startLiveCalls != 1 {
+			t.Errorf("StartLive was called %d times, want 1", f.startLiveCalls)
+		}
+		if wait == nil {
+			t.Fatal("startLiveChecking returned a nil wait function with live checking on")
+		}
+		wait()
+	})
+
+	t.Run("a playable that does not implement liveLevel is left alone", func(t *testing.T) {
+		onCommand, transitions, wait := startLiveChecking(context.Background(), runOptions{live: true}, plainPlayable{})
+		if onCommand != nil || transitions != nil {
+			t.Error("startLiveChecking found a live checker on a playable that does not implement one")
+		}
+		if wait == nil {
+			t.Fatal("startLiveChecking returned a nil wait function for a playable with no live checker")
+		}
+		wait()
+	})
+}
+
+// --------------------------------------------------------------------------
+// Printing a live pass's transitions
+// --------------------------------------------------------------------------
+
+// TestPrintLiveTransitionsWritesEachBatchAndStopsOnClose covers the normal
+// path: one batch arrives, is rendered, and the goroutine returns once the
+// channel closes, matching Run's own contract for Transitions().
+func TestPrintLiveTransitionsWritesEachBatchAndStopsOnClose(t *testing.T) {
+	transitions := make(chan []verify.ObjectiveResult, 1)
+	transitions <- []verify.ObjectiveResult{
+		{ID: "location", Text: "quest/answer.txt holds the folder you are standing in", Status: verify.StatusPass},
+	}
+	close(transitions)
+
+	var buf bytes.Buffer
+	done := make(chan struct{})
+	go func() {
+		printLiveTransitions(context.Background(), transitions, &buf, false)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("printLiveTransitions did not return when its channel closed")
+	}
+
+	if !strings.Contains(buf.String(), "quest/answer.txt holds the folder you are standing in") {
+		t.Errorf("nothing was printed for the transition: %q", buf.String())
+	}
+}
+
+// TestPrintLiveTransitionsStopsOnContextCancellation covers the disabled
+// path: a nil or never-written channel must not stop ctx cancellation from
+// ending the goroutine.
+func TestPrintLiveTransitionsStopsOnContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var transitions chan []verify.ObjectiveResult // nil: the disabled-live-checking shape
+
+	done := make(chan struct{})
+	go func() {
+		printLiveTransitions(ctx, transitions, io.Discard, false)
+		close(done)
+	}()
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("printLiveTransitions ignored context cancellation")
 	}
 }
 

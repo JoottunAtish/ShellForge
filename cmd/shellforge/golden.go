@@ -7,6 +7,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/JoottunAtish/ShellForge/internal/content"
@@ -97,11 +98,18 @@ func runGoldenLevel(ctx context.Context, h goldenHarness, level *content.Level) 
 		timings[stage] = time.Since(start).Round(time.Millisecond).String()
 	}
 
+	// solutionJournal stands in for the command journal `shellforge run`
+	// wires in from a real sandbox session. It reports nothing until Record
+	// is called, which happens only after the solution has run below, so the
+	// pre-check phase sees the empty history a fresh sandbox really has.
+	sj := newSolutionJournal()
+
 	session, err := game.NewSession(game.Config{
 		Level:    level,
 		Sess:     h.sess,
 		PackFS:   h.packFS,
 		Verifier: h.engine,
+		Journal:  sj,
 	})
 	if err != nil {
 		return fail(level.ID, stageSetup, timings, "build the level: %v", err)
@@ -228,14 +236,25 @@ func runGoldenLevel(ctx context.Context, h goldenHarness, level *content.Level) 
 		return fail(level.ID, stageSolution, timings, "%v", err)
 	}
 
-	// 4. Now every required objective must pass.
+	// The learner's shell never runs here: applySolution is one bash -lc, so
+	// nothing ever triggers PROMPT_COMMAND and journal.tsv is never written.
+	// sj.Record is what env_var's own captureShellSnapshot already does for
+	// the env snapshot: the harness supplies what the instrumentation would
+	// have written, modelling one command per non-empty, non-comment line of
+	// the solution, in order. See solutionCommands and solutionJournal.
+	sj.Record(solutionCommands(level.Solution))
+
+	// 4. Now every required objective must pass, and so must every optional
+	// objective whose check tree is entirely journal check types.
 	//
-	// Journal-backed objectives are exempt from this by being optional: the
-	// validator requires them to be, and nothing populates the journal yet, so
-	// a bonus that depends on it cannot pass. That is why steps 2 and 4 both
-	// look only at required objectives, and it is a real limitation rather than
-	// a loophole: a level whose only interesting assertion is a journal check
-	// is not covered here at all.
+	// A journal-backed objective used to be exempt from this entirely,
+	// because nothing populated the journal here. Issue #154 fixes the
+	// harness side of that, so an objective backed ONLY by journal checks is
+	// now held to the same bar a state-backed objective always was. An
+	// optional objective that MIXES a journal check with a state check stays
+	// exempt: its state half may legitimately be unsatisfied by the
+	// reference solution, and failing a level for that would be the
+	// loosening-in-reverse mistake docs/LEVEL-FORMAT.md now calls out.
 	start = time.Now()
 	captureShellSnapshot(ctx, h.sess)
 	after, err := session.Check(ctx)
@@ -243,8 +262,21 @@ func runGoldenLevel(ctx context.Context, h goldenHarness, level *content.Level) 
 	if err != nil {
 		return fail(level.ID, stagePostCheck, timings, "run the checks: %v", err)
 	}
+
+	checksByID := make(map[string]*content.CheckSpec, len(level.Checks))
+	for i := range level.Checks {
+		checksByID[level.Checks[i].ID] = &level.Checks[i]
+	}
+
 	for _, obj := range after.Objectives {
 		if obj.Optional {
+			c, ok := checksByID[obj.ID]
+			if ok && isJournalOnlyCheck(c) && obj.Status != verify.StatusPass {
+				return fail(level.ID, stagePostCheck, timings,
+					"optional objective %q is backed entirely by the command journal and is %s after the level's own solution ran: %s.\n"+
+						"      The level is wrong, not the solution. Do NOT loosen the check to make this pass.",
+					obj.ID, obj.Status, strings.TrimSpace(firstLine(obj.Message)))
+			}
 			continue
 		}
 		if obj.Status != verify.StatusPass {
@@ -536,4 +568,125 @@ func diffFirstLine(before, after string) string {
 		return fmt.Sprintf("      the number of entries changed: %d before, %d after", len(b), len(a))
 	}
 	return ""
+}
+
+// solutionJournal is the golden harness's stand-in for the command journal.
+//
+// It reports nothing until Record is called, which runGoldenLevel does only
+// after the solution has run, so the pre-check phase sees the empty history
+// a fresh sandbox really has. It exists because applySolution runs the whole
+// solution as one non-interactive `bash -lc`, so PROMPT_COMMAND never fires
+// and no journal.tsv is ever written; the precedent is captureShellSnapshot,
+// which already has the harness supply what the instrumentation would have
+// written so env_var reads real state under `author test`.
+//
+// Models: one command per non-empty, non-comment line of the solution, in
+// order, and all three verify.Scope kinds. Does NOT model: a multi-line
+// shell construct (a for loop, an if, a heredoc) splits into its fragment
+// lines, so a command_matched pattern written to match the whole construct
+// on one line will not match here even though it matches for a learner who
+// typed it as one command. Also not modelled: exit codes, working
+// directories, timing, tab and history counters; none of the 14 registered
+// check types reads any of those from a journal today, so the gap is real
+// but unreachable.
+type solutionJournal struct {
+	mu       sync.Mutex
+	commands []string
+}
+
+// newSolutionJournal returns a journal that reports no commands until Record
+// is called.
+func newSolutionJournal() *solutionJournal {
+	return &solutionJournal{}
+}
+
+// Record replaces the commands the journal reports. Called once, after
+// applySolution returns, with the level's own solution split by
+// solutionCommands.
+func (j *solutionJournal) Record(commands []string) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.commands = commands
+}
+
+// Commands implements verify.JournalReader. Guarded by a mutex because the
+// engine may evaluate more than one check from more than one goroutine, and
+// -race is a gate.
+func (j *solutionJournal) Commands(s verify.Scope) []string {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	switch s.Kind {
+	case verify.ScopeLast:
+		if len(j.commands) == 0 {
+			return nil
+		}
+		return append([]string(nil), j.commands[len(j.commands)-1])
+	case verify.ScopeLastN:
+		if s.N <= 0 || len(j.commands) == 0 {
+			return nil
+		}
+		if s.N >= len(j.commands) {
+			return append([]string(nil), j.commands...)
+		}
+		return append([]string(nil), j.commands[len(j.commands)-s.N:]...)
+	case verify.ScopeLevel:
+		return append([]string(nil), j.commands...)
+	default:
+		// A fifteenth ScopeKind reaching here is an authoring error this
+		// harness has no registry to catch on its own, unlike
+		// verify.Spec.Cheap's cheapTypes table. Reporting no commands,
+		// rather than the whole history, is the safe direction for an
+		// unrecognized kind: a journal check may only grant a bonus
+		// objective, never gate one (internal/content's validator enforces
+		// that), so under-reporting can only withhold a bonus the level
+		// would otherwise have paid out, never award one it should not.
+		// TestSolutionJournalCommandsTreatsAnUnknownScopeAsNoCommands pins
+		// this rather than trusting the comment alone.
+		return nil
+	}
+}
+
+// solutionCommands splits a level's solution into the command lines a
+// learner's journal would have held: one per non-empty, non-comment line, in
+// order. See solutionJournal's doc comment for what this does and does not
+// model.
+func solutionCommands(solution string) []string {
+	var out []string
+	for _, line := range strings.Split(solution, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		out = append(out, line)
+	}
+	return out
+}
+
+// journalOnlyCheckTypes mirrors internal/content's own journalCheckTypes.
+// Duplicated rather than imported: that map is unexported, content and
+// verify are peers neither may import the other's internals through, and a
+// two-entry map is cheaper to keep in step here than to export across a
+// layer boundary for this one caller.
+var journalOnlyCheckTypes = map[string]bool{
+	"command_matched":     true,
+	"command_not_matched": true,
+}
+
+// isJournalOnlyCheck reports whether c's check tree names only journal check
+// types, as opposed to asserting anything about sandbox state. It is the
+// question stage 4 asks of every optional objective's check tree: an
+// objective backed entirely by journal checks is now held to the same bar a
+// state-backed objective always was, and an objective mixing the two stays
+// exempt.
+func isJournalOnlyCheck(c *content.CheckSpec) bool {
+	if !c.IsComposite() {
+		return journalOnlyCheckTypes[c.Type]
+	}
+	for _, b := range c.Branches() {
+		if !isJournalOnlyCheck(b) {
+			return false
+		}
+	}
+	return true
 }

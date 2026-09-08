@@ -371,6 +371,14 @@ and, worse, can fail a learner who solved it a way the pattern did not
 anticipate. Use these for bonus objectives, for the handful of levels where
 the syntax genuinely is the lesson, and for anti-pattern warnings.
 
+`shellforge author test` now exercises these checks too, against a journal
+derived from the level's own `solution`: one command per non-empty,
+non-comment line of it, in order. A pattern written to match a whole
+multi-line construct (a `for` loop, an `if`, a heredoc) on one line will not
+match there, because the solution is split into fragment lines rather than
+run as one command. See section 7's new subsection on this for the full
+model and its limits.
+
 ```yaml
 - id: obj3
   type: command_matched        # R  its objective must be optional: true (see section 2)
@@ -429,6 +437,12 @@ For `env_var` the harness now closes that gap itself. Before each check phase it
 `cwd_is` cannot be rescued the same way, and the validator warns on it. It asks where the learner's shell is, and the harness has no shell that outlives a single `Exec`: a `cd` in the solution has nothing to persist in, so `PWD` in the snapshot is always the directory the harness ran from. A level using it works for a real learner and is unverifiable before it ships, which is the same thing as unverified.
 
 Two bugs sat behind the original diagnosis and both are fixed. The harness never wrote a snapshot at all, and `Snapshots.envSnapshotPath` built this container path with `filepath.Join`, so on a Windows host it produced backslashes that no `cat` in the sandbox could open. The second one made both types fail on Windows regardless of the harness, and CI would never have caught it, because the golden job runs on Linux where `filepath.Join` is already correct.
+
+**`command_matched` and `command_not_matched` now work under `author test`, the same way `env_var` does.** The harness supplies the journal the way it already supplies the env snapshot: after `solution` runs, it records one command per non-empty, non-comment line of the solution text, in order, and every `verify.Scope` a check can ask for (`level`, `last`, `last_n:N`) reads that same list. Before the solution runs, during the pre-check phase, the journal reports no commands at all, exactly as a fresh sandbox really has none. This is what closed the last gap the validator used to warn about (issue #154); the warning is gone because there is nothing left to warn an author about.
+
+What it does **not** model: a multi-line shell construct in the solution (a `for` loop, an `if`, a heredoc) is split into its fragment lines rather than kept as one command, so a pattern written to match the whole construct on one line will not match here even though it matches for a learner who typed it as one command at a real prompt. Also not modelled: exit codes, working directories, timing, and the tab and history counters; none of the 14 registered check types reads any of those from a journal today, so the gap is real but unreachable by anything currently shipped.
+
+Section 4 rule 4 says checks run in full and the checklist is never partially populated: that is a promise about `check`, the answer a learner reads, and it stays true of it. A **live** pass (see [What a live pass does between checks](04-how-it-works.md#what-a-live-pass-does-between-checks)) deliberately runs only a subset of a level's checks, for responsiveness, and is never presented as an answer in its own right; `check` is still the only thing that decides pass or fail.
 
 ---
 
@@ -612,7 +626,7 @@ shellforge run pipe-06                    # play it yourself
 1. Fresh sandbox, run `setup`.
 2. Run checks → **every required check must FAIL**, and at least one must. (If a level passes before you have done anything, the checks are wrong.) The exception is an objective marked `preserves: true`, which must **PASS** here instead: see below.
 3. Run `solution` as `learner` in a login shell, from `/home/learner`.
-4. Run checks → **all required checks must PASS.**
+4. Run checks → **all required checks must PASS**, and so must any optional objective whose check tree is made **entirely** of journal check types (`command_matched`, `command_not_matched`). An optional objective that mixes a journal check with a state check stays exempt: its state half may legitimately be left unsatisfied by the reference solution, and failing a level for that would be the loosening-in-reverse mistake, not a real bug.
 5. Run `teardown` → `setup.root` no longer exists and no stray processes remain.
 6. Run checks twice, hash the filesystem before and after → **identical** (purity).
 

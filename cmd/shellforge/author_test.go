@@ -39,6 +39,34 @@ func TestEmbeddedPackValidatesAgainstTheRealRegistry(t *testing.T) {
 	}
 }
 
+// TestPackHasNoJournalWarnings is the acceptance criterion for issue #154's
+// second half: the golden harness now supplies a journal, so the warning
+// that used to fire on every journal check because nothing exercised it
+// before shipping is gone. cwd_is is explicitly excluded from this
+// assertion: nothing in this ticket rescues it, and it still warns for the
+// reason validateCheckType gives.
+//
+// It lives here rather than in internal/content, for the same reason as
+// TestEmbeddedPackValidatesAgainstTheRealRegistry above: content and verify
+// are peers, and this is the layer where the two legitimately meet.
+func TestPackHasNoJournalWarnings(t *testing.T) {
+	pack, err := content.Embedded()
+	if err != nil {
+		t.Fatalf("Embedded: %v", err)
+	}
+
+	report := content.Validate(pack, verify.TypeChecker{})
+
+	for _, p := range report.Problems {
+		if p.Level != content.ProblemWarning {
+			continue
+		}
+		if strings.Contains(p.Message, "command_matched") || strings.Contains(p.Message, "command_not_matched") {
+			t.Errorf("a journal warning survived: %s", p.Message)
+		}
+	}
+}
+
 // TestEmbeddedPackHasTheDayTwoLevels pins the eight levels the first Day 2
 // exit criterion names, so one cannot quietly disappear.
 func TestEmbeddedPackHasTheDayTwoLevels(t *testing.T) {
@@ -75,23 +103,36 @@ func TestValidateShippedPackExitsZero(t *testing.T) {
 	}
 }
 
-// TestValidateWarningsDoNotFail proves the pack's normal half-written state
-// is reported without failing the run. pack.yaml lists all twenty five levels
-// and only eight are written.
+// TestValidateWarningsDoNotFail proves a pack that warns still validates.
+//
+// This used to run against the shipped pack, back when pack.yaml planned
+// twenty five levels and only eight were written, which produced a real
+// "no file in levels/ yet" warning on every run. The Day 5 content sprint
+// (#152/#153) wrote the rest of the campaign, and #154 removed the journal
+// warning that was the shipped pack's only other source of one, so the
+// shipped pack legitimately has zero problems today: it is not a fixture
+// that can prove this rule any more. writePackWithAnUnwrittenLevel stands in
+// for the shape the shipped pack used to have.
 func TestValidateWarningsDoNotFail(t *testing.T) {
+	dir := writePackWithAnUnwrittenLevel(t)
+
 	var out bytes.Buffer
-	if err := runValidate(&out, shippedPack, false); err != nil {
+	if err := runValidate(&out, dir, false); err != nil {
 		t.Fatalf("warnings must not fail validation: %v", err)
 	}
 	if !strings.Contains(out.String(), "warning:") {
-		t.Errorf("the shipped pack should report warnings for the unwritten levels, got:\n%s", out.String())
+		t.Errorf("a pack planning a level it has not written yet should report a warning, got:\n%s", out.String())
 	}
 }
 
-// TestValidateJSONShape covers the --json contract.
+// TestValidateJSONShape covers the --json contract. See
+// TestValidateWarningsDoNotFail for why this needs its own fixture rather
+// than the shipped pack.
 func TestValidateJSONShape(t *testing.T) {
+	dir := writePackWithAnUnwrittenLevel(t)
+
 	var out bytes.Buffer
-	if err := runValidate(&out, shippedPack, true); err != nil {
+	if err := runValidate(&out, dir, true); err != nil {
 		t.Fatalf("runValidate: %v", err)
 	}
 
@@ -106,7 +147,7 @@ func TestValidateJSONShape(t *testing.T) {
 		t.Error("the JSON report does not name the pack")
 	}
 	if len(doc.Problems) == 0 {
-		t.Error("the JSON report should carry the warnings for the unwritten levels")
+		t.Error("the JSON report should carry the warning for the unwritten level")
 	}
 	for _, p := range doc.Problems {
 		if p.File == "" || p.Message == "" {
@@ -329,6 +370,32 @@ func writeMinimalPack(t *testing.T) string {
 // levelPath is the one level file in a pack written by writeMinimalPack.
 func levelPath(dir string) string {
 	return filepath.Join(dir, "levels", "01-nav-01.yaml")
+}
+
+// writePackWithAnUnwrittenLevel is writeMinimalPack's sibling, planning a
+// second level in pack.yaml and never writing it, which is exactly the
+// shape that draws a "no file in levels/ yet" warning without failing
+// validation. See TestValidateWarningsDoNotFail for why this exists rather
+// than reusing the shipped pack.
+func writePackWithAnUnwrittenLevel(t *testing.T) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "levels"), 0o755); err != nil {
+		t.Fatalf("create levels/: %v", err)
+	}
+
+	pack := strings.Replace(minimalPack, "levels: [nav-01]", "levels: [nav-01, nav-02]", 1)
+	if pack == minimalPack {
+		t.Fatal("minimalPack's act no longer lists levels: [nav-01]; this fixture would prove nothing")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "pack.yaml"), []byte(pack), 0o600); err != nil {
+		t.Fatalf("write pack.yaml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "levels", "01-nav-01.yaml"), []byte(minimalLevel), 0o600); err != nil {
+		t.Fatalf("write the level: %v", err)
+	}
+	return dir
 }
 
 // replaceInLevel rewrites the level file, failing if the text to replace is

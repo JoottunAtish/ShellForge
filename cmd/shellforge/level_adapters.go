@@ -12,6 +12,7 @@ import (
 	"github.com/JoottunAtish/ShellForge/internal/content/setup"
 	"github.com/JoottunAtish/ShellForge/internal/game"
 	"github.com/JoottunAtish/ShellForge/internal/game/achievements"
+	"github.com/JoottunAtish/ShellForge/internal/game/bus"
 	"github.com/JoottunAtish/ShellForge/internal/store"
 	"github.com/JoottunAtish/ShellForge/internal/verify"
 )
@@ -58,6 +59,22 @@ type gameLevel struct {
 	level   *content.Level
 	sink    *game.JournalSink
 	pass    *passContext
+
+	// eventBus is the same bus buildLevel wired the session, the
+	// orchestrator and the journal sink into. StartLive attaches a
+	// LiveChecker to it: the checker's Notify fires from the CommandExecuted
+	// events sink.Drain already publishes there, so wiring the live checker
+	// needs no second path from a finished command to a verification pass.
+	eventBus *bus.Bus
+
+	// commandRan carries one signal per finished command from CommandRan,
+	// the single goroutine draining mux.Events(), to StartLive's own drain
+	// goroutine. Capacity 1 with a non-blocking send: CommandRan must never
+	// block, because pty.Mux.emit drops events once its consumer falls
+	// behind, and a burst of commands collapses to one pending drain rather
+	// than a queue of them, which is fine because Drain is itself
+	// incremental.
+	commandRan chan struct{}
 }
 
 func (g *gameLevel) LevelID() string  { return g.session.LevelID() }
@@ -96,6 +113,79 @@ func (g *gameLevel) drainJournal(ctx context.Context) {
 		return
 	}
 	_ = g.sink.Drain(ctx, g.level.ID, g.orch.AttemptID())
+}
+
+// CommandRan reports that the PTY saw a command finish. It never blocks: it
+// is called from the single goroutine draining mux.Events(), and
+// pty.Mux.emit drops events once that consumer falls behind, so a call here
+// that blocked would make CommandRan itself the reason events start being
+// dropped. A non-blocking send into a capacity-1 channel is what keeps that
+// true: a notify arriving while one is already pending is coalesced into it,
+// never queued, because the drain that is about to run picks up every
+// record Collector.Since has seen so far regardless of how many commands
+// asked for it.
+func (g *gameLevel) CommandRan() {
+	select {
+	case g.commandRan <- struct{}{}:
+	default:
+	}
+}
+
+// StartLive starts the level's live verification, bounded by ctx, and
+// returns the channel a live checker reports transitions on, plus a wait
+// function that blocks until both goroutines below have returned.
+//
+// Two goroutines, each owning one hop of the path from a finished command to
+// a printed transition, and neither ever touching the sandbox on the
+// goroutine that would block something upstream of it:
+//
+//   - The drain goroutine owns commandRan and calls the same drainJournal a
+//     `check` reply already used. Draining publishes a CommandExecuted per
+//     journal record onto eventBus, which is the same bus the live checker
+//     below is attached to, so a finished command reaches the checker with
+//     no second path invented for it.
+//   - live.Run owns the pass loop until ctx is done. Its own bus subscriber,
+//     registered by Attach, does nothing but a non-blocking Notify: the
+//     handler runs synchronously on the goroutine that called Drain, so if
+//     it did anything slower it would stall the drain behind a sandbox round
+//     trip.
+//
+// wait exists because ctx being done only asks these two to stop; it does
+// not confirm they have. The drain goroutine can be in the middle of
+// drainJournal, appending to a store the caller is about to close, at the
+// exact moment ctx is cancelled, and cancellation does not wait for that
+// call to return. play calls wait before its own teardown for exactly that
+// reason: see the comment on liveStopped in cmd_run.go.
+//
+// Detaching the checker's subscription is tied to Run's own return, which
+// only happens once ctx is done, so a level whose live checking was never
+// started (opts.live off, or a playable that predates it) never reaches this
+// method at all: see startLiveChecking in cmd_run.go.
+func (g *gameLevel) StartLive(ctx context.Context) (transitions <-chan []verify.ObjectiveResult, wait func()) {
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-g.commandRan:
+				g.drainJournal(ctx)
+			}
+		}
+	}()
+
+	live := game.NewLiveChecker(g.orch, game.DefaultLiveDebounce)
+	detach := live.Attach(g.eventBus)
+	go func() {
+		defer wg.Done()
+		live.Run(ctx)
+		detach()
+	}()
+
+	return live.Transitions(), wg.Wait
 }
 
 func (g *gameLevel) PrintBriefing(w io.Writer, color bool) {
