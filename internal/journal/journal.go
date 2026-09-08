@@ -36,7 +36,7 @@ type Entry struct {
 	TS          time.Time
 	LevelID     string
 	Cwd         string
-	Raw         string // secret material: never logged, never in a bug report
+	Raw         string // secret material: never logged; in a bug report only with --journal, and only through Redact
 	Exit        int
 	DurationMS  int64
 	UsedTab     bool

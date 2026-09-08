@@ -1,7 +1,7 @@
 # Quickstart
 
 > **Status: outline.** Written properly on Day 7. The loop below is real and
-> playable today; the table further down marks what is not built yet.
+> playable today, and so is every command in the two tables further down.
 
 You are installed. Here is the loop.
 
@@ -66,6 +66,7 @@ off, and will pick those up as they land.
 | `shellforge sandbox shell` | Open an interactive shell inside the sandbox, with no level running |
 | `shellforge sandbox rebuild` | Destroy the sandbox, then provision it again from scratch |
 | `shellforge sandbox destroy` | Remove the sandbox. Asks you to type the sandbox name first, unless you pass `--yes` |
+| `shellforge bug-report` | Bundle diagnostics into a zip for a GitHub issue. Add `--journal` to include your commands, redacted. Nothing is uploaded: it is a file on your machine for you to read and attach yourself |
 
 ## Scoring, briefly
 

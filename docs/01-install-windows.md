@@ -1,8 +1,11 @@
 # Install on Windows
 
 > **Status: outline.** This is the most important file in the repository and it is
-> written properly on Day 7, with screenshots, against a build that actually
-> installs. There is nothing to install yet.
+> written properly on Day 7, with every screenshot below actually taken against a
+> real build. `scripts/install.ps1` itself is real today, and step 4 below
+> describes exactly what it does; everything else on this page, including
+> whether the WSL steps still read this way once install.ps1 has been run on a
+> clean machine, is still owed.
 
 **Who this is for:** you are on Windows, you have never opened a terminal, and you
 would like to keep your laptop in one piece. That is exactly the right starting
@@ -65,9 +68,36 @@ Then reboot.
 
 ## 6. Step 4: install Shellforge
 
-The one-line installer, with the full URL written out so you can read it before
-running it, plus four bullets saying exactly what it does. Nobody should run a
-script they have not been told the contents of.
+```powershell
+powershell -ExecutionPolicy Bypass -Scope Process -File install.ps1
+```
+
+That command assumes you already have `install.ps1` on disk. To get it and run
+it in one step, in an ordinary (not Administrator) PowerShell window:
+
+```powershell
+Invoke-WebRequest -Uri https://raw.githubusercontent.com/JoottunAtish/ShellForge/main/scripts/install.ps1 -OutFile install.ps1
+powershell -ExecutionPolicy Bypass -Scope Process -File install.ps1
+```
+
+Read that URL before you run it: `-ExecutionPolicy Bypass -Scope Process`
+affects nothing outside this one window, and it is this repository's own
+`scripts/install.ps1`, which you can read at that same address first. What it
+does:
+
+- Downloads the Windows release archive and its `SHA256SUMS` file, then
+  verifies the archive's checksum before touching your disk. If they do not
+  match, it deletes what it downloaded and installs nothing.
+- Places `shellforge.exe` in `%LOCALAPPDATA%\Programs\shellforge`, refusing to
+  overwrite an existing file there unless you pass `-Force`.
+- Adds that directory to your own user `Path` environment variable, so a new
+  terminal window can find `shellforge` without you editing anything by hand.
+  Pass `-NoPathChange` to skip this and be told what to add yourself instead.
+  This never touches the machine-wide `Path`, and it never asks for
+  Administrator rights.
+- Runs `shellforge doctor` once it is installed, so you know immediately
+  whether anything else needs attention. A `doctor` warning does not mean the
+  install failed: the binary is on disk either way.
 
 ## 7. Step 5: check your machine
 

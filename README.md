@@ -43,12 +43,25 @@ pass. That is the difference between teaching a command and teaching a skill.
 
 ## Install
 
-Not yet. There is no release to install.
+There is no tagged release yet, but both installers are real and pull from this
+repository's own scripts, which you can read before running either one.
 
-When v0.1 ships, this section becomes:
+**Linux**, or from inside WSL on Windows:
 
-**Windows** [Windows install guide](docs/01-install-windows.md)
-**Linux** [Linux install guide](docs/02-install-linux.md)
+```bash
+curl -fsSL https://raw.githubusercontent.com/JoottunAtish/ShellForge/main/scripts/install.sh | sh
+```
+
+**Windows**, from an ordinary PowerShell window:
+
+```powershell
+Invoke-WebRequest -Uri https://raw.githubusercontent.com/JoottunAtish/ShellForge/main/scripts/install.ps1 -OutFile install.ps1
+powershell -ExecutionPolicy Bypass -Scope Process -File install.ps1
+```
+
+Full detail on what each one does, and the manual verify-and-extract
+alternative, in the [Windows install guide](docs/01-install-windows.md) and the
+[Linux install guide](docs/02-install-linux.md).
 
 ```
 shellforge doctor    # checks your machine and tells you how to fix anything

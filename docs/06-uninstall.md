@@ -53,7 +53,40 @@ shellforge sandbox destroy      # real: removes the WSL distribution or the cont
 shellforge uninstall            # not built yet: removes config, progress, and cache
 ```
 
-Then remove the binary itself. Exact paths per platform, to be filled in.
+Then remove the binary itself. `scripts/install.sh` and `scripts/install.ps1`
+each place it in one fixed default directory and, on Windows, add one entry to
+your user `Path`:
+
+**Linux**, if you installed with `install.sh` and its default `SHELLFORGE_BIN_DIR`:
+
+```bash
+rm -f "$HOME/.local/bin/shellforge"
+```
+
+If your shell profile has an `export PATH=...` line adding
+`$HOME/.local/bin` that you added yourself when the installer printed it,
+and you have nothing else there, remove that line too.
+
+**Windows**, if you installed with `install.ps1` and its default `-BinDir`:
+
+```powershell
+Remove-Item -Recurse -Force "$env:LOCALAPPDATA\Programs\shellforge"
+```
+
+`install.ps1` also added `%LOCALAPPDATA%\Programs\shellforge` to your user
+`Path` environment variable, unless you passed `-NoPathChange`. Remove it from
+Settings > System > About > Advanced system settings > Environment Variables,
+under the user `Path` entry, or from PowerShell:
+
+```powershell
+$dir = "$env:LOCALAPPDATA\Programs\shellforge"
+$current = [Environment]::GetEnvironmentVariable('Path', 'User')
+$kept = ($current -split ';' | Where-Object { $_.TrimEnd('\') -ne $dir }) -join ';'
+[Environment]::SetEnvironmentVariable('Path', $kept, 'User')
+```
+
+If you passed a custom `SHELLFORGE_BIN_DIR` (Linux) or `-BinDir` (Windows) when
+you installed, remove that directory instead of the default named above.
 
 ## Verify it is actually gone
 

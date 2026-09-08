@@ -37,6 +37,11 @@ const (
 // sandbox gained a real status|shell|rebuild|destroy tree in place of its
 // four stubs, and doctor's sandbox_health probe is wired to a real
 // SandboxProber instead of nil.
+//
+// bug-report is real as of issue #158: it gathers a diagnostic bundle
+// through internal/bugreport, with sandboxBugReportProber adapting
+// internal/sandbox to the narrow bugreport.Prober interface, the same seam
+// doctor.SandboxProber uses and for the same reason.
 func NewRootCommand(v VersionInfo) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "shellforge",
@@ -97,8 +102,7 @@ func NewRootCommand(v VersionInfo) *cobra.Command {
 		newMapCommand(),
 		newStatsCommand(),
 		newSandboxCommand(defaultResolver),
-		stubCommand("shellforge bug-report", "bug-report", groupManage,
-			"Bundle diagnostics for a GitHub issue, with the journal redacted", "Day 6"),
+		newBugReportCommand(v, sandboxBugReportProber{}),
 		newAuthorCommand(),
 		newVersionCommand(v),
 	)

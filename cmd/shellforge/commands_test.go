@@ -161,7 +161,6 @@ func execCommand(t *testing.T, root *cobra.Command, args ...string) (string, err
 // #48's acceptance criteria.
 func TestUnimplementedVerbsExplainThemselves(t *testing.T) {
 	stubs := [][]string{
-		{"bug-report"},
 		{"author", "scaffold"}, {"author", "record"},
 	}
 
@@ -169,14 +168,16 @@ func TestUnimplementedVerbsExplainThemselves(t *testing.T) {
 	// #53. `author test` is real as of the golden harness. `doctor` is real as
 	// of #70. `init` and all four sandbox subcommands are real as of #71.
 	// `map` is real as of #124, and `play`, `skip` and `stats` are real as
-	// of the Day 4 game core. All of these are deliberately absent above
-	// rather than deleted from the documented set: author_test.go covers
-	// validate, author_test_cmd_test.go covers test, cmd_doctor_test.go
-	// covers doctor, cmd_init_test.go and cmd_sandbox_test.go cover init and
-	// sandbox, and render_map_test.go covers map's rendering. A real verb
-	// still errors without arguments or on a broken machine, but it errors
-	// about that rather than about not existing, so it does not belong in
-	// this list.
+	// of the Day 4 game core. `bug-report` is real as of #158: it gathers a
+	// diagnostic bundle through internal/bugreport instead of refusing.
+	// All of these are deliberately absent above rather than deleted from
+	// the documented set: author_test.go covers validate,
+	// author_test_cmd_test.go covers test, cmd_doctor_test.go covers
+	// doctor, cmd_init_test.go and cmd_sandbox_test.go cover init and
+	// sandbox, render_map_test.go covers map's rendering, and
+	// cmd_bugreport_test.go covers bug-report. A real verb still errors
+	// without arguments or on a broken machine, but it errors about that
+	// rather than about not existing, so it does not belong in this list.
 	//
 	// `check`, `hint` and `reset` are also absent, and are a different case
 	// again: all three are real, and none of them is a host verb. A learner

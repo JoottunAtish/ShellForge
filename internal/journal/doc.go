@@ -32,6 +32,32 @@
 // It is never transmitted, and `bug-report` ships commands without output.
 // Never parse ~/.bash_history for anything; the journal is the source of truth.
 //
+// bug-report ships command text from this journal only when the learner passes
+// --journal, and every command's text goes through Redact first: it is never
+// included with output, and never with the environment snapshot. Redact's
+// rules are a closed list, applied in order:
+//
+//  1. KEY=VALUE, where KEY is a whole shell word matching, case insensitively,
+//     pass, passwd, password, token, secret, api_key or api-key or apikey,
+//     auth, credential, or session: the value becomes [redacted], the key
+//     spelling kept as typed.
+//  2. --password, --token, --api-key, --secret, --auth, --credential, in both
+//     the "--flag value" and "--flag=value" forms: the value becomes
+//     [redacted], the flag spelling kept as typed.
+//  3. -p immediately after mysql, psql, or mysqldump, attached or spaced: the
+//     value becomes [redacted]. curl -u user:pass keeps the user and redacts
+//     only the password.
+//  4. Authorization: Bearer or Authorization: Basic, case insensitive on the
+//     header name and the scheme: the value becomes [redacted].
+//  5. Anything between -----BEGIN and -----END, inclusive: the whole block
+//     becomes [redacted key].
+//
+// This is a closed list, not an entropy or length heuristic: files-04 asks
+// the learner to compare sha256 sums, and a bare 64 character hex string must
+// survive Redact untouched for that level to still make sense in a bug
+// report. See internal/bugreport for the rest of what a bug report does and
+// does not carry.
+//
 // Journal contents are learner-influenced and must never be evidence for
 // scoring. Every field, the command, the exit code, the cwd, comes from a marker
 // the learner's own shell emitted, and a learner can print a byte-identical
