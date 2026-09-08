@@ -35,6 +35,14 @@ type JournalSink struct {
 	// what makes "whoever starts Drain first finishes it before the other
 	// one's Since call even runs" true, which is what keeps batches from
 	// interleaving at all.
+	//
+	// That ordering guarantee is bought by holding this lock across
+	// s.b.Publish, which runs every subscriber synchronously on this
+	// goroutine. Unlike Orchestrator's o.mu, this lock is not promised to
+	// stop at the package boundary, and a bus subscriber that ever called
+	// Drain from inside its own handler would deadlock on it. Nothing
+	// subscribed today does that; a future achievement or scoring handler
+	// must not either.
 	mu sync.Mutex
 
 	c *journal.Collector

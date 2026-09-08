@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1101,5 +1102,77 @@ func TestLegalTransitionCoversTheEdgesNoMethodTakes(t *testing.T) {
 	}
 	if !legalTransition(StatePassed, StateActive) {
 		t.Error("Passed -> Active is not legal, but a learner may keep working in a level they have passed")
+	}
+}
+
+// --- CheckCheap: a live pass never overlaps a real check ---
+
+// TestCheckCheapNeverOverlapsARealCheck is the regression test the review of
+// this ticket found missing: a live pass reaches the sandbox only through
+// Orchestrator.CheckCheap, never through Session.checkCheap directly, and
+// that is what is supposed to make it share Check's resetMu. Hammering both
+// concurrently against a fakeVerifier that flags re-entrance is what proves
+// the sharing is real rather than merely intended: before CheckCheap took
+// resetMu, this reliably raced.
+func TestCheckCheapNeverOverlapsARealCheck(t *testing.T) {
+	s, verifier, _ := newTestSession(t, Config{})
+	progress := newFakeProgress()
+	o, _, _ := newTestOrchestrator(t, s, progress)
+
+	if err := o.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	var running int32
+	verifier.onRun = func() {
+		if !atomic.CompareAndSwapInt32(&running, 0, 1) {
+			t.Error("CheckCheap and Check reached the verifier at the same time")
+			return
+		}
+		time.Sleep(time.Millisecond)
+		atomic.StoreInt32(&running, 0)
+	}
+
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	for i := 0; i < 40; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			o.CheckCheap(ctx)
+		}()
+		go func() {
+			defer wg.Done()
+			o.Check(ctx)
+		}()
+	}
+	wg.Wait()
+}
+
+// TestCheckCheapRefusesOutsideActive is CheckCheap's own refusal: a live
+// pass reaching the Orchestrator before Start, or after Close, must find
+// out quietly rather than reaching a session with no world set up, or
+// blocking behind Close's own resetMu forever.
+func TestCheckCheapRefusesOutsideActive(t *testing.T) {
+	s, verifier, _ := newTestSession(t, Config{})
+	progress := newFakeProgress()
+	o, _, _ := newTestOrchestrator(t, s, progress)
+
+	if got := o.CheckCheap(context.Background()); got != nil {
+		t.Errorf("CheckCheap before Start = %+v, want nil", got)
+	}
+	if verifier.runCalls != 0 {
+		t.Errorf("CheckCheap before Start reached the verifier %d times, want 0", verifier.runCalls)
+	}
+
+	if err := o.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := o.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if got := o.CheckCheap(context.Background()); got != nil {
+		t.Errorf("CheckCheap after Close = %+v, want nil", got)
 	}
 }

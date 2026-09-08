@@ -7,7 +7,6 @@ import (
 	"testing/fstest"
 
 	"github.com/JoottunAtish/ShellForge/internal/platform"
-	"github.com/JoottunAtish/ShellForge/internal/verify"
 )
 
 // validateFixture loads and validates a fixture pack with the fake registry.
@@ -435,29 +434,14 @@ func TestValidateJournalChecksCannotGatePassing(t *testing.T) {
 	}
 }
 
-// TestPackHasNoJournalWarnings is the acceptance criterion for issue #154's
-// second half: the golden harness now supplies a journal, so the warning
-// that used to fire on every journal check because nothing exercised it
-// before shipping is gone. cwd_is is explicitly excluded from this
-// assertion: nothing in this ticket rescues it, and it still warns for the
-// reason validateCheckType gives.
-func TestPackHasNoJournalWarnings(t *testing.T) {
-	pack, err := Embedded()
-	if err != nil {
-		t.Fatalf("Embedded: %v", err)
-	}
-
-	report := Validate(pack, verify.TypeChecker{})
-
-	for _, p := range report.Problems {
-		if p.Level != ProblemWarning {
-			continue
-		}
-		if strings.Contains(p.Message, "command_matched") || strings.Contains(p.Message, "command_not_matched") {
-			t.Errorf("a journal warning survived: %s", p.Message)
-		}
-	}
-}
+// TestPackHasNoJournalWarnings, the acceptance criterion for issue #154's
+// second half, lives in cmd/shellforge, next to
+// TestEmbeddedPackValidatesAgainstTheRealRegistry. It needs the real
+// verify.TypeChecker registry to prove the warning is gone, and
+// internal/content and internal/verify are peers by design, neither
+// importing the other: see TestScopedLines and the comment on
+// paramsSeenChecker above for what that design already costs this package
+// to keep true. cmd/shellforge is where the two halves legitimately meet.
 
 // TestValidateGatingReadsEachObjectivesOwnOptionalFlag pins that the gating
 // lookup is keyed by check id, not collapsed into one shared flag. bonus's

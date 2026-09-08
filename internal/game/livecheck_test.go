@@ -11,6 +11,19 @@ import (
 	"github.com/JoottunAtish/ShellForge/internal/verify"
 )
 
+// sessionCheckCheap adapts a *Session to CheckCheapSession so a test can
+// drive LiveChecker.Run against the real checkCheap logic without standing
+// up an Orchestrator. Production code never does this: gameLevel.StartLive
+// passes an *Orchestrator, precisely so a live pass is serialized against a
+// real Check and a Reset by the resetMu those share. Tests that want that
+// serialization exercised use an Orchestrator directly instead; see
+// TestLiveCheckNeverOverlapsARealCheck below.
+type sessionCheckCheap struct{ *Session }
+
+func (s sessionCheckCheap) CheckCheap(ctx context.Context) []verify.ObjectiveResult {
+	return s.checkCheap(ctx)
+}
+
 // --- AC3: the transition rule ---
 
 // TestUnknownToPassIsReportedOnce is the tick the feature exists for: an
@@ -22,12 +35,12 @@ func TestUnknownToPassIsReportedOnce(t *testing.T) {
 	l := NewLiveChecker(nil, time.Millisecond)
 	objs := []verify.ObjectiveResult{{ID: "location", Status: verify.StatusPass}}
 
-	first := l.transition(objs)
+	first, _ := l.transition(objs)
 	if len(first) != 1 || first[0].ID != "location" {
 		t.Fatalf("first pass = %+v, want exactly one transition for location", first)
 	}
 
-	second := l.transition(objs)
+	second, _ := l.transition(objs)
 	if len(second) != 0 {
 		t.Fatalf("second pass = %+v, want none: pass to pass must be quiet", second)
 	}
@@ -49,6 +62,8 @@ func TestTransitionRuleIsQuietOnTheFirstFail(t *testing.T) {
 		{"fail to timeout is silent", true, verify.StatusFail, verify.StatusTimeout, false},
 		{"fail to pass reports", true, verify.StatusFail, verify.StatusPass, true},
 		{"pass to pass is silent", true, verify.StatusPass, verify.StatusPass, false},
+		{"pass to error is silent", true, verify.StatusPass, verify.StatusError, false},
+		{"pass to timeout is silent", true, verify.StatusPass, verify.StatusTimeout, false},
 	}
 
 	for _, tt := range tests {
@@ -58,7 +73,7 @@ func TestTransitionRuleIsQuietOnTheFirstFail(t *testing.T) {
 				l.last["obj"] = tt.prev
 			}
 
-			got := l.transition([]verify.ObjectiveResult{{ID: "obj", Status: tt.next}})
+			got, _ := l.transition([]verify.ObjectiveResult{{ID: "obj", Status: tt.next}})
 			reported := len(got) == 1 && got[0].ID == "obj"
 			if reported != tt.wantReport {
 				t.Errorf("known=%v prev=%q next=%q: reported=%v, want %v", tt.known, tt.prev, tt.next, reported, tt.wantReport)
@@ -110,12 +125,25 @@ func (c *fakeClock) Advance(d time.Duration) {
 func TestTenCommandsInsideTheDebounceWindowRunTwoPasses(t *testing.T) {
 	s, verifier, _ := newTestSession(t, Config{})
 
-	l := NewLiveChecker(s, 750*time.Millisecond)
+	l := NewLiveChecker(sessionCheckCheap{s}, 750*time.Millisecond)
 
 	clock := &fakeClock{now: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)}
 	l.now = clock.Now
+	// afterCalled announces that Run called l.after, which happens right
+	// after Run reads the clock to compute its debounce remainder and right
+	// before Run blocks waiting on the channel that call returns. Waiting for
+	// this announcement, rather than inferring it from the first pass having
+	// completed, is what makes the ordering below real instead of merely
+	// likely: without it, the test could call clock.Advance before Run reads
+	// the clock again, which would make Run compute an already-elapsed
+	// `since`, skip the wait entirely, and pass immediately, leaving nothing
+	// to ever receive on afterCh.
+	afterCalled := make(chan time.Duration, 4)
 	afterCh := make(chan time.Time)
-	l.after = func(time.Duration) <-chan time.Time { return afterCh }
+	l.after = func(d time.Duration) <-chan time.Time {
+		afterCalled <- d
+		return afterCh
+	}
 
 	firstPassStarted := make(chan struct{})
 	releaseFirstPass := make(chan struct{})
@@ -154,16 +182,26 @@ func TestTenCommandsInsideTheDebounceWindowRunTwoPasses(t *testing.T) {
 		t.Fatal("the leading-edge pass never completed")
 	}
 
-	// Run has looped back and found the one coalesced notify pending. The
-	// clock has not moved, so it must be waiting out the debounce window
-	// rather than passing again immediately; advancing it and releasing
-	// the wait is what lets the second pass run.
-	clock.Advance(time.Second)
+	// Run has consumed the coalesced notify and entered its debounce wait.
+	// Waiting for the call itself, rather than for the first pass having
+	// completed, is what makes the ordering real: see afterCalled's own
+	// comment above for why the two are not the same thing.
+	var waited time.Duration
 	select {
-	case afterCh <- clock.Now():
+	case waited = <-afterCalled:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run never reached its debounce wait for the coalesced notify")
 	}
+	// The clock has not moved since the leading-edge pass began, so Run
+	// should be waiting out the whole debounce window, not some partial
+	// remainder. This is the arithmetic a future edit to the throttle would
+	// most easily get wrong, and the test above it never checked it.
+	if waited != 750*time.Millisecond {
+		t.Errorf("debounce wait = %s, want the whole 750ms window", waited)
+	}
+
+	clock.Advance(time.Second)
+	afterCh <- clock.Now()
 
 	select {
 	case <-passed:
@@ -204,7 +242,7 @@ func TestPassesNeverOverlap(t *testing.T) {
 		atomic.StoreInt32(&running, 0)
 	}
 
-	l := NewLiveChecker(s, time.Millisecond)
+	l := NewLiveChecker(sessionCheckCheap{s}, time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -254,7 +292,7 @@ func TestNotifyNeverBlocksWhileAPassIsRunning(t *testing.T) {
 		<-block
 	}
 
-	l := NewLiveChecker(s, time.Millisecond)
+	l := NewLiveChecker(sessionCheckCheap{s}, time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -318,7 +356,7 @@ func TestNotifyNeverBlocksWhileAPassIsRunning(t *testing.T) {
 // Attach registers must do nothing but a non-blocking notify.
 func TestBusHandlerDoesNoWorkOnThePublishingGoroutine(t *testing.T) {
 	s, verifier, _ := newTestSession(t, Config{})
-	l := NewLiveChecker(s, time.Millisecond)
+	l := NewLiveChecker(sessionCheckCheap{s}, time.Millisecond)
 
 	b := bus.New()
 	detach := l.Attach(b)

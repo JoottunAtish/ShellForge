@@ -408,11 +408,14 @@ func TestRenderTransitionsIsCRLFTerminatedAndHonoursColour(t *testing.T) {
 
 	out := renderTransitions(objs, false)
 
+	if !strings.HasPrefix(out, "\r\n") {
+		t.Fatalf("renderTransitions does not open on a fresh line; a tick would land at the end of whatever the learner has typed so far:\n%q", out)
+	}
 	if !strings.Contains(out, "quest/answer.txt holds the folder you are standing in") {
 		t.Errorf("the transition line does not name the objective: %q", out)
 	}
-	if got := strings.Count(out, "\n"); got != 1 {
-		t.Fatalf("one input objective produced %d lines, want 1:\n%q", got, out)
+	if got := strings.Count(out, "\n"); got != 2 {
+		t.Fatalf("one input objective produced %d lines, want 2 (the leading fresh-line prefix, then the objective):\n%q", got, out)
 	}
 	for i := 0; i < len(out); i++ {
 		if out[i] != '\n' {

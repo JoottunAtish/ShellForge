@@ -200,8 +200,14 @@ type Orchestrator struct {
 	// intact.
 	//
 	// Held by Reset for its whole operation, taken by Check around
-	// Session.Check, and taken by Close before it tears down, so a teardown
-	// can never run while a reset is rebuilding.
+	// Session.Check, taken by CheckCheap around session.checkCheap, and
+	// taken by Close before it tears down. That is what stops a teardown
+	// running while a reset is rebuilding, and it is also what stops a live
+	// pass from running through the middle of either: CheckCheap is the
+	// only path a live pass reaches this Orchestrator through, and it takes
+	// this same lock rather than a lock of its own, precisely so a live
+	// pass shares Check's and Reset's serialization instead of merely
+	// resembling it.
 	resetMu sync.Mutex
 }
 
@@ -566,6 +572,49 @@ func (o *Orchestrator) Check(ctx context.Context) (verify.LevelResult, error) {
 	}
 	o.mu.Unlock()
 	return result, nil
+}
+
+// CheckCheap runs the level's cheap checks for a live pass and returns
+// their objective results, satisfying CheckCheapSession so a *LiveChecker
+// can be built on an Orchestrator rather than reaching into the Session it
+// wraps.
+//
+// That indirection is what fixes two overlaps a live pass calling
+// Session.checkCheap directly used to allow. It takes resetMu around the
+// call, the same lock Check takes around Session.Check, so a live pass and
+// a real check can never both be reading the sandbox for this level at
+// once. And because Reset also holds resetMu for its whole rebuild, a live
+// pass arriving mid-reset now waits behind it too, rather than evaluating a
+// half-deleted level root and reporting a regression the learner never
+// caused.
+//
+// It returns nil, doing nothing further, once the attempt is closed or
+// whenever the state is not StateActive: a live pass is a nicety on a
+// background timer, never the answer a learner reads, so skipping this one
+// pass and waiting for the next notify is the right response. The state is
+// read once before taking resetMu, to avoid blocking on it at all when the
+// answer is already going to be nil, and read again after, because a real
+// Check or a Reset may have started and finished, or Close may have run,
+// while this call was waiting for resetMu.
+func (o *Orchestrator) CheckCheap(ctx context.Context) []verify.ObjectiveResult {
+	o.mu.Lock()
+	closed, state := o.closed, o.state
+	o.mu.Unlock()
+	if closed || state != StateActive {
+		return nil
+	}
+
+	o.resetMu.Lock()
+	defer o.resetMu.Unlock()
+
+	o.mu.Lock()
+	closed, state = o.closed, o.state
+	o.mu.Unlock()
+	if closed || state != StateActive {
+		return nil
+	}
+
+	return o.session.checkCheap(ctx)
 }
 
 // restorableStatus reports whether a status is one this attempt must not be

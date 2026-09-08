@@ -630,8 +630,20 @@ func (j *solutionJournal) Commands(s verify.Scope) []string {
 			return append([]string(nil), j.commands...)
 		}
 		return append([]string(nil), j.commands[len(j.commands)-s.N:]...)
-	default: // verify.ScopeLevel, and anything else defaults to the whole history.
+	case verify.ScopeLevel:
 		return append([]string(nil), j.commands...)
+	default:
+		// A fifteenth ScopeKind reaching here is an authoring error this
+		// harness has no registry to catch on its own, unlike
+		// verify.Spec.Cheap's cheapTypes table. Reporting no commands,
+		// rather than the whole history, is the safe direction for an
+		// unrecognized kind: a journal check may only grant a bonus
+		// objective, never gate one (internal/content's validator enforces
+		// that), so under-reporting can only withhold a bonus the level
+		// would otherwise have paid out, never award one it should not.
+		// TestSolutionJournalCommandsTreatsAnUnknownScopeAsNoCommands pins
+		// this rather than trusting the comment alone.
+		return nil
 	}
 }
 

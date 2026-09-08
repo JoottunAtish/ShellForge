@@ -442,7 +442,7 @@ Two bugs sat behind the original diagnosis and both are fixed. The harness never
 
 What it does **not** model: a multi-line shell construct in the solution (a `for` loop, an `if`, a heredoc) is split into its fragment lines rather than kept as one command, so a pattern written to match the whole construct on one line will not match here even though it matches for a learner who typed it as one command at a real prompt. Also not modelled: exit codes, working directories, timing, and the tab and history counters; none of the 14 registered check types reads any of those from a journal today, so the gap is real but unreachable by anything currently shipped.
 
-Section 4 rule 4 says checks run in full and the checklist is never partially populated: that is a promise about `check`, the answer a learner reads, and it stays true of it. A **live** pass (see the CLI docs) deliberately runs only a subset of a level's checks, for responsiveness, and is never presented as an answer in its own right; `check` is still the only thing that decides pass or fail.
+Section 4 rule 4 says checks run in full and the checklist is never partially populated: that is a promise about `check`, the answer a learner reads, and it stays true of it. A **live** pass (see [What a live pass does between checks](04-how-it-works.md#what-a-live-pass-does-between-checks)) deliberately runs only a subset of a level's checks, for responsiveness, and is never presented as an answer in its own right; `check` is still the only thing that decides pass or fail.
 
 ---
 

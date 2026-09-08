@@ -729,9 +729,9 @@ type fakeLiveLevel struct {
 	commandRanCalls int
 }
 
-func (f *fakeLiveLevel) StartLive(context.Context) <-chan []verify.ObjectiveResult {
+func (f *fakeLiveLevel) StartLive(context.Context) (<-chan []verify.ObjectiveResult, func()) {
 	f.startLiveCalls++
-	return nil
+	return nil, func() {}
 }
 
 func (f *fakeLiveLevel) CommandRan() { f.commandRanCalls++ }
@@ -751,13 +751,17 @@ func (plainPlayable) PrintBriefing(io.Writer, bool)   {}
 func TestStartLiveCheckingHonoursOptsLive(t *testing.T) {
 	t.Run("live checking off starts nothing", func(t *testing.T) {
 		f := &fakeLiveLevel{}
-		onCommand, transitions := startLiveChecking(context.Background(), runOptions{live: false}, f)
+		onCommand, transitions, wait := startLiveChecking(context.Background(), runOptions{live: false}, f)
 		if onCommand != nil {
 			t.Error("startLiveChecking returned a callback with live checking off")
 		}
 		if transitions != nil {
 			t.Error("startLiveChecking returned a transition channel with live checking off")
 		}
+		if wait == nil {
+			t.Fatal("startLiveChecking returned a nil wait function with live checking off; it must be a callable no-op")
+		}
+		wait()
 		if f.startLiveCalls != 0 || f.commandRanCalls != 0 {
 			t.Errorf("StartLive was called %d times and CommandRan %d times with live checking off, want 0 and 0",
 				f.startLiveCalls, f.commandRanCalls)
@@ -766,7 +770,7 @@ func TestStartLiveCheckingHonoursOptsLive(t *testing.T) {
 
 	t.Run("live checking on starts the level's live checker", func(t *testing.T) {
 		f := &fakeLiveLevel{}
-		onCommand, _ := startLiveChecking(context.Background(), runOptions{live: true}, f)
+		onCommand, _, wait := startLiveChecking(context.Background(), runOptions{live: true}, f)
 		if onCommand == nil {
 			t.Fatal("no onCommand callback with live checking on")
 		}
@@ -777,13 +781,21 @@ func TestStartLiveCheckingHonoursOptsLive(t *testing.T) {
 		if f.startLiveCalls != 1 {
 			t.Errorf("StartLive was called %d times, want 1", f.startLiveCalls)
 		}
+		if wait == nil {
+			t.Fatal("startLiveChecking returned a nil wait function with live checking on")
+		}
+		wait()
 	})
 
 	t.Run("a playable that does not implement liveLevel is left alone", func(t *testing.T) {
-		onCommand, transitions := startLiveChecking(context.Background(), runOptions{live: true}, plainPlayable{})
+		onCommand, transitions, wait := startLiveChecking(context.Background(), runOptions{live: true}, plainPlayable{})
 		if onCommand != nil || transitions != nil {
 			t.Error("startLiveChecking found a live checker on a playable that does not implement one")
 		}
+		if wait == nil {
+			t.Fatal("startLiveChecking returned a nil wait function for a playable with no live checker")
+		}
+		wait()
 	})
 }
 

@@ -5441,14 +5441,24 @@ a non-blocking `Notify`, because the handler runs synchronously on the
 goroutine that called `Drain`. The throttle is leading edge plus one
 coalesced trailing edge: N commands inside one debounce window (750ms by
 default) produce exactly two passes, never one and never N, which a
-fake-clock test pins directly. A verification pass never overlaps another,
-by construction (`Run` is single-goroutine, so there is nothing to lock), and
-a slow pass never blocks `Notify`, the bus handler, or the drain goroutine
-upstream of it, each pinned by its own test under `-race`. The transition
-rule reports an objective ticking from unknown or failing to passing, and a
+fake-clock test pins directly. Two live passes never overlap each other, by
+construction (`Run` is single-goroutine, so there is nothing to lock), and a
+slow pass never blocks `Notify`, the bus handler, or the drain goroutine
+upstream of it, each pinned by its own test under `-race`. A live pass also
+never overlaps the pass behind a learner's own `check`, or a `reset` rebuild:
+`LiveChecker` never calls `Session.checkCheap` directly, only through a small
+`CheckCheapSession` interface `*game.Orchestrator` satisfies, and that method
+takes the same `resetMu` `Check` already holds around `Session.Check` and
+`Reset` already holds around its rebuild. That is a lock, not a construction
+argument, and it is what fixed a real, reproducible data race a review of
+this ticket found between `Session.Check` and `Session.checkCheap`, plus the
+worse failure it enabled: a live pass evaluating a half-deleted level root
+mid-`reset` and printing an unprompted regression line. The transition rule
+reports an objective ticking from unknown or failing to passing, and a
 regression from passing to failing; it stays quiet on the first failure,
 which would otherwise print the whole checklist on the very first command,
-and on a transient error or timeout, which is not news.
+and on a transient error or timeout on either side of the transition, which
+is not news.
 
 `gameLevel.StartLive` wires all of this into the run flow: `--live-check`,
 default on, on both `run` and `play`, accepting `off`/`false` and `on`/`true`
@@ -5500,6 +5510,79 @@ golden`, `shellforge author test`, and any `SHELLFORGE_GOLDEN=1` test still
 could not run, for the same Docker-daemon-down reason as the entry above.
 `govulncheck`, `gosec` and the `scripts/tests` pytest suite remain not
 installed here; CI is authoritative for all three.
+
+### Day 5 follow-up, 2026-09-08: review findings on #154 fixed
+
+A review of the two entries above found four blocking defects, all fixed on
+the same branch before merge.
+
+**The unmet acceptance criterion.** A live pass and the pass behind a
+learner's own `check` were not serialized at all: `LiveChecker.Run` called
+`Session.checkCheap` directly, while `check` went `Orchestrator.Check` to
+`Session.Check`, and the two shared no lock. `go test -race` reproduced a
+real data race between them. Worse, `checkCheap` did not take `resetMu`
+either, so typing `reset` could have a live pass evaluate a half-deleted
+level root and print an unprompted regression line while the world was
+mid-rebuild. Fixed by giving `*Orchestrator` a `CheckCheap` method that takes
+`resetMu` the same way `Check` does, refuses (returns nil) outside
+`StateActive`, and only then delegates to `session.checkCheap`; `LiveChecker`
+now depends on a small `CheckCheapSession` interface satisfied by
+`*Orchestrator`, declared in `internal/game`, rather than on `*Session`
+directly, matching the pattern this package already uses for `Verifier` and
+`Progress`. `NewLiveChecker`'s parameter type changed accordingly; production
+code (`gameLevel.StartLive`) now passes the Orchestrator, not the Session. A
+new test starts a live pass and a real `Check` concurrently against a
+`fakeVerifier` that flags re-entrance and proves neither ever overlaps.
+
+**The rendering claim that was not true.** `printLiveTransitions`'s comment
+and the PR body both claimed `renderTransitions` opened with `"\r"`. It did
+not: the rendered block began `"  [ok] ..."` with no fresh-line prefix at
+all, so a live tick completing while the learner had typed a command and not
+yet pressed Enter would land appended to their own unfinished prompt line.
+Fixed in the code, not the comment: `renderTransitions` now opens with the
+same leading `"\n"` `renderCheckReply` already uses, so a tick always starts
+on its own line.
+
+**The transition rule not matching its own doc comment.** The comment said
+the reported set is unknown-to-pass, fail-to-pass and pass-to-fail, with
+error and timeout suppressed; the code reported any change where either side
+was `StatusPass`, which included pass-to-error and pass-to-timeout, a
+transient sandbox hiccup dressed up as a visible regression that then ticked
+back silently. Fixed to match the comment, with `pass to error is silent`
+and `pass to timeout is silent` added to the table test.
+
+**A measured flake in the debounce test**, found independently of the
+review: `TestTenCommandsInsideTheDebounceWindowRunTwoPasses` advanced its
+fake clock before `Run` had necessarily read it again, so `Run` could
+sometimes compute an already-elapsed debounce remainder and skip the wait
+entirely, leaving nothing to receive on `afterCh`. Measured at roughly 1
+failure in 20 under `-race`. Fixed by having the `l.after` seam announce that
+it was called, and waiting for that announcement before advancing the clock,
+plus a new assertion that the wait wanted the whole 750ms window. Re-run 30
+times after the fix, `-race`, `-count=1` each time: 0 failures.
+
+Six suggestions and three nits from the same review were also applied: a
+dropped live-transition batch now rolls the affected objectives back out of
+the checker's memory instead of losing their tick for the rest of the level;
+`solutionJournal.Commands`'s default branch now names `ScopeLevel` explicitly
+and returns no commands, not the whole history, for an unrecognized
+`ScopeKind`; `TestPackHasNoJournalWarnings` moved from `internal/content` to
+`cmd/shellforge`, dropping a test-only import that crossed the
+`internal/content`/`internal/verify` peer boundary invisibly to
+`archtest` (`collectImports` skips `_test.go` files); the three ctx-bounded
+but previously unowned goroutines behind `--live-check` (the drain
+goroutine, `LiveChecker.Run`, and `printLiveTransitions`) are now waited on
+before `play`'s own teardown runs, the same way the control loop already is;
+and two misplaced doc comments were moved back to sit against the code they
+describe.
+
+Gates: `gofmt -s -w .`, `go vet ./...`, `go test ./...`, `go test -race
+./...`, `go test ./internal/archtest/...`,
+`./scripts/check-punctuation.sh`, `./scripts/check-allowlist-regexp.sh`,
+`./scripts/check-links.sh`, `./scripts/check-cli-package.sh`, and
+`python3 scripts/check-ci-gates.py` all ran clean. The Docker daemon was
+down and `govulncheck`, `gosec` and the `scripts/tests` pytest suite are not
+installed here, same as both entries above; CI is authoritative for those.
 
 ## Day 6: hardening, CI, packaging
 

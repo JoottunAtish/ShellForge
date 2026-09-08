@@ -33,6 +33,16 @@ type fakeVerifier struct {
 	// asserted.
 	buildCalls int
 
+	// runMu guards ranEnv and runCalls below. Every test that reads them
+	// already has some other happens-before in place (a channel receive, or
+	// cancel then <-done) before it does, so this is not about those reads:
+	// it is about the WRITES below, made from Run, which a test asserting a
+	// live pass never overlaps a real Check now calls concurrently from two
+	// goroutines. Two goroutines writing the same int and the same struct
+	// with no lock between them is a data race whether or not anything ever
+	// reads either field, and -race reports exactly that without this.
+	runMu sync.Mutex
+
 	// ranEnv records the Env of the last Run, so a test can assert what the
 	// session threaded into it.
 	ranEnv   verify.Env
@@ -69,8 +79,10 @@ func (f *fakeVerifier) Build(specs []verify.Spec) ([]verify.Check, error) {
 }
 
 func (f *fakeVerifier) Run(_ context.Context, _ []verify.Check, env verify.Env) verify.LevelResult {
+	f.runMu.Lock()
 	f.runCalls++
 	f.ranEnv = env
+	f.runMu.Unlock()
 	if f.onRun != nil {
 		f.onRun()
 	}

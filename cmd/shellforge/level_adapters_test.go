@@ -93,16 +93,6 @@ func TestGameResponderHintPointsAtBriefTruthfully(t *testing.T) {
 
 // --- regressions found in review ---
 
-// JournalSink.Drain's contract is "before a check and once at teardown".
-// Only the check half was wired, so every command after the learner's last
-// check was lost: from the events table, from commands_used, and from the
-// achievements that count commands. A learner who never typed check at all
-// recorded nothing whatsoever.
-//
-// Asserted against the source, because observing it needs a sandbox: what
-// matters is that Teardown drains BEFORE it closes, since Close is what
-// reads the command count for the last time and the Orchestrator stops
-// counting the moment it is closed.
 // --- the live drain wire ---
 
 // liveFakeSession answers Exec generically with a zero exit, which is all
@@ -227,10 +217,19 @@ func TestGameLevelCommandRanDrainsTheJournal(t *testing.T) {
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	if ch := g.StartLive(runCtx); ch == nil {
+	ch, wait := g.StartLive(runCtx)
+	if ch == nil {
 		t.Error("StartLive returned a nil transition channel; it must return the live checker's own Transitions()")
 	}
+	if wait == nil {
+		t.Fatal("StartLive returned a nil wait function")
+	}
+	// cancel before wait, in that order: wait blocks until StartLive's own
+	// goroutines return, and they only return once ctx is done.
+	defer func() {
+		cancel()
+		wait()
+	}()
 
 	g.CommandRan()
 
@@ -317,11 +316,16 @@ func TestGameLevelStartLiveReportsATransitionWhenACommandRuns(t *testing.T) {
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	transitions := g.StartLive(runCtx)
+	transitions, wait := g.StartLive(runCtx)
 	if transitions == nil {
 		t.Fatal("StartLive returned a nil transition channel")
 	}
+	// cancel before wait, in that order: wait blocks until StartLive's own
+	// goroutines return, and they only return once ctx is done.
+	defer func() {
+		cancel()
+		wait()
+	}()
 
 	g.CommandRan()
 
@@ -335,6 +339,16 @@ func TestGameLevelStartLiveReportsATransitionWhenACommandRuns(t *testing.T) {
 	}
 }
 
+// JournalSink.Drain's contract is "before a check and once at teardown".
+// Only the check half was wired, so every command after the learner's last
+// check was lost: from the events table, from commands_used, and from the
+// achievements that count commands. A learner who never typed check at all
+// recorded nothing whatsoever.
+//
+// Asserted against the source, because observing it needs a sandbox: what
+// matters is that Teardown drains BEFORE it closes, since Close is what
+// reads the command count for the last time and the Orchestrator stops
+// counting the moment it is closed.
 func TestTeardownDrainsTheJournalBeforeClosingTheAttempt(t *testing.T) {
 	src := readSource(t, "level_adapters.go")
 

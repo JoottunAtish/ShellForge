@@ -146,6 +146,30 @@ any more. It gives up after ten seconds. Type `check` again straight away and it
 may wait out the rest of that, once. Nothing is lost and nothing is stale: the
 reply you eventually see is always the result of the check you asked for.
 
+## What a live pass does between checks
+
+You do not have to type `check` to see an objective tick. After each command
+finishes, the game quietly re-runs a subset of the level's checks on your
+machine, the same way `check` does, and prints a line for any objective that
+just started passing, or that just stopped, with no other output. This is a
+live pass.
+
+A live pass only ever runs the checks cheap enough to fire on every command
+without you noticing: a single read of the sandbox, or a read of what you
+already typed. A check that has to walk a whole directory tree, or run a
+script you authored, is not cheap by that definition, so it never ticks on
+its own; `check` still covers it, exactly as before. A live pass also never
+overlaps a `check` you typed yourself, or a `reset`: they share a lock, so
+one always waits for the other to finish rather than reading the sandbox at
+the same moment.
+
+A live pass never decides pass or fail, never shows why something is wrong,
+and never runs on a timer while you are simply reading the briefing: only a
+command finishing triggers one. `check` is still the only complete answer,
+and the only one that explains a failure. Run
+`shellforge run nav-01 --live-check=off` to turn the ticking off and hear
+only from `check` itself.
+
 ## Why "you cannot break it" is a real promise and not marketing
 
 Three independent things have to hold, and all three are checked in CI:

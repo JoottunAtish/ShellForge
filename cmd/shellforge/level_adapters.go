@@ -132,7 +132,8 @@ func (g *gameLevel) CommandRan() {
 }
 
 // StartLive starts the level's live verification, bounded by ctx, and
-// returns the channel a live checker reports transitions on.
+// returns the channel a live checker reports transitions on, plus a wait
+// function that blocks until both goroutines below have returned.
 //
 // Two goroutines, each owning one hop of the path from a finished command to
 // a printed transition, and neither ever touching the sandbox on the
@@ -149,12 +150,23 @@ func (g *gameLevel) CommandRan() {
 //     it did anything slower it would stall the drain behind a sandbox round
 //     trip.
 //
+// wait exists because ctx being done only asks these two to stop; it does
+// not confirm they have. The drain goroutine can be in the middle of
+// drainJournal, appending to a store the caller is about to close, at the
+// exact moment ctx is cancelled, and cancellation does not wait for that
+// call to return. play calls wait before its own teardown for exactly that
+// reason: see the comment on liveStopped in cmd_run.go.
+//
 // Detaching the checker's subscription is tied to Run's own return, which
 // only happens once ctx is done, so a level whose live checking was never
 // started (opts.live off, or a playable that predates it) never reaches this
 // method at all: see startLiveChecking in cmd_run.go.
-func (g *gameLevel) StartLive(ctx context.Context) <-chan []verify.ObjectiveResult {
+func (g *gameLevel) StartLive(ctx context.Context) (transitions <-chan []verify.ObjectiveResult, wait func()) {
+	var wg sync.WaitGroup
+	wg.Add(2)
+
 	go func() {
+		defer wg.Done()
 		for {
 			select {
 			case <-ctx.Done():
@@ -165,14 +177,15 @@ func (g *gameLevel) StartLive(ctx context.Context) <-chan []verify.ObjectiveResu
 		}
 	}()
 
-	live := game.NewLiveChecker(g.session, game.DefaultLiveDebounce)
+	live := game.NewLiveChecker(g.orch, game.DefaultLiveDebounce)
 	detach := live.Attach(g.eventBus)
 	go func() {
+		defer wg.Done()
 		live.Run(ctx)
 		detach()
 	}()
 
-	return live.Transitions()
+	return live.Transitions(), wg.Wait
 }
 
 func (g *gameLevel) PrintBriefing(w io.Writer, color bool) {

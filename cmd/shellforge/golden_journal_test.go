@@ -48,6 +48,23 @@ func TestSolutionJournalHonoursEveryScopeKind(t *testing.T) {
 	}
 }
 
+// TestSolutionJournalCommandsTreatsAnUnknownScopeAsNoCommands pins the
+// default branch's direction: a ScopeKind Commands does not recognize
+// answers with no commands, not with the whole history. The registered
+// three all have their own case above this one, so reaching the default
+// branch at all means a fifteenth ScopeKind was added with nothing here
+// updated for it, and under-reporting is the safe way for that gap to fail:
+// a journal check can only grant a bonus, never gate a level, so withholding
+// one is a nicety lost, never a wrong answer that pays out.
+func TestSolutionJournalCommandsTreatsAnUnknownScopeAsNoCommands(t *testing.T) {
+	j := newSolutionJournal()
+	j.Record([]string{"pwd", "ls -la", "cat report.txt"})
+
+	if got := j.Commands(verify.Scope{Kind: verify.ScopeKind("future_kind")}); got != nil {
+		t.Errorf("Commands with an unrecognized ScopeKind = %v, want nil", got)
+	}
+}
+
 // TestSolutionCommandsSkipsBlankAndCommentLines is the split solutionCommands
 // does on a level's authored solution text: one command per non-empty,
 // non-comment line, in order.

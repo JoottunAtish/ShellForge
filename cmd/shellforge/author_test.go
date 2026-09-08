@@ -39,6 +39,34 @@ func TestEmbeddedPackValidatesAgainstTheRealRegistry(t *testing.T) {
 	}
 }
 
+// TestPackHasNoJournalWarnings is the acceptance criterion for issue #154's
+// second half: the golden harness now supplies a journal, so the warning
+// that used to fire on every journal check because nothing exercised it
+// before shipping is gone. cwd_is is explicitly excluded from this
+// assertion: nothing in this ticket rescues it, and it still warns for the
+// reason validateCheckType gives.
+//
+// It lives here rather than in internal/content, for the same reason as
+// TestEmbeddedPackValidatesAgainstTheRealRegistry above: content and verify
+// are peers, and this is the layer where the two legitimately meet.
+func TestPackHasNoJournalWarnings(t *testing.T) {
+	pack, err := content.Embedded()
+	if err != nil {
+		t.Fatalf("Embedded: %v", err)
+	}
+
+	report := content.Validate(pack, verify.TypeChecker{})
+
+	for _, p := range report.Problems {
+		if p.Level != content.ProblemWarning {
+			continue
+		}
+		if strings.Contains(p.Message, "command_matched") || strings.Contains(p.Message, "command_not_matched") {
+			t.Errorf("a journal warning survived: %s", p.Message)
+		}
+	}
+}
+
 // TestEmbeddedPackHasTheDayTwoLevels pins the eight levels the first Day 2
 // exit criterion names, so one cannot quietly disappear.
 func TestEmbeddedPackHasTheDayTwoLevels(t *testing.T) {

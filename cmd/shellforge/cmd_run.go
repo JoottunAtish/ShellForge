@@ -144,10 +144,20 @@ type playable interface {
 // that does not implement it plays exactly as it did before this existed.
 type liveLevel interface {
 	// StartLive starts the level's live verification, bounded by ctx, and
-	// returns the channel transitions arrive on. A nil channel means the
-	// level has nothing to report live, and a select on a nil channel
-	// blocks forever, which is how the disabled path costs nothing.
-	StartLive(ctx context.Context) <-chan []verify.ObjectiveResult
+	// returns the channel transitions arrive on, plus a wait function that
+	// blocks until every goroutine this call started has actually returned.
+	// A nil channel means the level has nothing to report live, and a
+	// select on a nil channel blocks forever, which is how the disabled
+	// path costs nothing.
+	//
+	// wait exists so a caller can tell ctx-bounded from ctx-obeyed apart: an
+	// implementation's goroutines are cancelled the moment ctx is done, but
+	// cancellation asks, it does not confirm, and a caller that tears
+	// something else down (a store, a sandbox session) the instant it
+	// cancels ctx can still race a goroutine that has not finished
+	// unwinding yet. wait is how play knows the world is quiet before its
+	// own teardown runs.
+	StartLive(ctx context.Context) (transitions <-chan []verify.ObjectiveResult, wait func())
 
 	// CommandRan reports that the PTY saw a command finish. It must never
 	// block: it is called from the single goroutine draining
@@ -158,23 +168,26 @@ type liveLevel interface {
 
 // startLiveChecking decides whether to start a level's live re-verification
 // and returns what the rest of play needs: the callback logCommandEvents
-// calls once per finished command, and the channel a printer reads
-// transitions from. Both are nil when live checking is off, or when lvl does
-// not implement liveLevel, which is what makes a playable that predates the
-// feature play exactly as it did before.
+// calls once per finished command, the channel a printer reads transitions
+// from, and a wait function play calls before its own teardown. onCommand
+// and transitions are nil, and wait is a no-op, when live checking is off or
+// when lvl does not implement liveLevel, which is what makes a playable that
+// predates the feature play exactly as it did before.
 //
 // Factored out of play so this decision is testable without a host pseudo
 // terminal: neither opts.live nor a type assertion touches the sandbox, so a
 // fake playable is enough, unlike play itself, which needs a real Attach.
-func startLiveChecking(ctx context.Context, opts runOptions, lvl playable) (onCommand func(), transitions <-chan []verify.ObjectiveResult) {
+func startLiveChecking(ctx context.Context, opts runOptions, lvl playable) (onCommand func(), transitions <-chan []verify.ObjectiveResult, wait func()) {
+	noop := func() {}
 	if !opts.live {
-		return nil, nil
+		return nil, nil, noop
 	}
 	live, ok := lvl.(liveLevel)
 	if !ok {
-		return nil, nil
+		return nil, nil, noop
 	}
-	return live.CommandRan, live.StartLive(ctx)
+	transitions, wait = live.StartLive(ctx)
+	return live.CommandRan, transitions, wait
 }
 
 // cmdRun implements `shellforge run <level-id>`.
@@ -685,24 +698,54 @@ func play(ctx context.Context, opts runOptions, sess runtime.Session, lvl playab
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	onCommand, transitions, waitLive := startLiveChecking(runCtx, opts, lvl)
+
 	// served closes when the control loop has returned, which is after it has
 	// killed whatever it left running inside the sandbox. Waiting on it is what
 	// makes the comment above true rather than merely likely.
-	onCommand, transitions := startLiveChecking(runCtx, opts, lvl)
-
 	served := make(chan struct{})
 	go func() {
 		defer close(served)
 		serveControlRequests(runCtx, sess, lvl.Responder(color), reqPath, resPath)
 	}()
 	go logCommandEvents(runCtx, mux.Events(), os.Stderr, opts.debug, onCommand)
-	go printLiveTransitions(runCtx, transitions, os.Stdout, color)
+
+	// printDone closes when printLiveTransitions has returned. Tracking it
+	// here, rather than firing the goroutine and forgetting it the way this
+	// code used to, is what lets play wait for it below alongside served and
+	// waitLive.
+	printDone := make(chan struct{})
+	go func() {
+		defer close(printDone)
+		printLiveTransitions(runCtx, transitions, os.Stdout, color)
+	}()
 
 	runErr := mux.Run(runCtx)
 	cancel()
 
 	if !waitForControlLoop(served, controlDrainTimeout) {
 		fmt.Fprintln(os.Stderr, "warning: the control channel did not stop cleanly, so a process may be left running inside the sandbox container. "+
+			"It is harmless, and `docker rm -f shellforge-sandbox` clears it if you would rather not leave it there.")
+	}
+
+	// liveStopped closes once both of startLiveChecking's own goroutines
+	// (waitLive) and the printer (printDone) have returned. Without this,
+	// those three goroutines were ctx-bounded but otherwise unowned: play
+	// waited only on served, so the deferred Teardown above could run while
+	// the live drain goroutine was still inside sink.Drain, appending to a
+	// store Teardown was about to close out from under it, and a transition
+	// batch buffered in printLiveTransitions at cancel time could print to a
+	// terminal whose raw mode had already been restored, after "Shell
+	// exited." Waiting here is what makes them owned the same way served
+	// already is.
+	liveStopped := make(chan struct{})
+	go func() {
+		waitLive()
+		<-printDone
+		close(liveStopped)
+	}()
+	if !waitForControlLoop(liveStopped, controlDrainTimeout) {
+		fmt.Fprintln(os.Stderr, "warning: live verification did not stop cleanly, so a background check may still be reading the sandbox. "+
 			"It is harmless, and `docker rm -f shellforge-sandbox` clears it if you would rather not leave it there.")
 	}
 
@@ -738,8 +781,10 @@ func play(ctx context.Context, opts runOptions, sess runtime.Session, lvl playab
 // TODO(v0.2): a pass costs 90ms to 1.5s, so this line can land after bash has
 // already redrawn the next prompt, under a command the learner is still
 // typing into. Fixing that means owning the screen, which is the TUI
-// CLAUDE.md cuts for v0.1. renderTransitions writes one short line beginning
-// with "\r", which is what keeps this from ever landing mid-glyph.
+// CLAUDE.md cuts for v0.1. renderTransitions opens with a blank line, CRLF
+// terminated like the rest of it, which is what keeps a tick from landing on
+// the end of whatever the learner has typed so far rather than starting on
+// its own fresh line.
 func printLiveTransitions(ctx context.Context, transitions <-chan []verify.ObjectiveResult, w io.Writer, color bool) {
 	for {
 		select {

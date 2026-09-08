@@ -287,12 +287,19 @@ func (c colours) wrap(code, s string) string {
 // `play` holds the host terminal in raw mode for as long as a live pass can
 // fire, so a bare "\n" here would render as a staircase exactly as it would
 // there.
+//
+// It also opens with one blank line, the same leading "\n" renderCheckReply
+// itself writes before its own first objective. A live pass can land at any
+// moment, including while the learner has typed a command and not yet
+// pressed Enter, so without that prefix a tick would be appended to the end
+// of their unfinished prompt line instead of starting on a fresh one.
 func renderTransitions(objs []verify.ObjectiveResult, color bool) string {
 	if len(objs) == 0 {
 		return ""
 	}
 	p := palette(color)
 	var b strings.Builder
+	b.WriteString("\n")
 	for _, obj := range objs {
 		b.WriteString("  ")
 		b.WriteString(p.mark(obj))
