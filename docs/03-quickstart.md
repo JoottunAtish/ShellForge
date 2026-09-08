@@ -15,9 +15,14 @@ shellforge run nav-01
    you are done. The objective checklist prints underneath it, before the prompt.
 2. **Type commands into the shell.** It is a real shell. `vim`, `less`, `htop`, tab
    completion, job control and Ctrl-C all work exactly as they would anywhere else.
-3. **Type `check`.** Shellforge looks at the actual state of the system and tells
-   you which objectives you have hit. Get it wrong and it tells you about the first
-   thing that is wrong, not all of them: fixing that one often fixes the rest.
+3. **Type `check`, or just keep working.** Objectives you have already hit tick on
+   their own, in the background, as you type commands: no need to ask after every
+   attempt to find out whether one landed. `check` is still the full answer and the
+   only thing that tells you why something is wrong: it looks at the actual state of
+   the system and, if you got it wrong, tells you about the first thing that is
+   wrong, not all of them, since fixing that one often fixes the rest. Run
+   `shellforge run nav-01 --live-check=off` if you would rather turn the automatic
+   ticking off and only ever hear from `check` itself.
 4. **Type `exit`** when you are done, or when you want to stop. The level's world
    is removed and nothing is left running.
 

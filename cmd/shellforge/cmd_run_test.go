@@ -433,7 +433,16 @@ var _ game.Verifier = (*fakeVerifier)(nil)
 
 func (f *fakeVerifier) Build(specs []verify.Spec) ([]verify.Check, error) {
 	if f.build == nil {
-		return nil, nil
+		// One Check per Spec, per Verifier.Build's own contract: NewSession
+		// now refuses a Verifier that returns a different count, so a
+		// default that always answered nil (however many specs it was
+		// given) would fail every level this fake builds, not exercise the
+		// one this test wants.
+		checks := make([]verify.Check, 0, len(specs))
+		for range specs {
+			checks = append(checks, nil)
+		}
+		return checks, nil
 	}
 	return f.build(specs)
 }
@@ -776,6 +785,59 @@ func TestStartLiveCheckingHonoursOptsLive(t *testing.T) {
 			t.Error("startLiveChecking found a live checker on a playable that does not implement one")
 		}
 	})
+}
+
+// --------------------------------------------------------------------------
+// Printing a live pass's transitions
+// --------------------------------------------------------------------------
+
+// TestPrintLiveTransitionsWritesEachBatchAndStopsOnClose covers the normal
+// path: one batch arrives, is rendered, and the goroutine returns once the
+// channel closes, matching Run's own contract for Transitions().
+func TestPrintLiveTransitionsWritesEachBatchAndStopsOnClose(t *testing.T) {
+	transitions := make(chan []verify.ObjectiveResult, 1)
+	transitions <- []verify.ObjectiveResult{
+		{ID: "location", Text: "quest/answer.txt holds the folder you are standing in", Status: verify.StatusPass},
+	}
+	close(transitions)
+
+	var buf bytes.Buffer
+	done := make(chan struct{})
+	go func() {
+		printLiveTransitions(context.Background(), transitions, &buf, false)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("printLiveTransitions did not return when its channel closed")
+	}
+
+	if !strings.Contains(buf.String(), "quest/answer.txt holds the folder you are standing in") {
+		t.Errorf("nothing was printed for the transition: %q", buf.String())
+	}
+}
+
+// TestPrintLiveTransitionsStopsOnContextCancellation covers the disabled
+// path: a nil or never-written channel must not stop ctx cancellation from
+// ending the goroutine.
+func TestPrintLiveTransitionsStopsOnContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var transitions chan []verify.ObjectiveResult // nil: the disabled-live-checking shape
+
+	done := make(chan struct{})
+	go func() {
+		printLiveTransitions(ctx, transitions, io.Discard, false)
+		close(done)
+	}()
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("printLiveTransitions ignored context cancellation")
+	}
 }
 
 // --------------------------------------------------------------------------

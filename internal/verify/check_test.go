@@ -141,6 +141,99 @@ func TestParamStringSlice(t *testing.T) {
 	}
 }
 
+// --- Spec.Cheap ---
+
+// TestSpecCheapTruthTable pins the classification decided once in the
+// contract-decisions section of issue #154's plan: twelve of the fourteen
+// registered types are cheap enough for the live path, dir_tree and script
+// are not.
+func TestSpecCheapTruthTable(t *testing.T) {
+	tests := []struct {
+		typeName string
+		want     bool
+	}{
+		{"command_matched", true},
+		{"command_not_matched", true},
+		{"cwd_is", true},
+		{"dir_exists", true},
+		{"dir_tree", false},
+		{"env_var", true},
+		{"file_absent", true},
+		{"file_content", true},
+		{"file_exists", true},
+		{"file_mode", true},
+		{"file_owner", true},
+		{"process_running", true},
+		{"script", false},
+		{"symlink_target", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.typeName, func(t *testing.T) {
+			got := Spec{Type: tt.typeName}.Cheap()
+			if got != tt.want {
+				t.Errorf("Spec{Type: %q}.Cheap() = %v, want %v", tt.typeName, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestSpecCheapUnknownTypeIsNotCheap is the safety default: a fifteenth type
+// registered with no entry in cheapTypes must not silently reach the live
+// path. TestEveryRegisteredTypeIsClassified is what actually catches that
+// day; this pins what happens in the meantime.
+func TestSpecCheapUnknownTypeIsNotCheap(t *testing.T) {
+	if (Spec{Type: "not_a_real_type"}).Cheap() {
+		t.Error("an unclassified type must default to not cheap")
+	}
+}
+
+// TestSpecCheapCompositeFoldsBranches covers the composition rule: a
+// composite is cheap only when every branch is.
+func TestSpecCheapCompositeFoldsBranches(t *testing.T) {
+	t.Run("all_of with every branch cheap is cheap", func(t *testing.T) {
+		s := Spec{AllOf: []Spec{{Type: "file_exists"}, {Type: "env_var"}}}
+		if !s.Cheap() {
+			t.Error("a composite of only cheap branches should be cheap")
+		}
+	})
+
+	t.Run("any_of with one expensive branch is not cheap", func(t *testing.T) {
+		s := Spec{AnyOf: []Spec{{Type: "file_exists"}, {Type: "dir_tree"}}}
+		if s.Cheap() {
+			t.Error("a composite with an expensive branch must not be cheap")
+		}
+	})
+
+	t.Run("not over an expensive branch is not cheap", func(t *testing.T) {
+		s := Spec{Not: &Spec{Type: "script"}}
+		if s.Cheap() {
+			t.Error("not over an expensive branch must not be cheap")
+		}
+	})
+
+	t.Run("nested composite folds recursively", func(t *testing.T) {
+		s := Spec{AllOf: []Spec{
+			{Type: "file_exists"},
+			{AnyOf: []Spec{{Type: "dir_tree"}, {Type: "env_var"}}},
+		}}
+		if s.Cheap() {
+			t.Error("an expensive branch nested two deep must still make the whole tree not cheap")
+		}
+	})
+}
+
+// TestEveryRegisteredTypeIsClassified is the coverage tripwire over Types():
+// a fifteenth check type registered with no entry in cheapTypes must fail
+// here, rather than silently defaulting to "not cheap" and only being
+// noticed by someone reading the table.
+func TestEveryRegisteredTypeIsClassified(t *testing.T) {
+	for _, typeName := range Types() {
+		if _, ok := cheapTypes[typeName]; !ok {
+			t.Errorf("check type %q is registered but has no entry in cheapTypes; Spec.Cheap would silently treat it as expensive", typeName)
+		}
+	}
+}
+
 // --- import-freedom source-parsing test ---
 //
 // Mirrors internal/runtime/runtimetest's TestPackageImportsNoBackend: parse

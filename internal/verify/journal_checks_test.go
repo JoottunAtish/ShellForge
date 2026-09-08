@@ -3,6 +3,9 @@ package verify
 import (
 	"context"
 	"testing"
+
+	"github.com/JoottunAtish/ShellForge/internal/runtime"
+	"github.com/JoottunAtish/ShellForge/internal/verify/verifytest"
 )
 
 func init() {
@@ -105,4 +108,74 @@ func TestCommandNotMatchedCheck(t *testing.T) {
 			t.Fatalf("got %+v", r)
 		}
 	})
+}
+
+// TestForgedJournalLineDoesNotPassALevel is a REGRESSION PIN, not a
+// red-to-green test: the guarantee it asserts already holds on main, because
+// nothing in this package lets a journal check gate a level and nothing
+// outside it reads the journal for a pass verdict. Stated plainly rather
+// than hidden, because the testing skill's rule that a test which passes
+// before and after tests nothing does not apply to a pin the ticket itself
+// names as an acceptance criterion: its value is that it now fails if a
+// later change lets a journal signal reach a pass verdict on its own, or lets
+// a subset run stand in for a whole level.
+//
+// The forgery: a fakeJournal reporting "pwd" ran, exactly the line a learner
+// could produce from inside the sandbox with a printf of the right OSC 133
+// marker and a journal.tsv line by hand. The state check below never saw the
+// file the level actually cares about.
+func TestForgedJournalLineDoesNotPassALevel(t *testing.T) {
+	specs := []Spec{
+		{
+			ID: "location", Type: "file_exists", OnFail: "answer.txt is missing",
+			Params: map[string]any{"path": "/home/learner/quest/answer.txt"},
+		},
+		{
+			ID: "used-pwd", Type: "command_matched", OnFail: "no shorter way seen", Optional: true,
+			Params: map[string]any{"pattern": `^\s*pwd\s*$`},
+		},
+	}
+
+	engine := NewEngine()
+	checks, err := engine.Build(specs)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	forged := &fakeJournal{commands: []string{"pwd"}}
+	res := engine.Run(context.Background(), checks, Env{
+		Session: verifytest.NewSession(verifytest.Const(
+			runtime.ExecResult{ExitCode: 1, Stderr: []byte("stat: cannot statx 'answer.txt': No such file or directory")},
+			nil)),
+		Journal: forged,
+	})
+
+	if res.Passed {
+		t.Fatal("a forged journal line let the level pass, even though the required state check failed")
+	}
+
+	var stateStatus, journalStatus Status
+	for _, obj := range res.Objectives {
+		switch obj.ID {
+		case "location":
+			stateStatus = obj.Status
+		case "used-pwd":
+			journalStatus = obj.Status
+		}
+	}
+
+	// Asserting all four is what distinguishes "the forgery was ignored"
+	// from "the forgery worked but something else failed too": the journal
+	// objective genuinely reads the forged line as a match, the state
+	// objective genuinely fails on real sandbox state, and PrimaryFailure
+	// names the state objective, never the journal one.
+	if journalStatus != StatusPass {
+		t.Errorf("the journal objective is %s, want StatusPass: the forged line should read as a match", journalStatus)
+	}
+	if stateStatus != StatusFail {
+		t.Errorf("the state objective is %s, want StatusFail: the sandbox never held the file", stateStatus)
+	}
+	if res.PrimaryFailure == nil || res.PrimaryFailure.ID != "location" {
+		t.Fatalf("PrimaryFailure = %+v, want the state objective, not the journal one", res.PrimaryFailure)
+	}
 }

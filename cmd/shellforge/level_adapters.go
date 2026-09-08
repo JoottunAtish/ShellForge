@@ -12,6 +12,7 @@ import (
 	"github.com/JoottunAtish/ShellForge/internal/content/setup"
 	"github.com/JoottunAtish/ShellForge/internal/game"
 	"github.com/JoottunAtish/ShellForge/internal/game/achievements"
+	"github.com/JoottunAtish/ShellForge/internal/game/bus"
 	"github.com/JoottunAtish/ShellForge/internal/store"
 	"github.com/JoottunAtish/ShellForge/internal/verify"
 )
@@ -58,6 +59,13 @@ type gameLevel struct {
 	level   *content.Level
 	sink    *game.JournalSink
 	pass    *passContext
+
+	// eventBus is the same bus buildLevel wired the session, the
+	// orchestrator and the journal sink into. StartLive attaches a
+	// LiveChecker to it: the checker's Notify fires from the CommandExecuted
+	// events sink.Drain already publishes there, so wiring the live checker
+	// needs no second path from a finished command to a verification pass.
+	eventBus *bus.Bus
 
 	// commandRan carries one signal per finished command from CommandRan,
 	// the single goroutine draining mux.Events(), to StartLive's own drain
@@ -124,15 +132,27 @@ func (g *gameLevel) CommandRan() {
 }
 
 // StartLive starts the level's live verification, bounded by ctx, and
-// returns the channel a live checker will report transitions on.
+// returns the channel a live checker reports transitions on.
 //
-// This commit wires only the drain half: the returned channel is always
-// nil, so a caller's select on it blocks forever, which is exactly what
-// makes the feature cost nothing before the checker itself exists. The
-// goroutine started here owns commandRan and calls the same drainJournal a
-// `check` reply already used, so live drains and check-triggered drains
-// reach JournalSink.Drain the same way; Drain's own mutex is what keeps the
-// two safe to run at once.
+// Two goroutines, each owning one hop of the path from a finished command to
+// a printed transition, and neither ever touching the sandbox on the
+// goroutine that would block something upstream of it:
+//
+//   - The drain goroutine owns commandRan and calls the same drainJournal a
+//     `check` reply already used. Draining publishes a CommandExecuted per
+//     journal record onto eventBus, which is the same bus the live checker
+//     below is attached to, so a finished command reaches the checker with
+//     no second path invented for it.
+//   - live.Run owns the pass loop until ctx is done. Its own bus subscriber,
+//     registered by Attach, does nothing but a non-blocking Notify: the
+//     handler runs synchronously on the goroutine that called Drain, so if
+//     it did anything slower it would stall the drain behind a sandbox round
+//     trip.
+//
+// Detaching the checker's subscription is tied to Run's own return, which
+// only happens once ctx is done, so a level whose live checking was never
+// started (opts.live off, or a playable that predates it) never reaches this
+// method at all: see startLiveChecking in cmd_run.go.
 func (g *gameLevel) StartLive(ctx context.Context) <-chan []verify.ObjectiveResult {
 	go func() {
 		for {
@@ -144,7 +164,15 @@ func (g *gameLevel) StartLive(ctx context.Context) <-chan []verify.ObjectiveResu
 			}
 		}
 	}()
-	return nil
+
+	live := game.NewLiveChecker(g.session, game.DefaultLiveDebounce)
+	detach := live.Attach(g.eventBus)
+	go func() {
+		live.Run(ctx)
+		detach()
+	}()
+
+	return live.Transitions()
 }
 
 func (g *gameLevel) PrintBriefing(w io.Writer, color bool) {

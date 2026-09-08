@@ -487,18 +487,29 @@ func TestDrainIsSafeForConcurrentUse(t *testing.T) {
 		}
 	}()
 
+	// Each drainer loops until stop closes, the same as the writer, rather
+	// than a fixed iteration count: a fixed count can race ahead of the
+	// writer entirely on a slow or heavily loaded machine (every drainer
+	// finishes its quota before the writer has appended anything at all),
+	// which would leave nothing running by the time this test's own sleep
+	// elapses and make it assert nothing by accident.
 	const drainers = 4
 	for g := 0; g < drainers; g++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for i := 0; i < 150; i++ {
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
 				_ = sink.Drain(ctx, "nav-01", 1)
 			}
 		}()
 	}
 
-	time.Sleep(8 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 	close(stop)
 	wg.Wait()
 

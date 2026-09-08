@@ -166,6 +166,53 @@ func (s Spec) IsComposite() bool {
 	return len(s.AnyOf) > 0 || len(s.AllOf) > 0 || s.Not != nil
 }
 
+// cheapTypes classifies every registered check type by whether it is cheap
+// enough to run on the path of a learner's keystroke: one Session.Exec, or
+// an in-memory journal read, and nothing recursive.
+//
+// Twelve of the fourteen registered types are cheap. dir_tree walks a
+// directory tree recursively; script runs author-supplied bash of unbounded
+// cost. Decided once, here, so the live checker and any future caller read
+// the same table rather than each guessing.
+//
+// A type absent from this map is NOT cheap. That is deliberate:
+// TestEveryRegisteredTypeIsClassified fails the moment a fifteenth type is
+// registered with no entry here, which is the intended way to find out,
+// rather than the type silently reaching the live path unclassified.
+var cheapTypes = map[string]bool{
+	"command_matched":     true,
+	"command_not_matched": true,
+	"cwd_is":              true,
+	"dir_exists":          true,
+	"dir_tree":            false,
+	"env_var":             true,
+	"file_absent":         true,
+	"file_content":        true,
+	"file_exists":         true,
+	"file_mode":           true,
+	"file_owner":          true,
+	"process_running":     true,
+	"script":              false,
+	"symlink_target":      true,
+}
+
+// Cheap reports whether s is cheap enough to evaluate on the path of a
+// learner's keystroke, per cheapTypes.
+//
+// A composite is cheap only when every branch is cheap. A leaf naming a type
+// with no explicit classification is NOT cheap: see cheapTypes.
+func (s Spec) Cheap() bool {
+	if s.IsComposite() {
+		for _, b := range s.Branches() {
+			if !b.Cheap() {
+				return false
+			}
+		}
+		return true
+	}
+	return cheapTypes[s.Type]
+}
+
 // Branches returns the child Specs of a composition node, in declaration
 // order, or nil for a leaf. It lets a caller walk a Spec tree without
 // repeating the three-way composition test.

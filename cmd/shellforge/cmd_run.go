@@ -499,6 +499,7 @@ func buildLevel(ctx context.Context, pack *content.Pack, level *content.Level, s
 		session:    session,
 		level:      level,
 		sink:       game.NewJournalSink(collector, j, b),
+		eventBus:   b,
 		commandRan: make(chan struct{}, 1),
 		pass: &passContext{
 			pack:      pack,
@@ -687,7 +688,7 @@ func play(ctx context.Context, opts runOptions, sess runtime.Session, lvl playab
 	// served closes when the control loop has returned, which is after it has
 	// killed whatever it left running inside the sandbox. Waiting on it is what
 	// makes the comment above true rather than merely likely.
-	onCommand, _ := startLiveChecking(runCtx, opts, lvl)
+	onCommand, transitions := startLiveChecking(runCtx, opts, lvl)
 
 	served := make(chan struct{})
 	go func() {
@@ -695,6 +696,7 @@ func play(ctx context.Context, opts runOptions, sess runtime.Session, lvl playab
 		serveControlRequests(runCtx, sess, lvl.Responder(color), reqPath, resPath)
 	}()
 	go logCommandEvents(runCtx, mux.Events(), os.Stderr, opts.debug, onCommand)
+	go printLiveTransitions(runCtx, transitions, os.Stdout, color)
 
 	runErr := mux.Run(runCtx)
 	cancel()
@@ -719,6 +721,37 @@ func play(ctx context.Context, opts runOptions, sess runtime.Session, lvl playab
 
 	fmt.Fprintln(os.Stdout, "Shell exited.")
 	return nil
+}
+
+// printLiveTransitions is the one goroutine that ever writes a live pass's
+// output to the learner's terminal, so it is the only writer to w between
+// mux.Run starting and returning apart from the multiplexer's own copy loop
+// and, when --log-level=debug is on, logCommandEvents's own writer (which
+// goes to stderr, not stdout).
+//
+// transitions is nil when live checking is off, or when the level does not
+// implement liveLevel: a receive on a nil channel blocks forever, so this
+// goroutine then does nothing but wait for ctx, which is how the disabled
+// path costs nothing. A closed channel (Run has returned) also ends the
+// loop.
+//
+// TODO(v0.2): a pass costs 90ms to 1.5s, so this line can land after bash has
+// already redrawn the next prompt, under a command the learner is still
+// typing into. Fixing that means owning the screen, which is the TUI
+// CLAUDE.md cuts for v0.1. renderTransitions writes one short line beginning
+// with "\r", which is what keeps this from ever landing mid-glyph.
+func printLiveTransitions(ctx context.Context, transitions <-chan []verify.ObjectiveResult, w io.Writer, color bool) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case objs, ok := <-transitions:
+			if !ok {
+				return
+			}
+			fmt.Fprint(w, renderTransitions(objs, color))
+		}
+	}
 }
 
 // prepareControlChannel creates the request and response FIFOs the in-sandbox

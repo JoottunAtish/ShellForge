@@ -121,6 +121,12 @@ func (f *liveFakeSession) Exec(_ context.Context, argv []string, _ runtime.ExecO
 	if len(argv) > 0 && argv[0] == "readlink" {
 		return runtime.ExecResult{ExitCode: 0, Stdout: []byte(argv[len(argv)-1] + "\n")}, nil
 	}
+	// file_exists (and every other fs check) resolves state with
+	// `stat -c "%F|%a|%U|%G" -- path`; answering it as an existing regular
+	// file is what lets a cheap check actually report StatusPass here.
+	if len(argv) > 0 && argv[0] == "stat" {
+		return runtime.ExecResult{ExitCode: 0, Stdout: []byte("regular file|644|learner|learner\n")}, nil
+	}
 	return runtime.ExecResult{ExitCode: 0}, nil
 }
 
@@ -216,13 +222,14 @@ func TestGameLevelCommandRanDrainsTheJournal(t *testing.T) {
 		session:    session,
 		level:      level,
 		sink:       sink,
+		eventBus:   b,
 		commandRan: make(chan struct{}, 1),
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	if ch := g.StartLive(runCtx); ch != nil {
-		t.Errorf("StartLive returned a non-nil transition channel; this commit only wires the drain")
+	if ch := g.StartLive(runCtx); ch == nil {
+		t.Error("StartLive returned a nil transition channel; it must return the live checker's own Transitions()")
 	}
 
 	g.CommandRan()
@@ -243,6 +250,88 @@ func TestGameLevelCommandRanDrainsTheJournal(t *testing.T) {
 	}
 	if events[0].AttemptID != orch.AttemptID() {
 		t.Errorf("AttemptID = %d, want %d (orch.AttemptID())", events[0].AttemptID, orch.AttemptID())
+	}
+}
+
+// TestGameLevelStartLiveReportsATransitionWhenACommandRuns is the wire this
+// commit adds end to end: a level with one cheap check, a command finishing,
+// and a transition arriving on the channel StartLive returned, with no `check`
+// ever typed. It is the same construction TestGameLevelCommandRanDrainsTheJournal
+// uses, with one cheap objective added so there is something for the live
+// checker to report.
+func TestGameLevelStartLiveReportsATransitionWhenACommandRuns(t *testing.T) {
+	ctx := context.Background()
+
+	sess := &liveFakeSession{data: []byte("1755000000.000000\t0\t/home/learner\tpwd\n")}
+
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "progress.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	level := &content.Level{
+		ID:    "nav-01",
+		Setup: content.Setup{Root: "/home/learner/quest"},
+		Objectives: []content.Objective{
+			{ID: "location", Text: "quest/answer.txt exists"},
+		},
+		Checks: []content.CheckSpec{
+			{ID: "location", Type: "file_exists", OnFail: "answer.txt is missing",
+				Params: map[string]any{"path": "/home/learner/quest/answer.txt"}},
+		},
+	}
+
+	session, err := game.NewSession(game.Config{
+		Level: level, Sess: sess, Verifier: verify.NewEngine(),
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	b := bus.New()
+	orch, err := game.NewOrchestrator(game.OrchestratorConfig{
+		Session: session, Bus: b, Progress: st, ProfileID: 1, PackID: "core-linux-basics",
+	})
+	if err != nil {
+		t.Fatalf("NewOrchestrator: %v", err)
+	}
+	if err := orch.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = orch.Close(context.Background()) })
+
+	collector, err := journal.NewCollector(sess, setupStateDir())
+	if err != nil {
+		t.Fatalf("journal.NewCollector: %v", err)
+	}
+	sink := game.NewJournalSink(collector, journal.New(st), b)
+
+	g := &gameLevel{
+		orch:       orch,
+		session:    session,
+		level:      level,
+		sink:       sink,
+		eventBus:   b,
+		commandRan: make(chan struct{}, 1),
+	}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	transitions := g.StartLive(runCtx)
+	if transitions == nil {
+		t.Fatal("StartLive returned a nil transition channel")
+	}
+
+	g.CommandRan()
+
+	select {
+	case objs := <-transitions:
+		if len(objs) != 1 || objs[0].ID != "location" || objs[0].Status != verify.StatusPass {
+			t.Errorf("transition = %+v, want the location objective reporting StatusPass", objs)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no transition arrived after a command ran")
 	}
 }
 

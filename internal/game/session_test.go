@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -44,6 +45,11 @@ type fakeVerifier struct {
 	// what proves a check waited for a reset rather than merely finishing
 	// after one.
 	onRun func()
+
+	// buildFewer, when true, makes Build return one fewer check than the
+	// specs it was given, so a test can drive NewSession's check-count
+	// mismatch refusal without a Verifier that is actually broken.
+	buildFewer bool
 }
 
 func (f *fakeVerifier) Build(specs []verify.Spec) ([]verify.Check, error) {
@@ -55,6 +61,9 @@ func (f *fakeVerifier) Build(specs []verify.Spec) ([]verify.Check, error) {
 	checks := make([]verify.Check, 0, len(specs))
 	for range specs {
 		checks = append(checks, nil)
+	}
+	if f.buildFewer && len(checks) > 0 {
+		checks = checks[:len(checks)-1]
 	}
 	return checks, nil
 }
@@ -299,6 +308,104 @@ func TestNewSessionWrapsABuildFailureForALearner(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "path") {
 		t.Errorf("the underlying cause was lost: %v", err)
+	}
+}
+
+// mixedCheapLevel returns a level with one cheap check (file_content,
+// already testLevel()'s own) and one expensive one (script), each backing
+// its own objective, so the cheap-subset join has something to be selective
+// about.
+func mixedCheapLevel() *content.Level {
+	level := testLevel()
+	level.Objectives = append(level.Objectives, content.Objective{ID: "slow", Text: "a script objective"})
+	level.Checks = append(level.Checks, content.CheckSpec{
+		ID: "slow", Type: "script", OnFail: "the script failed",
+		Params: map[string]any{"run": "true"},
+	})
+	return level
+}
+
+// TestNewSessionBuildsTheCheapSubsetByIndexJoin is the join Verifier's
+// one-check-per-spec contract makes sound: the cheap subset is built once,
+// from the specs NewSession already computed, by lining up each Spec's
+// Cheap() against Build's same-index Check.
+func TestNewSessionBuildsTheCheapSubsetByIndexJoin(t *testing.T) {
+	s, _, _ := newTestSession(t, Config{Level: mixedCheapLevel()})
+
+	if len(s.cheap) != 1 {
+		t.Fatalf("cheap subset has %d checks, want 1 (only the file_content check is cheap)", len(s.cheap))
+	}
+}
+
+// TestNewSessionRefusesACheckCountMismatch is the safety net the index join
+// depends on: Verifier.Build must return exactly one Check per Spec, and a
+// Verifier that does not is a programming error caught at load rather than
+// a check silently mis-attributed to the wrong objective.
+func TestNewSessionRefusesACheckCountMismatch(t *testing.T) {
+	verifier := &fakeVerifier{buildFewer: true}
+
+	_, err := NewSession(Config{
+		Level:    testLevel(),
+		Sess:     &fakeSession{result: runtime.ExecResult{ExitCode: 0}},
+		Verifier: verifier,
+	})
+	if err == nil {
+		t.Fatal("NewSession accepted a Verifier whose Build returned a different check count than specs")
+	}
+	if !strings.Contains(err.Error(), "1") {
+		t.Errorf("the error does not name the counts involved: %v", err)
+	}
+}
+
+// --- checkCheap ---
+
+// TestCheckCheapReturnsObjectivesAndNoVerdict is AC7's structural guard: the
+// only exported method on Session returning a verify.LevelResult is Check,
+// so no caller can read a partial run as a level verdict. checkCheap itself
+// returns only the objectives the cheap run produced.
+func TestCheckCheapReturnsObjectivesAndNoVerdict(t *testing.T) {
+	want := verify.LevelResult{
+		Objectives: []verify.ObjectiveResult{{ID: "location", Status: verify.StatusPass}},
+	}
+	s, _, _ := newTestSession(t, Config{Verifier: &fakeVerifier{result: want}})
+
+	got := s.checkCheap(context.Background())
+	if len(got) != 1 || got[0].ID != "location" || got[0].Status != verify.StatusPass {
+		t.Errorf("checkCheap = %+v, want the cheap run's own objectives", got)
+	}
+
+	typ := reflect.TypeOf(s)
+	levelResultType := reflect.TypeOf(verify.LevelResult{})
+	for i := 0; i < typ.NumMethod(); i++ {
+		m := typ.Method(i)
+		if m.Name == "Check" {
+			continue
+		}
+		for j := 0; j < m.Type.NumOut(); j++ {
+			if m.Type.Out(j) == levelResultType {
+				t.Errorf("exported method %s returns verify.LevelResult; only Check may", m.Name)
+			}
+		}
+	}
+}
+
+// TestCheckCheapReturnsNilWithoutTouchingTheVerifierWhenNothingIsCheap pins
+// the doc comment's other half: a level with no cheap checks at all must not
+// reach the sandbox, or the verifier, for a live pass that can never find
+// anything to report.
+func TestCheckCheapReturnsNilWithoutTouchingTheVerifierWhenNothingIsCheap(t *testing.T) {
+	level := testLevel()
+	level.Checks[0].Type = "script"
+	level.Checks[0].Params = map[string]any{"run": "true"}
+
+	s, verifier, _ := newTestSession(t, Config{Level: level})
+
+	got := s.checkCheap(context.Background())
+	if got != nil {
+		t.Errorf("checkCheap = %v, want nil when the level has no cheap checks", got)
+	}
+	if verifier.runCalls != 0 {
+		t.Errorf("checkCheap called Run %d times with no cheap checks, want 0: it must not touch the sandbox", verifier.runCalls)
 	}
 }
 
