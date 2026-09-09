@@ -5893,6 +5893,121 @@ test for this whole ticket, not part of it, and is still owed: it needs a
 person and two virtual machines, which this session had neither of.
 
 
+### 2026-09-09: three tickets merged into one branch, and the doc anchor rule collapses to one implementation
+
+Issues #74, #86 and #132, landed together because they cannot land apart.
+#132 says so in its own text: its work cannot start until #103 (for #74) and
+#107 (for #86) have merged, and it predicted the exact way those two branches
+would collide. They did.
+
+**Each branch was green alone and the pair was red.** #74 adds
+`failUnlessAlreadyUserFacing`, a helper that takes its caller's `docAnchor`
+and hands it to `ux.Fail`. #86 adds `internal/docanchor`, a module-wide gate
+that reports any anchor it cannot resolve to a literal or a constant. Merge
+both and the gate reports the helper's own `ux.Fail`, because that anchor is
+a parameter and no static analysis can read it. A false positive on the very
+first `go test ./...` after the merge:
+
+```
+doc anchor at cmd/shellforge/cmd_run.go:569:39 is not a string literal or a
+package-level string constant
+```
+
+Nothing was wrong with either branch. The interaction was the defect, and it
+was only ever going to appear once both had landed.
+
+**The merge conflict was in `internal/runtime/docker/docker.go`, and taking
+either side wholesale would have been wrong.** Main split
+`ensureContainerRunning` into `createContainer`, `removeContainer`,
+`containerIsStale` and `inspectContainer` after #74 branched, so the branch
+carried a rewrite of a function that no longer exists. Main's structure was
+kept and #74's actual behaviour, classifying from combined stdout and stderr
+rather than stderr alone, was reapplied on top of it, including at the four
+call sites main added that the branch never saw. That reasoning is #74's own
+and it holds for the new call sites for the same reason it held for the old:
+docker picks no stream by convention, BuildKit writes to stdout and the
+classic builder to stderr, and the Docker Desktop WSL shim has no daemon
+behind it to pick one either. A call site that reads one stream is right by
+luck.
+
+**Forwarders are now discovered, not registered.** `cmd/shellforge`'s
+retired gate knew about `failUnlessAlreadyUserFacing` through a
+hand-maintained `anchorForwarders` map. `internal/docanchor` finds
+forwarders by reading the source instead: an unexported function whose own
+recognised anchor site reads one of its own string parameters is a
+forwarder, its internal `ux.Fail` stops being reported, and its call sites
+are checked exactly as a `ux.Fail` is. The loop runs to a fixed point, so a
+forwarder calling a forwarder is found whichever order the files parsed in.
+A registry works right up to the moment somebody writes the second forwarder
+and does not know the registry exists.
+
+Three shapes are deliberately not followed, and each fails closed and loudly
+rather than quietly: an exported function, because it could be called from a
+package this walk never connects to it and its call sites would go unchecked
+in silence; a method, for the same reason; and a parameter that shares a
+package constant's name, because `resolveString` would resolve the constant
+and an exemption nobody can predict is worse than no exemption. In all three
+the internal `ux.Fail` is reported as unverifiable, which says so out loud.
+
+Nine fixture tests cover the mechanism, including the one that matters most:
+following a forwarder must not become a way to launder an unreadable anchor
+past the gate, so a forwarder call site whose anchor is a call result is
+reported, and the report names the CALL SITE rather than the forwarder.
+
+**Verified against a deliberate violation**, the same procedure the layer
+rule and the punctuation gate were verified with on Day 0. A call to
+`failUnlessAlreadyUserFacing` with the anchor `no-such-heading-anywhere` was
+added to `cmd_run.go`, the gate was confirmed to fail and name it, and the
+call was removed. The gate follows the forwarder to the call site and reads
+the anchor there.
+
+**Three implementations of the rule became one, and there turned out to be
+three rather than the two #132 counted on top of the module-wide gate.**
+Retired: `cmd/shellforge/docanchor_test.go`, and
+`internal/sandbox/anchors_test.go`, which #132 did not know about and which
+was the same AST walk again, scoped to one package.
+`internal/store/guards_test.go`'s `TestDocAnchorsHaveTroubleshootingHeadings`
+and its `declaredDocAnchors` walk went with them. Each deletion was earned
+before it was made: `internal/docanchor` was run against each package
+directory in turn and returns exactly the same anchor set the local gate
+found, with nothing unverifiable. `cmd/shellforge`: the same nine.
+`internal/sandbox`: the same three. `internal/store`: all six of its
+constants appear in the module-wide set.
+
+`internal/store`'s anchor constants themselves stay. #132 asked whether the
+list serves a purpose the gate does not, and it does: this package
+references them by name in its own tests, asserting which anchor a given
+failure carries. That is not the doc heading contract and the gate does not
+replace it. What was duplicated was the rule, not the constants.
+
+`internal/doctor/anchors_test.go` stays too, and is not a fourth copy. It
+drives every probe's `Run` for both goos values and the interrupted path and
+checks the anchor the probe carries at runtime, which no walk over source
+can see. Its comment now says so, rather than pointing at a deleted file.
+
+Two `TestThisPackageDoesNotDotImportUx` tests went with the walks they
+guarded. Both existed to hold up an assumption the retired gates rested on,
+that `ux.Fail` is spelled with the selector `ux.Fail`.
+`internal/docanchor` computes each file's real import binding, so a dot
+import or an alias is handled rather than assumed away, and it has its own
+tests for both.
+
+Gates run here: `gofmt`, `go build ./...`, `go vet ./...`, `go test ./...`,
+`go test -race` on every package touched, `./scripts/check-punctuation.sh`,
+`./scripts/check-allowlist-regexp.sh`, `./scripts/check-links.sh`,
+`./scripts/check-cli-package.sh`, `python3 scripts/check-ci-gates.py`, and
+`go test ./internal/archtest/`. Not run here, and CI is the only witness:
+`govulncheck` and `gosec` are not installed on this machine, there is no
+Docker daemon, and `pytest` is not installed so `scripts/tests` did not run.
+
+**Carried, not closed.** #74's acceptance criteria include a manual
+reproduction with Docker Desktop's WSL integration switched off, pasted into
+the pull request. This environment has no Docker Desktop and no Windows, so
+that confirmation is still owed by whoever has the machine. It is the one
+acceptance criterion on these three tickets that no amount of CI can supply.
+
+---
+
 ## Day 6: hardening, CI, packaging
 
 - [ ] CI green on both platforms

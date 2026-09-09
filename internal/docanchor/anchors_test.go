@@ -167,45 +167,63 @@ func findDocAnchors(t *testing.T, root string) (anchors []string, unverifiable [
 
 	for _, files := range byPkg {
 		consts := packageStringConsts(files)
+		fwd := findForwarders(files, consts)
 
 		for _, f := range files {
-			if !f.uxBind.reachable() {
-				continue // this file cannot contain a real ux.Fail or ux.Error site
+			if !f.uxBind.reachable() && len(fwd) == 0 {
+				// This file cannot contain a real ux.Fail or ux.Error site,
+				// and its package has no forwarder for it to call either.
+				continue
 			}
-			ast.Inspect(f.ast, func(n ast.Node) bool {
-				expr, ok := docAnchorArg(n, f.uxBind)
-				if !ok {
-					return true
-				}
-				if expr == nil {
-					// A recognised Fail(...) call or Error{} literal whose
-					// anchor argument this package could not even locate,
-					// e.g. ux.Fail(spreadArgs()...). Reported rather than
-					// silently passed over, for the same reason any other
-					// unresolvable anchor is: a silently skipped anchor is
-					// exactly how the grep this package replaces went blind.
-					unverifiable = append(unverifiable, position(fset, n.Pos()))
-					return true
-				}
-				value, resolvable := resolveString(expr, consts)
-				if !resolvable {
-					if f.uxBind.samePackage {
-						// ux.Fail itself constructs &Error{..., DocAnchor:
-						// docAnchor, ...} from its own parameter. That is
-						// plumbing, not a real emission site: every anchor
-						// it can carry is already checked at the
-						// ux.Fail(...) call site that supplied it.
+			// Walked one declaration at a time so that a forwarder's own
+			// body can be told apart from everywhere else. The anchor a
+			// forwarder hands to ux.Fail is its caller's, not its own, and
+			// is checked at the call site that supplied it.
+			for _, decl := range f.ast.Decls {
+				forwarded := forwardedParamOf(decl, fwd)
+
+				ast.Inspect(decl, func(n ast.Node) bool {
+					expr, ok := anchorSite(n, f.uxBind, fwd)
+					if !ok {
 						return true
 					}
-					unverifiable = append(unverifiable, position(fset, expr.Pos()))
+					if expr == nil {
+						// A recognised Fail(...) call, Error{} literal or
+						// forwarder call whose anchor argument this package
+						// could not even locate, e.g. ux.Fail(spreadArgs()...).
+						// Reported rather than silently passed over, for the
+						// same reason any other unresolvable anchor is: a
+						// silently skipped anchor is exactly how the grep
+						// this package replaces went blind.
+						unverifiable = append(unverifiable, position(fset, n.Pos()))
+						return true
+					}
+					value, resolvable := resolveString(expr, consts)
+					if !resolvable {
+						if forwarded != "" && isIdentNamed(expr, forwarded) {
+							// The plumbing inside a forwarder: this anchor
+							// arrives as a parameter and is checked at every
+							// call site of the forwarder instead.
+							return true
+						}
+						if f.uxBind.samePackage {
+							// ux.Fail itself constructs &Error{..., DocAnchor:
+							// docAnchor, ...} from its own parameter. That is
+							// plumbing, not a real emission site: every anchor
+							// it can carry is already checked at the
+							// ux.Fail(...) call site that supplied it.
+							return true
+						}
+						unverifiable = append(unverifiable, position(fset, expr.Pos()))
+						return true
+					}
+					if value != "" && !seen[value] {
+						seen[value] = true
+						anchors = append(anchors, value)
+					}
 					return true
-				}
-				if value != "" && !seen[value] {
-					seen[value] = true
-					anchors = append(anchors, value)
-				}
-				return true
-			})
+				})
+			}
 		}
 	}
 
@@ -267,6 +285,206 @@ func packageStringConsts(files []parsedFile) map[string]string {
 // DocAnchor is not that case: the field defaults to "", which is the
 // already-legal no-doc-link value, so ok is false and there is nothing to
 // report.
+// forwarder is a function that carries no doc anchor of its own: it takes
+// one from its caller and hands it to ux.Fail. cmd/shellforge's
+// failUnlessAlreadyUserFacing(op, err, remediation, docAnchor) is the one in
+// this repository today.
+//
+// Such a function is two things at once and both have to be handled or the
+// gate is wrong in one direction or the other. Its own ux.Fail call reads
+// the anchor out of a parameter, which no static analysis can resolve, so
+// reporting it as unverifiable is a false positive. Its CALL SITES are where
+// a real anchor is written down, so not checking them is a blind spot, and
+// exactly the blind spot converting a ux.Fail call into a forwarder would
+// silently open.
+type forwarder struct {
+	param    string // the parameter the anchor arrives under
+	argIndex int    // that parameter's zero-based position in the argument list
+}
+
+// forwarderSet holds the forwarders of one package, keyed by function name.
+//
+// Package scoped because it is discovered from the package's own source and
+// consumed there: see findForwarders on why a forwarder has to be
+// unexported to be recognised at all.
+type forwarderSet map[string]forwarder
+
+// lookup reports whether fun calls a forwarder in this set.
+//
+// Only the bare identifier form is matched, which is the only way to spell a
+// call to an unexported function of your own package.
+func (s forwarderSet) lookup(fun ast.Expr) (forwarder, bool) {
+	ident, ok := fun.(*ast.Ident)
+	if !ok {
+		return forwarder{}, false
+	}
+	f, found := s[ident.Name]
+	return f, found
+}
+
+// findForwarders discovers the forwarders declared across one package's
+// files.
+//
+// This is deliberately discovery rather than a registry. An earlier gate in
+// cmd/shellforge kept a hand-maintained `anchorForwarders` map, which works
+// right up to the moment somebody writes a second forwarder and does not
+// know the map exists. A rule enforced by a list somebody has to remember to
+// extend decays; see issue #132.
+//
+// Three shapes are deliberately NOT recognised, and each fails closed and
+// loudly rather than quietly:
+//
+//   - An exported function. A forwarder is followed only within its own
+//     package, so an exported one could be called from a package this walk
+//     would never connect to it, and its call sites would go unchecked in
+//     silence. Left unrecognised, its internal ux.Fail is reported as
+//     unverifiable instead, which says so out loud.
+//   - A method. Same reason: the call site is spelled through a receiver
+//     whose type this walk does not resolve.
+//   - A parameter that is also the name of a package-level string constant.
+//     resolveString would resolve the constant, so which of the two a reader
+//     means is ambiguous, and an ambiguous exemption is not one worth having.
+//
+// The loop runs to a fixed point so a forwarder that calls another forwarder
+// is recognised too, whichever order the files were parsed in.
+func findForwarders(files []parsedFile, consts map[string]string) forwarderSet {
+	found := forwarderSet{}
+	for {
+		grew := false
+		for _, f := range files {
+			for _, decl := range f.ast.Decls {
+				fn, isFunc := decl.(*ast.FuncDecl)
+				if !isFunc || fn.Recv != nil || fn.Name == nil || fn.Body == nil {
+					continue
+				}
+				if ast.IsExported(fn.Name.Name) {
+					continue
+				}
+				if _, already := found[fn.Name.Name]; already {
+					continue
+				}
+				fw, ok := forwardedParam(fn, f.uxBind, found, consts)
+				if !ok {
+					continue
+				}
+				found[fn.Name.Name] = fw
+				grew = true
+			}
+		}
+		if !grew {
+			return found
+		}
+	}
+}
+
+// forwardedParam reports which of fn's own string parameters it hands on as
+// a doc anchor, if any.
+func forwardedParam(fn *ast.FuncDecl, bind uxBinding, known forwarderSet, consts map[string]string) (forwarder, bool) {
+	params := stringParams(fn.Type.Params)
+	if len(params) == 0 {
+		return forwarder{}, false
+	}
+
+	var result forwarder
+	ok := false
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		if ok {
+			return false
+		}
+		expr, isSite := anchorSite(n, bind, known)
+		if !isSite || expr == nil {
+			return true
+		}
+		ident, isIdent := expr.(*ast.Ident)
+		if !isIdent {
+			return true
+		}
+		if _, shadowsAConst := consts[ident.Name]; shadowsAConst {
+			return true
+		}
+		index, isParam := params[ident.Name]
+		if !isParam {
+			return true
+		}
+		result = forwarder{param: ident.Name, argIndex: index}
+		ok = true
+		return false
+	})
+	return result, ok
+}
+
+// stringParams maps the name of every string-typed parameter to its
+// zero-based position in the argument list, flattening a grouped
+// declaration: in (op string, err error, remediation, docAnchor string),
+// docAnchor is index 3.
+//
+// Only the bare `string` type is matched. A named string type would still
+// carry an anchor, but nothing in this repository declares one, and matching
+// it would mean resolving type names across packages for a case that does
+// not exist.
+func stringParams(params *ast.FieldList) map[string]int {
+	if params == nil {
+		return nil
+	}
+	out := map[string]int{}
+	index := 0
+	for _, field := range params.List {
+		ident, isIdent := field.Type.(*ast.Ident)
+		isString := isIdent && ident.Name == "string"
+		if len(field.Names) == 0 {
+			index++ // an unnamed parameter still occupies a position
+			continue
+		}
+		for _, name := range field.Names {
+			if isString && name.Name != "_" {
+				out[name.Name] = index
+			}
+			index++
+		}
+	}
+	return out
+}
+
+// forwardedParamOf reports the parameter decl forwards, when decl is one of
+// the package's forwarders, and the empty string otherwise.
+func forwardedParamOf(decl ast.Decl, fwd forwarderSet) string {
+	fn, isFunc := decl.(*ast.FuncDecl)
+	if !isFunc || fn.Name == nil {
+		return ""
+	}
+	f, isForwarder := fwd[fn.Name.Name]
+	if !isForwarder {
+		return ""
+	}
+	return f.param
+}
+
+// isIdentNamed reports whether expr is exactly the identifier name.
+func isIdentNamed(expr ast.Expr, name string) bool {
+	ident, ok := expr.(*ast.Ident)
+	return ok && ident.Name == name
+}
+
+// anchorSite returns the doc anchor argument of n, whether n is a direct
+// ux.Fail call, a ux.Error composite literal, or a call to one of this
+// package's forwarders. A forwarder call site is checked exactly as a
+// ux.Fail is, because that is what it is.
+//
+// ok reports that n is a recognised site at all. A nil expr with ok true
+// means the site was recognised but its anchor argument could not be
+// located, which is reported rather than skipped.
+func anchorSite(n ast.Node, pkg uxBinding, fwd forwarderSet) (expr ast.Expr, ok bool) {
+	if call, isCall := n.(*ast.CallExpr); isCall {
+		if f, isForwarder := fwd.lookup(call.Fun); isForwarder {
+			if len(call.Args) <= f.argIndex {
+				return nil, true
+			}
+			return call.Args[f.argIndex], true
+		}
+	}
+	return docAnchorArg(n, pkg)
+}
+
 func docAnchorArg(n ast.Node, pkg uxBinding) (expr ast.Expr, ok bool) {
 	switch v := n.(type) {
 	case *ast.CallExpr:
@@ -498,20 +716,26 @@ func f() error {
 	}
 }
 
+// TestFindDocAnchorsUnresolvableIsReported uses a computed anchor rather
+// than a parameter on purpose. A parameter handed straight to ux.Fail is a
+// forwarder, which has its own tests below; a value returned by a function
+// is the shape nothing can follow and nothing should pretend to.
 func TestFindDocAnchorsUnresolvableIsReported(t *testing.T) {
 	root := writeFixture(t, map[string]string{
 		"pkg/a.go": `package pkg
 
 import "github.com/JoottunAtish/ShellForge/internal/platform/ux"
 
-func f(anchor string) error {
-	return ux.Fail("op", nil, "remediation", anchor)
+func pick() string { return "computed" }
+
+func f() error {
+	return ux.Fail("op", nil, "remediation", pick())
 }
 `,
 	})
 	anchors, unverifiable := findDocAnchors(t, root)
 	if len(anchors) != 0 {
-		t.Fatalf("anchors = %v, want none: a function parameter is not a resolvable anchor", anchors)
+		t.Fatalf("anchors = %v, want none: a call result is not a resolvable anchor", anchors)
 	}
 	if len(unverifiable) != 1 {
 		t.Fatalf("unverifiable = %v, want exactly one entry naming the call site", unverifiable)
@@ -781,6 +1005,242 @@ func f() error {
 	anchors, unverifiable := findDocAnchors(t, root)
 	if len(anchors) != 0 || len(unverifiable) != 0 {
 		t.Fatalf("anchors = %v, unverifiable = %v, want both empty: a _test.go call site is not learner-reachable", anchors, unverifiable)
+	}
+}
+
+// --------------------------------------------------------------------------
+// Forwarders. A helper that takes (op, err, remediation, docAnchor) and
+// hands them to ux.Fail is not an anchor site itself: its call sites are.
+// See issue #132, and cmd/shellforge's failUnlessAlreadyUserFacing.
+// --------------------------------------------------------------------------
+
+// forwarderFixture is the shape this repository actually ships, minus the
+// error handling: an unexported helper whose fourth parameter is the anchor.
+const forwarderFixture = `package pkg
+
+import "github.com/JoottunAtish/ShellForge/internal/platform/ux"
+
+func failUnlessAlreadyUserFacing(op string, err error, remediation, docAnchor string) error {
+	if err == nil {
+		return nil
+	}
+	return ux.Fail(op, err, remediation, docAnchor)
+}
+`
+
+func TestFindDocAnchorsFollowsAForwarderToItsCallSite(t *testing.T) {
+	root := writeFixture(t, map[string]string{
+		"pkg/forward.go": forwarderFixture,
+		"pkg/call.go": `package pkg
+
+func g(err error) error {
+	return failUnlessAlreadyUserFacing("op", err, "remediation", "real-anchor")
+}
+`,
+	})
+	anchors, unverifiable := findDocAnchors(t, root)
+	if len(unverifiable) != 0 {
+		t.Errorf("unverifiable = %v, want none: the forwarder's own ux.Fail reads its caller's anchor", unverifiable)
+	}
+	if len(anchors) != 1 || anchors[0] != "real-anchor" {
+		t.Errorf("anchors = %v, want [real-anchor] from the call site", anchors)
+	}
+}
+
+// TestFindDocAnchorsChecksAForwarderCallSiteItCannotRead is the half that
+// matters most: following a forwarder must not become a way to launder an
+// unreadable anchor past the gate.
+func TestFindDocAnchorsChecksAForwarderCallSiteItCannotRead(t *testing.T) {
+	root := writeFixture(t, map[string]string{
+		"pkg/forward.go": forwarderFixture,
+		"pkg/call.go": `package pkg
+
+func pick() string { return "computed" }
+
+func g(err error) error {
+	return failUnlessAlreadyUserFacing("op", err, "remediation", pick())
+}
+`,
+	})
+	anchors, unverifiable := findDocAnchors(t, root)
+	if len(anchors) != 0 {
+		t.Errorf("anchors = %v, want none", anchors)
+	}
+	if len(unverifiable) != 1 {
+		t.Fatalf("unverifiable = %v, want exactly one entry naming the forwarder's call site", unverifiable)
+	}
+	if !strings.Contains(unverifiable[0], "call.go") {
+		t.Errorf("unverifiable = %v, want the CALL SITE reported, not the forwarder's own ux.Fail", unverifiable)
+	}
+}
+
+func TestFindDocAnchorsResolvesAConstAtAForwarderCallSite(t *testing.T) {
+	root := writeFixture(t, map[string]string{
+		"pkg/forward.go": forwarderFixture,
+		"pkg/call.go": `package pkg
+
+const docAnchorThing = "const-anchor"
+
+func g(err error) error {
+	return failUnlessAlreadyUserFacing("op", err, "remediation", docAnchorThing)
+}
+`,
+	})
+	anchors, unverifiable := findDocAnchors(t, root)
+	if len(unverifiable) != 0 {
+		t.Errorf("unverifiable = %v, want none", unverifiable)
+	}
+	if len(anchors) != 1 || anchors[0] != "const-anchor" {
+		t.Errorf("anchors = %v, want [const-anchor]", anchors)
+	}
+}
+
+func TestFindDocAnchorsReportsAForwarderCallWithTooFewArguments(t *testing.T) {
+	root := writeFixture(t, map[string]string{
+		"pkg/forward.go": forwarderFixture,
+		"pkg/call.go": `package pkg
+
+func parts() (string, error, string, string) { return "op", nil, "rem", "a" }
+
+func g() error {
+	return failUnlessAlreadyUserFacing(parts())
+}
+`,
+	})
+	anchors, unverifiable := findDocAnchors(t, root)
+	if len(anchors) != 0 {
+		t.Errorf("anchors = %v, want none", anchors)
+	}
+	if len(unverifiable) != 1 {
+		t.Errorf("unverifiable = %v, want exactly one entry: a spread call hides its anchor", unverifiable)
+	}
+}
+
+// TestFindDocAnchorsDoesNotFollowAnExportedForwarder pins the fail-closed
+// choice. An exported helper can be called from a package this walk never
+// connects to it, so it is not recognised as a forwarder and its own
+// ux.Fail is reported instead. Loud beats a silent blind spot.
+func TestFindDocAnchorsDoesNotFollowAnExportedForwarder(t *testing.T) {
+	root := writeFixture(t, map[string]string{
+		"pkg/a.go": `package pkg
+
+import "github.com/JoottunAtish/ShellForge/internal/platform/ux"
+
+func FailUnlessAlreadyUserFacing(op string, err error, remediation, docAnchor string) error {
+	return ux.Fail(op, err, remediation, docAnchor)
+}
+
+func g(err error) error {
+	return FailUnlessAlreadyUserFacing("op", err, "remediation", "real-anchor")
+}
+`,
+	})
+	anchors, unverifiable := findDocAnchors(t, root)
+	if len(unverifiable) != 1 {
+		t.Errorf("unverifiable = %v, want exactly one: an exported forwarder is not followed", unverifiable)
+	}
+	if len(anchors) != 0 {
+		t.Errorf("anchors = %v, want none: the call site of an unrecognised forwarder is not an anchor site", anchors)
+	}
+}
+
+// TestFindDocAnchorsDoesNotFollowAMethod is the same fail-closed choice for
+// the other shape this walk cannot resolve a call site for.
+func TestFindDocAnchorsDoesNotFollowAMethod(t *testing.T) {
+	root := writeFixture(t, map[string]string{
+		"pkg/a.go": `package pkg
+
+import "github.com/JoottunAtish/ShellForge/internal/platform/ux"
+
+type t struct{}
+
+func (t) fail(op string, err error, remediation, docAnchor string) error {
+	return ux.Fail(op, err, remediation, docAnchor)
+}
+`,
+	})
+	_, unverifiable := findDocAnchors(t, root)
+	if len(unverifiable) != 1 {
+		t.Errorf("unverifiable = %v, want exactly one: a method is not followed", unverifiable)
+	}
+}
+
+// TestFindDocAnchorsFollowsAChainOfForwarders proves the fixed point. The
+// outer forwarder never mentions ux at all, so it is only recognisable once
+// the inner one is, whichever order the files were parsed in.
+func TestFindDocAnchorsFollowsAChainOfForwarders(t *testing.T) {
+	root := writeFixture(t, map[string]string{
+		"pkg/outer.go": `package pkg
+
+func wrap(op string, err error, remediation, docAnchor string) error {
+	return failUnlessAlreadyUserFacing(op, err, remediation, docAnchor)
+}
+
+func g(err error) error {
+	return wrap("op", err, "remediation", "chained-anchor")
+}
+`,
+		"pkg/forward.go": forwarderFixture,
+	})
+	anchors, unverifiable := findDocAnchors(t, root)
+	if len(unverifiable) != 0 {
+		t.Errorf("unverifiable = %v, want none", unverifiable)
+	}
+	if len(anchors) != 1 || anchors[0] != "chained-anchor" {
+		t.Errorf("anchors = %v, want [chained-anchor]", anchors)
+	}
+}
+
+// TestFindDocAnchorsPrefersAConstOverAShadowingParameter keeps the
+// exemption unambiguous. A parameter sharing a package constant's name is
+// not treated as a forwarder: resolveString would resolve the constant, and
+// an exemption nobody can predict is worse than no exemption.
+func TestFindDocAnchorsPrefersAConstOverAShadowingParameter(t *testing.T) {
+	root := writeFixture(t, map[string]string{
+		"pkg/a.go": `package pkg
+
+import "github.com/JoottunAtish/ShellForge/internal/platform/ux"
+
+const docAnchor = "const-anchor"
+
+func f(op string, err error, remediation, docAnchor string) error {
+	return ux.Fail(op, err, remediation, docAnchor)
+}
+`,
+	})
+	anchors, unverifiable := findDocAnchors(t, root)
+	if len(unverifiable) != 0 {
+		t.Errorf("unverifiable = %v, want none: the name resolves as a package constant", unverifiable)
+	}
+	if len(anchors) != 1 || anchors[0] != "const-anchor" {
+		t.Errorf("anchors = %v, want [const-anchor]", anchors)
+	}
+}
+
+func TestStringParamsFlattensAGroupedDeclaration(t *testing.T) {
+	src := `package pkg
+
+func f(op string, err error, remediation, docAnchor string) {}
+`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "a.go", src, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	fn := file.Decls[0].(*ast.FuncDecl)
+
+	got := stringParams(fn.Type.Params)
+	want := map[string]int{"op": 0, "remediation": 2, "docAnchor": 3}
+	if len(got) != len(want) {
+		t.Fatalf("stringParams = %v, want %v", got, want)
+	}
+	for name, index := range want {
+		if got[name] != index {
+			t.Errorf("stringParams[%q] = %d, want %d", name, got[name], index)
+		}
+	}
+	if _, present := got["err"]; present {
+		t.Error("stringParams included err, which is not a string parameter")
 	}
 }
 

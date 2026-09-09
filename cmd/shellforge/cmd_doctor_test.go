@@ -153,7 +153,7 @@ func TestDoctorCommandRunsWithoutError(t *testing.T) {
 			t.Fatalf("doctor returned a non-ux error: %v", err)
 		}
 		// A failing probe on this host is expected and is not what this
-		// test checks; docanchor_test.go and doctorExitError's own unit
+		// test checks; internal/docanchor and doctorExitError's own unit
 		// test cover that path. What matters here is that doctor is wired
 		// in at all, not stubbed.
 	}

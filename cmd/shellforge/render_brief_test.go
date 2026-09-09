@@ -368,6 +368,30 @@ func TestBriefingWithNoObjectivesPrintsNoChecklist(t *testing.T) {
 //
 // So the number below is now 1.25.0, and the rule it enforces has not changed:
 // if a dependency bump moves this line, find out why before accepting it.
+// cliModuleRoot walks up from the test's working directory until it finds
+// go.mod, matching internal/archtest's and internal/docanchor's own helpers.
+//
+// It moved here when cmd/shellforge/docanchor_test.go retired: internal/docanchor
+// now checks this package's doc anchors module-wide, and this was the only
+// thing left in that file with a caller. See issue #132.
+func cliModuleRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("go.mod not found above the test directory")
+		}
+		dir = parent
+	}
+}
+
 func TestGoDirectiveStaysAtTheSupportedFloor(t *testing.T) {
 	const wantFloor = "go 1.25.0"
 
