@@ -67,6 +67,43 @@ type passSummaryData struct {
 	// the registry announces a key and the rule holds the words, so the
 	// rule is what the banner needs.
 	Unlocked []achievements.Rule
+
+	// Next is where the learner goes from here. See nextStep.
+	Next nextStep
+}
+
+// nextStep is what a learner is told to do once the level is over.
+//
+// It exists because without it they are finished and stranded. `play` plays
+// one level and returns to the host shell rather than provisioning the next
+// one, which is a deliberate decision recorded in cmd_play.go, and the
+// learner reading the banner is still sitting at a prompt inside the
+// sandbox, where `shellforge` is not a command and never will be: it is a
+// program on their own computer, and the sandbox deliberately cannot reach
+// anything on the host. Both guesses a real learner made, `next` and
+// `shellforge next`, ended in "command not found" with nothing to go on.
+type nextStep struct {
+	// LevelID and Title name the level that comes next. Both empty when the
+	// lookup failed, in which case the banner still says how to carry on,
+	// just without naming where to.
+	LevelID string
+	Title   string
+
+	// Complete is true when there is no next level because the campaign is
+	// finished, which is an ending rather than a gap.
+	Complete bool
+
+	// Offered is true when `play` is driving and will ask, once this shell
+	// exits, whether to start the next level.
+	//
+	// It changes the wording and nothing else, but getting it wrong would be
+	// worse than saying nothing at all: telling a learner to run `shellforge
+	// play` when they are about to be asked instead, or telling them they
+	// will be asked when nobody is going to, are both instructions that do
+	// not match what their screen then does. False under `run`, under `play
+	// <level-id>`, and whenever the host's own stdin is not a terminal. See
+	// canAsk.
+	Offered bool
 }
 
 // renderPassBanner builds the banner. The returned string uses plain "\n";
@@ -102,7 +139,39 @@ func renderPassBanner(d passSummaryData, color bool) string {
 	b.WriteString(renderRankLine(d, p))
 	b.WriteString("\n")
 
+	b.WriteString("\n")
+	b.WriteString(renderNextStep(d.Next))
+	b.WriteString("\n")
+
 	return b.String()
+}
+
+// renderNextStep says what to do now the level is over.
+//
+// Every wording here names `exit` before it names `shellforge`, and that
+// order is the whole point rather than a stylistic choice. A learner reading
+// this has just passed and is sitting at a prompt inside the sandbox;
+// `shellforge` is a program on their own computer and the sandbox cannot
+// reach it. Telling them to run it without telling them to leave first earns
+// them a "command not found" and no explanation, which is exactly what
+// happened to the first person to finish a level.
+func renderNextStep(n nextStep) string {
+	if n.Complete {
+		return "That was the last level in the pack.\n" +
+			"Type `exit` to leave the sandbox, then run `shellforge stats` to see the whole picture."
+	}
+	if n.LevelID == "" {
+		if n.Offered {
+			return "Type `exit` to leave the sandbox, and you will be asked whether to carry on."
+		}
+		return "Type `exit` to leave the sandbox, then run `shellforge play` to carry on."
+	}
+	if n.Offered {
+		return fmt.Sprintf("Next up: %s, %s.\nType `exit` to leave the sandbox, and you will be asked whether to start it.",
+			n.LevelID, n.Title)
+	}
+	return fmt.Sprintf("Next up: %s, %s.\nType `exit` to leave the sandbox, then run `shellforge play` to start it.",
+		n.LevelID, n.Title)
 }
 
 // renderScoreBreakdown is the arithmetic block: one line per contribution,

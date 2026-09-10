@@ -49,12 +49,14 @@ off, and will pick those up as they land.
 | `brief` | Reprint the briefing |
 | `hint` | Show what the next hint costs. `hint --yes` spends it, `hint --reveal` asks about the solution |
 | `reset` | Show what a rebuild would delete. `reset --yes` does it |
+| `next` | Go straight on to the next level, once this one is passed |
+| `exit` | Leave the sandbox. If you passed, you are asked whether to carry on |
 
 ## Commands you type on your own machine
 
 | Command | What it does |
 |---|---|
-| `shellforge play` | Start, or carry on where you left off. `play <id>` replays one level, `play --next` says which is next without starting it |
+| `shellforge play` | Start, or carry on where you left off. Pass a level and it asks whether to go straight on to the next one. `play <id>` replays one level, `play --next` says which is next without starting it |
 | `shellforge run <id>` | Play one specific level |
 | `shellforge skip <id>` | Mark a level skipped so what comes after it unlocks. Awards no XP |
 | `shellforge author validate <pack>` | Check a content pack against the level format |

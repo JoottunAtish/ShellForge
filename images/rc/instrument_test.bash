@@ -95,4 +95,69 @@ else
   echo "OK: warns once per shell"
 fi
 
+# ---------------------------------------------------------------------------
+# `next`
+#
+# Extracted the same way, with the absolute path to the control-channel shim
+# swapped for a stub, because the point of the test is the decision the
+# function makes about the sentinel and not the request it sends.
+#
+# Every case runs in a subshell. The whole behaviour under test is that one
+# branch calls `exit` and the other does not, so a test that ran it in this
+# shell would end here on its first passing case.
+# ---------------------------------------------------------------------------
+next_src="$(sed -n '/^# BEGIN __sf_next$/,/^# END __sf_next$/p' "$src"   | sed 's#/opt/shellforge/bin/_sf-request#__sf_request_stub#')"
+
+sf_state_dir="$(mktemp -d)"
+trap 'rm -rf "$sf_state_dir"' EXIT
+
+# check_next runs `next` with the sentinel either present or absent and
+# asserts on whether the shell ended, what was printed, and whether the
+# sentinel survived.
+#
+# want_exit is the exit status the subshell is expected to end with: 0 when
+# `next` ended the shell, 99 when it returned and the line after it ran.
+check_next() {
+  local name="$1" sentinel_present="$2" want_exit="$3" want_gone="$4" out status
+
+  rm -f "$sf_state_dir/advance"
+  if [ "$sentinel_present" = "yes" ]; then
+    : > "$sf_state_dir/advance"
+  fi
+
+  # `|| status=$?` rather than a bare assignment: this file runs under
+  # `set -e`, and the whole point of one of the two cases is that the
+  # subshell ends non-zero.
+  status=0
+  out="$(
+    set +e
+    export SF_STATE="$sf_state_dir"
+    __sf_request_stub() { printf 'reply for %s
+' "$*"; }
+    eval "$next_src"
+    next
+    exit 99
+  )" || status=$?
+
+  if [ "$status" != "$want_exit" ]; then
+    echo "FAIL: $name: exit status $status, want $want_exit"
+    fail=1
+    return
+  fi
+  if [ "${out#reply for}" = "$out" ]; then
+    echo "FAIL: $name: the host reply was not printed, got $(printf '%q' "$out")"
+    fail=1
+    return
+  fi
+  if [ "$want_gone" = "yes" ] && [ -e "$sf_state_dir/advance" ]; then
+    echo "FAIL: $name: the sentinel was left behind, so the next level would end on its own"
+    fail=1
+    return
+  fi
+  echo "OK: $name"
+}
+
+check_next "ends the shell when the host accepted" yes 0 yes
+check_next "stays put when the host did not" no 99 yes
+
 exit $fail

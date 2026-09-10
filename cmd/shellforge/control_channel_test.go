@@ -141,7 +141,7 @@ func TestControlChannelAnswersTheShim(t *testing.T) {
 
 	reqPath := path.Join(session.StateDir(), "control.req")
 	resPath := path.Join(session.StateDir(), "control.res")
-	if err := prepareControlChannel(ctx, sess, reqPath, resPath); err != nil {
+	if err := prepareControlChannel(ctx, sess, session.StateDir(), reqPath, resPath); err != nil {
 		t.Fatalf("prepareControlChannel: %v", err)
 	}
 

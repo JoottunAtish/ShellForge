@@ -110,6 +110,16 @@ type runOptions struct {
 	// live is --live-check, on by default. See parseLiveCheckValue for the
 	// accepted spellings and startLiveChecking for what it gates.
 	live bool
+
+	// advance says that `play` is driving and will offer the next level
+	// once this one is passed, so the pass banner can tell the learner what
+	// is actually about to happen rather than a generic instruction.
+	//
+	// It is false for `run`, which plays the one level it was given and
+	// stops, for `play <level-id>`, which does the same, and whenever the
+	// host's own stdin is not a terminal, since there is then nobody to ask.
+	// See offerNextLevel.
+	advance bool
 }
 
 // controlResponder answers one control request from inside the sandbox.
@@ -228,7 +238,10 @@ func cmdRun(ctx context.Context, args []string) error {
 	if err := checkInteractiveShellSupported(opts.levelID); err != nil {
 		return err
 	}
-	return runLevel(ctx, opts, pack, level)
+	// `run` plays the one level it was named and stops, so how it ended
+	// changes nothing here. `play` is the verb that carries on.
+	_, err = runLevel(ctx, opts, pack, level)
+	return err
 }
 
 // levelOrder returns the pack's level ids in campaign order.
@@ -408,33 +421,65 @@ func parseLiveCheckValue(v string) (live bool, ok bool) {
 	}
 }
 
-// runLevel plays one level loaded from the pack.
+// runLevel plays one level loaded from the pack and reports whether the
+// learner passed it.
 //
 // It is the shared flow `run` and `play` both go through: open the progress
 // database, open the sandbox, assemble the level, play it. `play` adds
 // level selection in front of this and nothing else, which is what stops
 // the two from drifting apart within a week.
-func runLevel(ctx context.Context, opts runOptions, pack *content.Pack, level *content.Level) error {
+//
+// Passed is read from the Orchestrator rather than from the store, and the
+// difference matters: it is a fact about THIS session, not about the level's
+// recorded status, so a learner replaying a level they had already passed
+// and walking away without passing it this time is not offered the next one
+// on the strength of what they did last week. The zero outcome is what an
+// error returns, because a level that ended in an error ended before it
+// could be answered.
+func runLevel(ctx context.Context, opts runOptions, pack *content.Pack, level *content.Level) (levelOutcome, error) {
 	st, profile, err := openProgress(ctx)
 	if err != nil {
-		return err
+		return levelOutcome{}, err
 	}
 	defer st.Close()
 
 	rt, sess, cleanupSession, err := openSandbox(ctx, opts.levelID)
 	if err != nil {
-		return err
+		return levelOutcome{}, err
 	}
 	_ = rt
 	defer cleanupSession()
 
-	lvl, detach, err := buildLevel(ctx, pack, level, sess, st, profile.ID)
+	lvl, detach, err := buildLevel(ctx, opts, pack, level, sess, st, profile.ID)
 	if err != nil {
-		return err
+		return levelOutcome{}, err
 	}
 	defer detach()
 
-	return play(ctx, opts, sess, lvl)
+	if err := play(ctx, opts, sess, lvl); err != nil {
+		return levelOutcome{}, err
+	}
+
+	// Read before the deferred teardown above runs, which is fine: Passed
+	// records that this attempt ever fully passed and Close does not take
+	// it back, and AdvanceRequested is a flag the responder set while the
+	// shell was still up.
+	return levelOutcome{
+		Passed:   lvl.orch.Passed(),
+		Advanced: lvl.AdvanceRequested(),
+	}, nil
+}
+
+// levelOutcome is how one level ended, as far as anything above it cares.
+//
+// Two facts rather than one because they answer different questions.
+// Passed decides whether there is anywhere to go. Advanced decides whether
+// to ask before going: a learner who typed `next` has already answered that
+// question, and asking it again would be asking them to say the same thing
+// twice.
+type levelOutcome struct {
+	Passed   bool
+	Advanced bool
 }
 
 // buildLevel assembles one level in play: the session, the event bus, the
@@ -443,13 +488,13 @@ func runLevel(ctx context.Context, opts runOptions, pack *content.Pack, level *c
 //
 // The returned function detaches the achievement subscribers. It is safe to
 // call more than once.
-func buildLevel(ctx context.Context, pack *content.Pack, level *content.Level, sess runtime.Session, st *store.Store, profileID int64) (*gameLevel, func(), error) {
+func buildLevel(ctx context.Context, opts runOptions, pack *content.Pack, level *content.Level, sess runtime.Session, st *store.Store, profileID int64) (*gameLevel, func(), error) {
 	packFS, err := packFilesystem()
 	if err != nil {
 		return nil, nil, err
 	}
 
-	j := journal.New(st)
+	j := levelJournal(ctx, st, level.ID)
 
 	session, err := game.NewSession(game.Config{
 		Level:    level,
@@ -511,6 +556,7 @@ func buildLevel(ctx context.Context, pack *content.Pack, level *content.Level, s
 		orch:       orch,
 		session:    session,
 		level:      level,
+		sess:       sess,
 		sink:       game.NewJournalSink(collector, j, b),
 		eventBus:   b,
 		commandRan: make(chan struct{}, 1),
@@ -519,8 +565,42 @@ func buildLevel(ctx context.Context, pack *content.Pack, level *content.Level, s
 			store:     st,
 			profileID: profileID,
 			unlocks:   unlocks,
+			advance:   opts.advance,
 		},
 	}, detach, nil
+}
+
+// levelJournal returns the journal a level in play verifies against, with
+// its scope boundary already set.
+//
+// The SetLevel call is the whole point of this function and is not optional
+// wiring. A journal check declares `scope: level`, and Journal.Commands
+// answers scope.Level with nothing at all until SetLevel has named a level,
+// deliberately, because the newest row in the events table can belong to a
+// different level than the one being verified. Without this call every
+// `command_matched` bonus in the pack is unreachable and every
+// `command_not_matched` bonus is awarded for free, which is exactly what
+// nav-01 did: `pwd > quest/answer.txt` earned the objective and missed the
+// bonus that asks whether `pwd` was used.
+//
+// The boundary is read here, while the level is being assembled, because
+// this is the last moment before that attempt can record anything: the
+// journal sink only drains once the shell is running. Every row already in
+// the table belongs to an earlier level or an earlier attempt at this one,
+// and every row after it belongs to this attempt.
+//
+// A failed read is degraded to zero rather than surfaced. Nothing the
+// learner could do would fix it, a journal read is never allowed to decide
+// pass or fail, and zero is the generous direction: see
+// Journal.LastEventID.
+func levelJournal(ctx context.Context, st *store.Store, levelID string) *journal.Journal {
+	j := journal.New(st)
+	boundary, err := j.LastEventID(ctx)
+	if err != nil {
+		boundary = 0
+	}
+	j.SetLevel(levelID, boundary)
+	return j
 }
 
 // packFilesystem returns the embedded pack, rooted AT the pack directory.
@@ -667,7 +747,7 @@ func play(ctx context.Context, opts runOptions, sess runtime.Session, lvl playab
 
 	reqPath := path.Join(lvl.StateDir(), "control.req")
 	resPath := path.Join(lvl.StateDir(), "control.res")
-	if err := prepareControlChannel(ctx, sess, reqPath, resPath); err != nil {
+	if err := prepareControlChannel(ctx, sess, lvl.StateDir(), reqPath, resPath); err != nil {
 		return failUnlessAlreadyUserFacing(
 			"open the control channel into the sandbox",
 			err,
@@ -715,6 +795,7 @@ func play(ctx context.Context, opts runOptions, sess runtime.Session, lvl playab
 	}
 
 	mux := pty.New(sandboxPTY, os.Stdin, os.Stdout)
+	mux.SetClearBanner(clearBanner(lvl, color))
 
 	// runCtx bounds both helper goroutines to the lifetime of the shell.
 	// Cancelling it is what unblocks the control channel's own blocking
@@ -742,7 +823,7 @@ func play(ctx context.Context, opts runOptions, sess runtime.Session, lvl playab
 	printDone := make(chan struct{})
 	go func() {
 		defer close(printDone)
-		printLiveTransitions(runCtx, transitions, os.Stdout, color)
+		printLiveTransitions(runCtx, transitions, mux, color)
 	}()
 
 	runErr := mux.Run(runCtx)
@@ -791,11 +872,55 @@ func play(ctx context.Context, opts runOptions, sess runtime.Session, lvl playab
 	return nil
 }
 
-// printLiveTransitions is the one goroutine that ever writes a live pass's
-// output to the learner's terminal, so it is the only writer to w between
-// mux.Run starting and returning apart from the multiplexer's own copy loop
-// and, when --log-level=debug is on, logCommandEvents's own writer (which
-// goes to stderr, not stdout).
+// interjector is the one thing printLiveTransitions needs from the PTY
+// multiplexer, declared here in the consumer so a test can drive the printer
+// with a recorder instead of a terminal.
+type interjector interface {
+	Interject(msg string)
+}
+
+// clearBanner renders the text the multiplexer reprints whenever the learner
+// clears their screen.
+//
+// The briefing is printed once, on the host, before the shell is attached,
+// which makes it the only thing on that screen the learner cannot get back
+// for themselves: `clear` erases the scrollback along with the display, so
+// scrolling up does not find it either, and a learner three commands into a
+// level who has forgotten which file they were asked to write is stuck.
+// pty.Mux notices the clear and prints this above the next prompt.
+//
+// It is the same call the pre-attach briefing makes, so the two cannot
+// drift: what comes back is what was there. The differences are mechanical.
+// The leading blank line goes, because the cursor is at the top left of a
+// screen that was just erased rather than partway down a busy one. The whole
+// thing goes through crlf, because by the time it is written internal/pty
+// holds the terminal in raw mode and a bare LF would staircase it. And the
+// width is whatever printBriefing picks for a non-terminal writer, 80
+// columns, which is the same width the `brief` shim already reprints at.
+func clearBanner(lvl playable, color bool) string {
+	var b strings.Builder
+	lvl.PrintBriefing(&b, color)
+
+	text := strings.TrimLeft(b.String(), "\n")
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+	return crlf(text)
+}
+
+// printLiveTransitions is the one goroutine that ever hands a live pass's
+// output to the learner's terminal.
+//
+// It goes through pty.Mux.Interject rather than writing to os.Stdout, and
+// that is the whole point of the function now. Writing directly meant two
+// unordered writers on one terminal, and it meant a tick landing after bash
+// had already drawn its prompt: the prompt scrolled up out of reach, the
+// cursor sat on a blank line, and a learner who had just solved the level
+// saw a hung terminal and pressed Enter to get a prompt back. Interject
+// writes only when the shell is idle at a prompt nobody has typed into, and
+// reprints that prompt underneath the message; otherwise it holds the
+// message until just before the next prompt is drawn. See internal/pty's
+// screen type.
 //
 // transitions is nil when live checking is off, or when the level does not
 // implement liveLevel: a receive on a nil channel blocks forever, so this
@@ -803,14 +928,11 @@ func play(ctx context.Context, opts runOptions, sess runtime.Session, lvl playab
 // path costs nothing. A closed channel (Run has returned) also ends the
 // loop.
 //
-// TODO(v0.2): a pass costs 90ms to 1.5s, so this line can land after bash has
-// already redrawn the next prompt, under a command the learner is still
-// typing into. Fixing that means owning the screen, which is the TUI
-// CLAUDE.md cuts for v0.1. renderTransitions opens with a blank line, CRLF
-// terminated like the rest of it, which is what keeps a tick from landing on
-// the end of whatever the learner has typed so far rather than starting on
-// its own fresh line.
-func printLiveTransitions(ctx context.Context, transitions <-chan []verify.ObjectiveResult, w io.Writer, color bool) {
+// renderTransitions opens and closes with a CRLF, which is what Interject
+// requires of a message: the terminal is in raw mode, so a bare LF does not
+// return the carriage, and the leading one is what keeps a tick from landing
+// on the end of the prompt rather than starting on its own line.
+func printLiveTransitions(ctx context.Context, transitions <-chan []verify.ObjectiveResult, out interjector, color bool) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -819,7 +941,7 @@ func printLiveTransitions(ctx context.Context, transitions <-chan []verify.Objec
 			if !ok {
 				return
 			}
-			fmt.Fprint(w, renderTransitions(objs, color))
+			out.Interject(renderTransitions(objs, color))
 		}
 	}
 }
@@ -832,8 +954,14 @@ func printLiveTransitions(ctx context.Context, transitions <-chan []verify.Objec
 // reused. Both paths are derived from compile-time constants inside the
 // sandbox state directory, never from level data, and the removal runs inside
 // the sandbox through Session.Exec.
-func prepareControlChannel(ctx context.Context, s runtime.Session, reqPath, resPath string) error {
-	if err := run1(ctx, s, "remove any stale control channel", []string{"rm", "-f", "--", reqPath, resPath}); err != nil {
+func prepareControlChannel(ctx context.Context, s runtime.Session, stateDir, reqPath, resPath string) error {
+	// The advance sentinel is removed alongside them, and for the same
+	// reason: the container outlives any one `run`, and a sentinel left
+	// behind by a level that ended before its shell read it would make the
+	// NEXT level end the moment the learner typed `next`, however that verb
+	// answered. See gameResponder.next.
+	stale := []string{"rm", "-f", "--", reqPath, resPath, path.Join(stateDir, advanceSentinel)}
+	if err := run1(ctx, s, "remove any stale control channel", stale); err != nil {
 		return err
 	}
 	return run1(ctx, s, "create the control channel", []string{"mkfifo", "--", reqPath, resPath})
