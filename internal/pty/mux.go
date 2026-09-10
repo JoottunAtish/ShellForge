@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"math"
 	"os"
@@ -65,7 +66,7 @@ type CommandEvent struct {
 	// tap counts a Tab byte anywhere in the stdin stream for that window,
 	// including one typed into a full screen application that happened to
 	// be running, and it cannot tell a completion that fired from one that
-	// found nothing. Nothing that scores a level may read it. See tabTap.
+	// found nothing. Nothing that scores a level may read it. See stdinTap.
 	UsedTab bool
 }
 
@@ -73,8 +74,9 @@ type CommandEvent struct {
 // raw mode.
 const tabByte = 0x09
 
-// tabTap is an io.Reader that reports whether byte 0x09, Tab, has passed
-// through it, while passing every byte on exactly as it found it.
+// stdinTap is an io.Reader that reports two things about the bytes passing
+// through it, whether byte 0x09, Tab, was among them and whether there were
+// any at all, while passing every byte on exactly as it found it.
 //
 // It wraps the host's stdin on the way to the sandbox. Observation is all it
 // does: it adds nothing, drops nothing, reorders nothing, and rewrites
@@ -82,24 +84,36 @@ const tabByte = 0x09
 // completion all depend on that stream being literally, not approximately,
 // unmodified.
 //
-// seen is an *atomic.Bool because the stdin copy goroutine writes it and the
-// output copy goroutine, the one that runs the OSC parser and therefore
-// onOSCEvent, reads and clears it. A plain bool would be a data race, and a
-// mutex is the wrong instrument: this Read sits directly under io.Copy and
-// blocks on the host's own stdin for as long as the learner is thinking, so
-// nothing here may hold a lock across it.
-type tabTap struct {
-	r    io.Reader
-	seen *atomic.Bool
+// tab and typed are both *atomic.Bool because the stdin copy goroutine
+// writes them and the output copy goroutine, the one that runs the OSC
+// parser and therefore onOSCEvent, reads and clears them. A plain bool would
+// be a data race, and a mutex is the wrong instrument: this Read sits
+// directly under io.Copy and blocks on the host's own stdin for as long as
+// the learner is thinking, so nothing here may hold a lock across it.
+//
+// typed is what Interject consults before it redraws a prompt. The ordering
+// that makes it trustworthy is the round trip: a keystroke is seen here
+// before it reaches the sandbox, and the shell's echo of it cannot reach the
+// host's screen before it has reached the sandbox at all. So a character
+// already visible on the learner's line always has typed set, and the worst
+// a keystroke racing an Interject can do is have its echo land after the
+// redrawn prompt, where it belongs anyway.
+type stdinTap struct {
+	r     io.Reader
+	tab   *atomic.Bool
+	typed *atomic.Bool
 }
 
 // Read implements io.Reader. It reads through to the wrapped reader and
 // returns exactly what that returned, having only looked at the bytes: p is
 // never written to here, and n and err are passed back untouched.
-func (t tabTap) Read(p []byte) (int, error) {
+func (t stdinTap) Read(p []byte) (int, error) {
 	n, err := t.r.Read(p)
-	if n > 0 && bytes.IndexByte(p[:n], tabByte) >= 0 {
-		t.seen.Store(true)
+	if n > 0 {
+		t.typed.Store(true)
+		if bytes.IndexByte(p[:n], tabByte) >= 0 {
+			t.tab.Store(true)
+		}
 	}
 	return n, err
 }
@@ -124,7 +138,6 @@ type fdHaver interface {
 type Mux struct {
 	pty runtime.PTY
 	in  io.Reader
-	out io.Writer
 
 	events  chan CommandEvent
 	pending *CommandEvent
@@ -152,8 +165,19 @@ type Mux struct {
 	// tabSeen records that a Tab byte passed through the stdin tap since the
 	// last command started. onOSCEvent swaps it back to false when it opens
 	// a new pending CommandEvent, which is both the read and the reset for
-	// that command's window. See tabTap for why it is atomic.
+	// that command's window. See stdinTap for why it is atomic.
 	tabSeen atomic.Bool
+
+	// typedSincePrompt records that the learner has pressed something since
+	// the shell finished drawing its current prompt. onOSCEvent clears it at
+	// CommandStart, the marker that closes the prompt, so it answers exactly
+	// the question Interject asks: is the line under the cursor still empty?
+	// See stdinTap.
+	typedSincePrompt atomic.Bool
+
+	// screen owns everything about writing to the host terminal from
+	// somewhere other than the output copy goroutine. See interject.go.
+	screen screen
 
 	// signalled carries a caught external terminating signal from the
 	// watcher goroutine to Run's own select, so Run unwinds through its
@@ -194,13 +218,14 @@ func New(p runtime.PTY, in io.Reader, out io.Writer) *Mux {
 	m := &Mux{
 		pty:       p,
 		in:        in,
-		out:       out,
 		events:    make(chan CommandEvent, eventBufferSize),
 		makeRaw:   term.MakeRaw,
 		restore:   term.Restore,
 		getSize:   term.GetSize,
 		signalled: make(chan os.Signal, 1),
 	}
+
+	m.screen.open(out)
 
 	inFd, inHasFd := fdOf(in)
 	outFd, outHasFd := fdOf(out)
@@ -311,6 +336,14 @@ func (m *Mux) Run(ctx context.Context) error {
 		}
 	}()
 
+	// Closed before the terminal is restored on every path out, including a
+	// panic, because an Interject landing after the restore would print into
+	// a cooked terminal whose raw mode the learner's shell no longer holds.
+	// A caller that waits for its own printer goroutine still wants this:
+	// waiting proves the goroutine stopped, not that it stopped before the
+	// restore.
+	defer m.screen.close()
+
 	if cols, rows, err := m.getSize(fd); err == nil {
 		_ = m.resize(clampToUint16(rows), clampToUint16(cols))
 	}
@@ -321,10 +354,10 @@ func (m *Mux) Run(ctx context.Context) error {
 	stopResize := startResizeWatcher(m)
 	defer stopResize()
 
-	oscParser := NewParser(m.out, m.onOSCEvent)
+	oscParser := NewParser(&m.screen, m.onOSCEvent)
 
 	stdinDone := runRecovered(func() error {
-		_, err := io.Copy(m.pty, tabTap{r: m.in, seen: &m.tabSeen})
+		_, err := io.Copy(m.pty, stdinTap{r: m.in, tab: &m.tabSeen, typed: &m.typedSincePrompt})
 		return err
 	})
 	outDone := runRecovered(func() error {
@@ -370,13 +403,13 @@ func (m *Mux) Run(ctx context.Context) error {
 	case out := <-stdinDone:
 		drain()
 		repanic(out)
-		if out.err != nil && !errors.Is(out.err, io.EOF) {
+		if !sessionOver(out.err) {
 			runErr = fmt.Errorf("pty: copy stdin to sandbox: %w", out.err)
 		}
 	case out := <-outDone:
 		drain()
 		repanic(out)
-		if out.err != nil && !errors.Is(out.err, io.EOF) {
+		if !sessionOver(out.err) {
 			runErr = fmt.Errorf("pty: copy sandbox output to host: %w", out.err)
 		}
 	case sig := <-m.signalled:
@@ -461,6 +494,12 @@ func (m *Mux) onOSCEvent(ev Event) {
 		// command has already streamed through the tap.
 		m.pending = &CommandEvent{StartedAt: ev.At, UsedTab: m.tabSeen.Swap(false)}
 
+		// PS0 fires once the line has been read and the command is about to
+		// run, so from here until the next prompt the foreground program may
+		// be vim, less or htop, and nothing but that program may write to the
+		// screen. Interject queues instead.
+		m.screen.leavePrompt()
+
 	case CommandDone:
 		if m.pending == nil {
 			// A CommandDone with no matching PreExec is a dropped marker on
@@ -479,8 +518,23 @@ func (m *Mux) onOSCEvent(ev Event) {
 		m.emit(*m.pending)
 		m.pending = nil
 
-	case PromptStart, CommandStart:
-		// Not needed by Mux.
+	case PromptStart:
+		// OSC 133;A is emitted by PS1 before its first visible byte, so
+		// everything the parser forwards between here and CommandStart is
+		// the rendered prompt and nothing else. Capturing it is what lets
+		// Interject redraw a prompt it never has to guess the text of, and
+		// this is also the one moment where a queued message can be printed
+		// with no risk at all: the prompt about to be drawn lands underneath
+		// it either way.
+		m.screen.flushBeforePrompt()
+		m.screen.beginPrompt()
+
+	case CommandStart:
+		// OSC 133;B closes PS1: the prompt is fully on screen and readline
+		// is reading. The learner has typed nothing into this one yet, by
+		// definition, so this is where that window opens.
+		m.typedSincePrompt.Store(false)
+		m.screen.endPrompt()
 	}
 }
 
@@ -541,4 +595,42 @@ func (m *Mux) watchTerminatingSignals() (stop func()) {
 		signal.Stop(ch)
 		close(done)
 	}
+}
+
+// sessionOver reports whether err is one of the ways a pseudo terminal says
+// the session ended normally, rather than a fault worth showing a learner.
+//
+// A nil error is one of them, and so is io.EOF. The one that matters, and
+// the reason this is a function rather than an inline errors.Is, is EIO on a
+// read of the master.
+//
+// That is not a fault. On Linux, once the last file descriptor on the slave
+// side is closed, which is exactly what happens when the learner types
+// `exit`, a read on the master returns EIO rather than zero bytes. It is how
+// the kernel spells "the shell is gone" on that side of the pair, every PTY
+// library documents it, and Run's own select is a race between hearing it
+// that way and hearing it from Wait: whichever of the two goroutines
+// finishes first decides which branch runs. So the same clean exit was
+// reported as "Shell exited." or as
+//
+//	pty: copy sandbox output to host: read /dev/ptmx: input/output error
+//
+// depending on scheduling. A learner who had just passed a level and typed
+// `exit` got a ux.Fail telling them to run `reset`, and `play` never got to
+// ask whether they wanted the next level, because a failing level ends the
+// run.
+//
+// os.ErrClosed is included for the same reason at one remove: drain closes
+// the sandbox PTY handle to unblock the read side, and a read that loses
+// that race reports the closure rather than EIO.
+func sessionOver(err error) bool {
+	switch {
+	case err == nil,
+		errors.Is(err, io.EOF),
+		errors.Is(err, syscall.EIO),
+		errors.Is(err, os.ErrClosed),
+		errors.Is(err, fs.ErrClosed):
+		return true
+	}
+	return false
 }

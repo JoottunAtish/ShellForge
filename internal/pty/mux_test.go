@@ -141,6 +141,15 @@ func (f *fakePTY) resizesSnapshot() [][2]uint16 {
 	return out
 }
 
+// failRead makes every later read of the sandbox side fail with err, which
+// is how a real pseudo terminal master reports that the last slave closed:
+// on Linux that is EIO, not a zero-length read. Wait is left blocked, so
+// Run's select resolves through the output copy branch, which is the race
+// that made the EIO bug intermittent.
+func (f *fakePTY) failRead(err error) {
+	_ = f.pw.CloseWithError(err)
+}
+
 // feedOutput writes s to the read side, as if the sandboxed shell had
 // produced it. It is a separate helper, rather than a bare pw.Write, only so
 // every call site reads the same way.
@@ -436,7 +445,9 @@ func TestRun_RestoresTerminal(t *testing.T) {
 		p, mux, _, _ := newTestMux(t)
 		rec := &restoreRecorder{}
 		state := wireRecorder(mux, rec)
-		mux.out = panicWriter{v: "output boom"}
+		// screen, not a Mux field, is what the output copy goroutine writes
+		// through, so this is where a test swaps the host terminal writer.
+		mux.screen.open(panicWriter{v: "output boom"})
 
 		panicCh := make(chan any, 1)
 		go func() {
@@ -1030,5 +1041,59 @@ func TestMux_TabTap_TabInsideAFullScreenApplicationIsStillForwardedVerbatim(t *t
 
 	if got := p.writesSnapshot(); string(got) != string(payload) {
 		t.Errorf("fake PTY write side = %v, want %v byte for byte", got, payload)
+	}
+}
+
+// --- the shell exiting is not a fault ------------------------------------
+
+// TestSessionOver pins which errors mean "the shell is gone" rather than
+// "something broke". EIO is the one that matters: on Linux, a read of the
+// master after the last slave closes returns it, so a learner typing `exit`
+// produces it every time, and Run used to report it as a level failure
+// whenever the read side goroutine won its race with Wait.
+func TestSessionOver(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, true},
+		{"EOF", io.EOF, true},
+		{"EIO, what exit looks like on the master", syscall.EIO, true},
+		{"EIO wrapped by os.PathError, what a real read returns", &os.PathError{Op: "read", Path: "/dev/ptmx", Err: syscall.EIO}, true},
+		{"os.ErrClosed, what drain's own Close races into", os.ErrClosed, true},
+		{"a wrapped ErrClosed", fmt.Errorf("read: %w", os.ErrClosed), true},
+		{"a genuine fault", errors.New("disk on fire"), false},
+		{"EACCES is not a clean exit", syscall.EACCES, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sessionOver(tc.err); got != tc.want {
+				t.Errorf("sessionOver(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRunReportsNoErrorWhenTheMasterReturnsEIO is the regression test for
+// what a learner actually saw: they passed nav-03, typed `exit`, and got
+//
+//	Error: run the level "nav-03"
+//	  pty: copy sandbox output to host: read /dev/ptmx: input/output error
+//
+// with advice to run `reset`, when all that had happened was that their
+// shell exited. `play` treats a failed level as the end of the run, so it
+// also never asked whether they wanted the next one.
+func TestRunReportsNoErrorWhenTheMasterReturnsEIO(t *testing.T) {
+	p, mux, _, _ := newTestMux(t)
+
+	// Fail the read side the way a real master does once the last slave
+	// closes, and leave Wait blocked, so the outDone branch is the one that
+	// wins the select. That race is exactly what made this intermittent.
+	p.failRead(&os.PathError{Op: "read", Path: "/dev/ptmx", Err: syscall.EIO})
+
+	if err := runWithTimeout(t, mux, context.Background()); err != nil {
+		t.Errorf("Run reported %v for a shell that simply exited", err)
 	}
 }

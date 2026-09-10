@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -308,4 +309,185 @@ func remediationOf(t *testing.T, err error) string {
 		t.Fatalf("error is not a *ux.Error: %v", err)
 	}
 	return uxErr.Remediation
+}
+
+// --------------------------------------------------------------------------
+// Carrying on to the next level
+// --------------------------------------------------------------------------
+
+// TestReadLineLeavesTheRestOfTheStream is the assertion that makes carrying
+// on safe, and it is not a style preference.
+//
+// The stdin this reads from is not finished with: the very next thing to
+// read it is internal/pty, handing the learner's keystrokes to the next
+// level's shell. A bufio.Scanner reads ahead by up to its whole buffer, so a
+// learner who typed the answer and their first command in one go would lose
+// the command. readLine stops at the newline and leaves the rest where it
+// belongs.
+func TestReadLineLeavesTheRestOfTheStream(t *testing.T) {
+	in := strings.NewReader("y\nls -la\nexit\n")
+
+	line, ok := readLine(in)
+	if !ok || line != "y" {
+		t.Fatalf("readLine = %q, %v, want \"y\", true", line, ok)
+	}
+
+	rest, err := io.ReadAll(in)
+	if err != nil {
+		t.Fatalf("read the rest of the stream: %v", err)
+	}
+	if string(rest) != "ls -la\nexit\n" {
+		t.Errorf("readLine swallowed keystrokes meant for the next level's shell: %q left, want %q",
+			rest, "ls -la\nexit\n")
+	}
+}
+
+func TestReadLine(t *testing.T) {
+	cases := []struct {
+		name     string
+		in       string
+		wantLine string
+		wantOK   bool
+	}{
+		{"a plain answer", "n\n", "n", true},
+		{"an empty line", "\n", "", true},
+		{"a CRLF terminal", "y\r\n", "y", true},
+		{"no newline before EOF", "y", "y", true},
+		{"EOF with nothing typed", "", "", false},
+		{"surrounding spaces are left to the caller", "  y  \n", "  y  ", true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			line, ok := readLine(strings.NewReader(tc.in))
+			if line != tc.wantLine || ok != tc.wantOK {
+				t.Errorf("readLine(%q) = %q, %v, want %q, %v", tc.in, line, ok, tc.wantLine, tc.wantOK)
+			}
+		})
+	}
+}
+
+func TestOfferNextLevel(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"Enter carries on", "\n", true},
+		{"y carries on", "y\n", true},
+		{"yes carries on", "yes\n", true},
+		{"Y carries on", "Y\n", true},
+		{"n stops", "n\n", false},
+		{"no stops", "no\n", false},
+		{"anything unrecognized stops", "maybe later\n", false},
+		{"EOF stops", "", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out strings.Builder
+			got := offerNextLevel(strings.NewReader(tc.in), &out)
+			if got != tc.want {
+				t.Errorf("offerNextLevel(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+			if !strings.Contains(out.String(), "?") {
+				t.Errorf("no question was asked: %q", out.String())
+			}
+		})
+	}
+}
+
+// TestOfferNextLevelFailsClosedOnAnUnreadableAnswer pins the direction the
+// uncertainty falls in. Carrying on provisions a container and starts a
+// level; a learner whose answer could not be read did not ask for either.
+func TestOfferNextLevelFailsClosedOnAnUnreadableAnswer(t *testing.T) {
+	var out strings.Builder
+	if offerNextLevel(errReader{errors.New("stdin went away")}, &out) {
+		t.Error("an unreadable answer was taken as yes")
+	}
+	if offerNextLevel(nil, &out) {
+		t.Error("a nil reader was taken as yes")
+	}
+}
+
+// errReader is an io.Reader that only ever fails, standing in for a stdin
+// that has gone away underneath the question.
+type errReader struct{ err error }
+
+func (e errReader) Read([]byte) (int, error) { return 0, e.err }
+
+// TestCanAskRefusesANonTerminal is what keeps `play` behaving exactly as it
+// did before this existed when it is run from a script or in CI: a question
+// nobody can answer must not be asked, and must not be treated as answered.
+func TestCanAskRefusesANonTerminal(t *testing.T) {
+	if canAsk(nil) {
+		t.Error("canAsk said yes to a nil reader")
+	}
+	if canAsk(strings.NewReader("y\n")) {
+		t.Error("canAsk said yes to a reader that is not a terminal")
+	}
+
+	// A real *os.File that is not a terminal: the case a piped stdin
+	// actually produces, which a plain io.Reader does not exercise.
+	f, err := os.CreateTemp(t.TempDir(), "stdin")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	defer f.Close()
+	if canAsk(f) {
+		t.Error("canAsk said yes to a file that is not a terminal")
+	}
+}
+
+// TestPlayAsksBeforeProvisioningTheNextLevel pins the ordering that is the
+// whole Ctrl-C fix: the question is asked, and only then is the next level
+// resolved and provisioned. Asserted against the source, the way the two
+// ordering guarantees above it are, because observing it needs a Docker
+// daemon and a learner.
+func TestPlayAsksBeforeProvisioningTheNextLevel(t *testing.T) {
+	assertReturnsBefore(t, "cmd_play.go", "offerNextLevel(opts.In, out)", "levelID = \"\"")
+}
+
+// TestPlayNeverReadsAStdinItCannotAsk is the regression test for the review
+// finding on this PR: `canAsk` was consulted for the pass banner's wording
+// and then dropped, so the guard that decides whether to ask used the raw
+// "is this a resume" flag on its own. With a stdin that is not a terminal
+// the question was printed where nobody could answer it, and `readLine` took
+// a line of somebody else's input on the way past.
+//
+// Asserted against the source rather than by running a level, for the same
+// reason the two ordering guarantees above it are: observing it needs a
+// Docker daemon. What is pinned is that the decision is made once, so the
+// value handed to runLevel and the value guarding the question cannot drift
+// apart again.
+func TestPlayNeverReadsAStdinItCannotAsk(t *testing.T) {
+	src := readSource(t, "cmd_play.go")
+
+	if !strings.Contains(src, `advance := levelID == "" && canAsk(opts.In)`) {
+		t.Error("the advance decision no longer folds canAsk in, so the question can be asked where nobody can answer it")
+	}
+	if strings.Contains(src, "advance && canAsk(") {
+		t.Error("canAsk is being applied to one use of the advance decision and not the other, which is how the two drifted apart before")
+	}
+}
+
+// TestOfferNextLevelReadsExactlyOneLine is the other half of the same
+// finding. Even asked at the right moment, the question must take the answer
+// and nothing after it: the next thing to read this stdin is internal/pty,
+// handing keystrokes to the next level's shell.
+func TestOfferNextLevelReadsExactlyOneLine(t *testing.T) {
+	in := strings.NewReader("y\nls -la\n")
+	var out strings.Builder
+
+	if !offerNextLevel(in, &out) {
+		t.Fatal("offerNextLevel did not read the y")
+	}
+
+	rest, err := io.ReadAll(in)
+	if err != nil {
+		t.Fatalf("read the rest of the stream: %v", err)
+	}
+	if string(rest) != "ls -la\n" {
+		t.Errorf("offerNextLevel swallowed keystrokes meant for the next level's shell: %q left, want %q", rest, "ls -la\n")
+	}
 }
