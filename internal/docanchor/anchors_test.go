@@ -572,21 +572,34 @@ func moduleRoot(t *testing.T) string {
 	}
 }
 
-// headingSet answers whether any heading in docs/05-troubleshooting.md
-// mentions an anchor, matching the CI Docs job's own loose rule: a heading
-// of `## docker-daemon-down` satisfies an anchor of `daemon-down` too.
-// Diverging from the rule that actually decides whether the page has an
-// answer would be worse than matching it loosely.
+// headingSet answers whether docs/05-troubleshooting.md has a heading an
+// anchor actually resolves to.
+//
+// The question is deliberately the learner's rather than the old CI grep's.
+// ux.DocURL builds an exact fragment, the page URL then "#" then the anchor
+// verbatim, so a heading of `## docker-daemon-down` answers the anchor
+// `docker-daemon-down` and nothing else. An earlier revision matched a
+// substring, on the reasoning that diverging from the rule the CI Docs job
+// used would be worse than matching it loosely. That was the weakest
+// argument in this package: the Docs job's rule is the one this package
+// exists because it had been finding a single comment and reporting green,
+// so inheriting its tolerances inherits the wrong thing. Under a substring
+// match an anchor of `db-corrupt` passed on the strength of
+// `## progress-db-corrupt` and sent the learner to a fragment that resolves
+// to nothing.
 type headingSet struct {
 	headings []string
 }
 
-// hasAnchor reports whether anchor appears as a substring of any heading
-// line. The direction matters: it is the anchor found inside the heading,
-// never the much longer heading line found inside the short anchor.
+// hasAnchor reports whether any heading is exactly this anchor, once its
+// leading hashes and surrounding space are stripped.
+//
+// check-links.sh does not cover this: it checks relative links written in
+// Markdown, not a fragment emitted from Go, so an anchor that lands nowhere
+// is caught here or nowhere.
 func (h *headingSet) hasAnchor(anchor string) bool {
 	for _, heading := range h.headings {
-		if strings.Contains(heading, anchor) {
+		if strings.TrimSpace(strings.TrimLeft(heading, "#")) == anchor {
 			return true
 		}
 	}
@@ -1252,9 +1265,14 @@ func TestHeadingSetHasAnchor(t *testing.T) {
 		wantHas bool
 	}{
 		{"exact match", "## docker-daemon-down", "docker-daemon-down", true},
-		{"anchor is a substring of a longer heading", "## docker-daemon-down-extra", "docker-daemon-down", true},
+		{"a heading at any depth still matches", "#### docker-daemon-down", "docker-daemon-down", true},
+		// The regression pin for the substring hole. `db-corrupt` used to
+		// pass on the strength of `## progress-db-corrupt` and then resolve
+		// to nothing on the page.
+		{"a longer heading does not satisfy a shorter anchor", "## docker-daemon-down-extra", "docker-daemon-down", false},
+		{"a longer heading does not satisfy an anchor it merely contains", "## progress-db-corrupt", "db-corrupt", false},
 		{"no match", "## something-else", "docker-daemon-down", false},
-		{"heading longer than anchor in the other direction is not a match", "## db", "progress-db-corrupt", false},
+		{"heading shorter than the anchor is not a match", "## db", "progress-db-corrupt", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

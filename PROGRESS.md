@@ -6000,6 +6000,48 @@ Gates run here: `gofmt`, `go build ./...`, `go vet ./...`, `go test ./...`,
 `govulncheck` and `gosec` are not installed on this machine, there is no
 Docker daemon, and `pytest` is not installed so `scripts/tests` did not run.
 
+**Review of #160 found two real defects, both fixed on the branch.**
+
+The first is the better catch. `combinedOutput` was applied to
+`classifyFailure`'s fourth argument, the bytes it classifies from, and not
+to the second, the error the learner actually reads. Five of the six call
+sites built that message from `stderr` alone; only `ensureImage` had both,
+through `summarizeFailure`. Driving `Destroy` with the WSL stub message on
+stdout only, the learner got:
+
+```
+Error: remove the sandbox container
+  docker rm exited 1:
+```
+
+Classification and remediation were right, so nothing bare reached the
+terminal, but the diagnosis line was empty on a ticket titled "report the
+real Docker failure instead of a bare URL". An empty diagnosis is worse than
+the bare URL was. The branch's own argument, that a call site reading one
+stream is right by luck, had been applied to one argument and not the other.
+Fixed at all four remaining sites, with a regression test that drives
+`Destroy` rather than calling `classifyFailure` directly, so it pins the
+call site rather than a fixture.
+
+The second: `hasAnchor` was a substring test, so the gate could pass while
+the learner's link landed nowhere. `ux.DocURL` builds an exact fragment, and
+an anchor of `db-corrupt` passed on the strength of `## progress-db-corrupt`
+and then resolved to nothing on the page. `check-links.sh` does not cover
+it: it checks relative links written in Markdown, not a fragment emitted
+from Go. The doc comment had justified the looseness as matching the CI Docs
+job's rule, which is the rule this package exists because it had been
+finding one comment and reporting green. Now an exact match. All 27 live
+anchors already matched exactly, so nothing regressed, and the old hole is
+pinned as a regression case rather than asserted as behaviour.
+
+Also fixed, from a nit: `combinedOutput` joined the two streams with no
+separator, so an unterminated stdout glued its last line to stderr's first
+and could synthesise a phrase across the seam that neither stream contained,
+which `classifyFailure`'s substring predicates would have believed.
+
+Each fix was confirmed by reverting it and watching the new test go red
+first.
+
 **Carried, not closed.** #74's acceptance criteria include a manual
 reproduction with Docker Desktop's WSL integration switched off, pasted into
 the pull request. This environment has no Docker Desktop and no Windows, so

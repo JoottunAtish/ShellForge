@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -278,15 +279,93 @@ func TestClassifyFailureRegressionPins(t *testing.T) {
 // safe here, but the equivalent append(stdout, stderr...) would silently
 // corrupt a caller's stdout slice if it happened to have spare capacity.
 func TestCombinedOutput(t *testing.T) {
-	stdout := []byte("out\n")
-	stderr := []byte("err\n")
-
-	got := combinedOutput(stdout, stderr)
-	if string(got) != "out\nerr\n" {
-		t.Errorf("combinedOutput = %q, want %q", got, "out\nerr\n")
+	cases := []struct {
+		name           string
+		stdout, stderr string
+		want           string
+	}{
+		{"both newline terminated", "out\n", "err\n", "out\nerr\n"},
+		// The seam. Without a separator the last line of stdout is glued to
+		// the first line of stderr, which can synthesise a phrase across the
+		// join that neither stream contained. classifyFailure's predicates
+		// are substring tests and would believe it.
+		{"stdout not newline terminated", "out", "err\n", "out\nerr\n"},
+		{"empty stdout gains no separator", "", "err\n", "err\n"},
+		{"empty stderr", "out\n", "", "out\n"},
+		{"both empty", "", "", ""},
+		{"stdout only, unterminated", "out", "", "out\n"},
 	}
-	if string(stdout) != "out\n" || string(stderr) != "err\n" {
-		t.Errorf("combinedOutput mutated an input: stdout=%q stderr=%q", stdout, stderr)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, stderr := []byte(tc.stdout), []byte(tc.stderr)
+			got := combinedOutput(stdout, stderr)
+			if string(got) != tc.want {
+				t.Errorf("combinedOutput(%q, %q) = %q, want %q", tc.stdout, tc.stderr, got, tc.want)
+			}
+			if string(stdout) != tc.stdout || string(stderr) != tc.stderr {
+				t.Errorf("combinedOutput mutated an input: stdout=%q stderr=%q", stdout, stderr)
+			}
+		})
+	}
+}
+
+// TestCombinedOutputDoesNotSynthesiseAcrossTheSeam is the case the
+// separator exists for. Neither stream contains the WSL wrapper phrase;
+// joined without a separator they would, and classifyFailure's predicates
+// are substring tests that would believe it.
+func TestCombinedOutputDoesNotSynthesiseAcrossTheSeam(t *testing.T) {
+	const phrase = "The command 'docker' could not be found in this WSL 2 distro"
+
+	stdout := []byte("checking: The command 'docker'")
+	stderr := []byte(" could not be found in this WSL 2 distro\n")
+
+	if bytes.Contains(stdout, []byte(phrase)) || bytes.Contains(stderr, []byte(phrase)) {
+		t.Fatal("the fixture is wrong: one stream already carries the whole phrase, so the seam is not what is under test")
+	}
+	if got := combinedOutput(stdout, stderr); bytes.Contains(got, []byte(phrase)) {
+		t.Errorf("combinedOutput spliced a phrase across the seam that neither stream contained: %q", got)
+	}
+}
+
+// TestDestroyReportsTheRealFailureNotAnEmptyDiagnosis is the review
+// finding on #160: classification was reading both streams while the
+// message the learner reads was still built from stderr alone. On this
+// path that produced "docker rm exited 1: " with nothing after the colon,
+// on a ticket titled "report the real Docker failure instead of a bare
+// URL". An empty diagnosis is a worse outcome than the bare URL was.
+//
+// The path is reachable without ever touching ensureImage, which is the
+// only site that already had summarizeFailure: `sandbox destroy`, and any
+// Start on a machine whose image is already cached.
+func TestDestroyReportsTheRealFailureNotAnEmptyDiagnosis(t *testing.T) {
+	fake := &fakeRunner{results: []fakeResult{
+		// docker inspect: the container exists, is running, and is ours.
+		{stdout: []byte(`true|1|sha256:img|["bash","-c","x"]`), code: 0},
+		// docker rm: fails with the WSL wrapper message on stdout ONLY.
+		{stdout: []byte(wslWrapperMessage), code: 1},
+	}}
+	rt := &dockerRuntime{name: "shellforge-sandbox", image: "shellforge-sandbox", run: fake}
+
+	err := rt.Destroy(context.Background())
+	if err == nil {
+		t.Fatal("Destroy succeeded against a failing docker rm")
+	}
+
+	var uxErr *ux.Error
+	if !errors.As(err, &uxErr) {
+		t.Fatalf("Destroy returned a bare error, so a learner sees no remediation: %v", err)
+	}
+	if uxErr.DocAnchor != "docker-wsl-integration-off" {
+		t.Errorf("DocAnchor = %q, want docker-wsl-integration-off", uxErr.DocAnchor)
+	}
+
+	// The point of the test: the diagnosis line names what docker said.
+	const want = "The command 'docker' could not be found in this WSL 2 distro"
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("the learner's error does not carry docker's own diagnosis.\ngot:  %v\nwant it to contain: %q", err, want)
+	}
+	if strings.Contains(err.Error(), "exited 1: \n") || strings.HasSuffix(err.Error(), "exited 1: ") {
+		t.Errorf("the diagnosis line is empty: %v", err)
 	}
 }
 

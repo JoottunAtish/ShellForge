@@ -265,7 +265,7 @@ func (rt *dockerRuntime) ensureContainerRunning(ctx context.Context, image strin
 		return rt.classifyFailure(ctx, "start the sandbox container", err, combinedOutput(stdout, stderr))
 	}
 	if code != 0 {
-		return rt.classifyFailure(ctx, "start the sandbox container", fmt.Errorf("docker start exited %d: %s", code, stderr), combinedOutput(stdout, stderr))
+		return rt.classifyFailure(ctx, "start the sandbox container", fmt.Errorf("docker start exited %d: %s", code, summarizeFailure(stdout, stderr)), combinedOutput(stdout, stderr))
 	}
 	return nil
 }
@@ -313,7 +313,7 @@ func (rt *dockerRuntime) removeContainer(ctx context.Context) error {
 		return rt.classifyFailure(ctx, "replace the stale sandbox container", err, combinedOutput(stdout, stderr))
 	}
 	if code != 0 {
-		return rt.classifyFailure(ctx, "replace the stale sandbox container", fmt.Errorf("docker rm exited %d: %s", code, stderr), combinedOutput(stdout, stderr))
+		return rt.classifyFailure(ctx, "replace the stale sandbox container", fmt.Errorf("docker rm exited %d: %s", code, summarizeFailure(stdout, stderr)), combinedOutput(stdout, stderr))
 	}
 	return nil
 }
@@ -351,7 +351,7 @@ func (rt *dockerRuntime) createContainer(ctx context.Context, image string) erro
 		return rt.classifyFailure(ctx, "start the sandbox container", err, combinedOutput(stdout, stderr))
 	}
 	if code != 0 {
-		return rt.classifyFailure(ctx, "start the sandbox container", fmt.Errorf("docker run exited %d: %s", code, stderr), combinedOutput(stdout, stderr))
+		return rt.classifyFailure(ctx, "start the sandbox container", fmt.Errorf("docker run exited %d: %s", code, summarizeFailure(stdout, stderr)), combinedOutput(stdout, stderr))
 	}
 	return nil
 }
@@ -461,7 +461,7 @@ func (rt *dockerRuntime) Destroy(ctx context.Context) error {
 		return rt.classifyFailure(ctx, "remove the sandbox container", err, combinedOutput(stdout, stderr))
 	}
 	if code != 0 {
-		return rt.classifyFailure(ctx, "remove the sandbox container", fmt.Errorf("docker rm exited %d: %s", code, stderr), combinedOutput(stdout, stderr))
+		return rt.classifyFailure(ctx, "remove the sandbox container", fmt.Errorf("docker rm exited %d: %s", code, summarizeFailure(stdout, stderr)), combinedOutput(stdout, stderr))
 	}
 	return nil
 }
@@ -509,15 +509,26 @@ func (rt *dockerRuntime) Capabilities() runtime.Caps {
 	}
 }
 
-// combinedOutput concatenates stdout and stderr for classifyFailure, which
-// must not assume which stream carries docker's diagnostic message.
+// combinedOutput joins stdout and stderr for classifyFailure, which must
+// not assume which stream carries docker's diagnostic message.
 // summarizeFailure documents the same split for BuildKit, which writes to
 // stdout, against the classic builder, which writes to stderr; the WSL
 // stub message this function keys on has no established stream of its own
 // either, only a reproduction that did not distinguish the two, so
 // classification reads both rather than guess.
+//
+// A newline is inserted when stdout is non-empty and does not already end
+// in one. Without it the last line of stdout is glued to the first line of
+// stderr, which can synthesise across the seam a phrase that neither stream
+// contained, and classifyFailure's predicates are substring tests that
+// would believe it. The current two messages are long enough to make that
+// unlikely rather than impossible, and a newline costs nothing.
 func combinedOutput(stdout, stderr []byte) []byte {
-	return append(append([]byte{}, stdout...), stderr...)
+	out := append([]byte{}, stdout...)
+	if len(out) > 0 && out[len(out)-1] != '\n' {
+		out = append(out, '\n')
+	}
+	return append(out, stderr...)
 }
 
 // classifyFailure turns a raw docker failure into a ux.Fail carrying a
