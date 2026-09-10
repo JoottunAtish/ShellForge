@@ -52,6 +52,23 @@ func TestStartResizeWatcher_UnchangedSizeDoesNotResize(t *testing.T) {
 	}
 }
 
+// TestStartResizeWatcher_StopIsIdempotent pins the half of the stop
+// contract that has nothing to do with timing. Mux.restoreOnce already
+// establishes that a teardown in this package may be called twice; stop
+// closed a channel unconditionally, which panics the second time.
+//
+// Its unix counterpart is in raw_unix_test.go, so the two builds cannot
+// drift on this again (issue #141).
+func TestStartResizeWatcher_StopIsIdempotent(t *testing.T) {
+	_, mux, _, _ := newTestMux(t)
+	mux.resizePollInterval = pollInterval
+
+	stop := startResizeWatcher(mux)
+	stop()
+	stop()
+	stop()
+}
+
 func TestStartResizeWatcher_StopEndsTheGoroutine(t *testing.T) {
 	p, mux, _, _ := newTestMux(t)
 	mux.resizePollInterval = pollInterval
@@ -72,6 +89,11 @@ func TestStartResizeWatcher_StopEndsTheGoroutine(t *testing.T) {
 	})
 	stop()
 
+	// stop waits for the watcher goroutine to exit, so this count is
+	// already final and the sleep below is not what makes the assertion
+	// hold. It is kept as an amplifier: against a stop that only closed a
+	// channel and returned, it gives the goroutine the ticks it needs to
+	// prove the point loudly rather than one time in ten.
 	after := len(p.resizesSnapshot())
 	time.Sleep(20 * pollInterval)
 	if got := len(p.resizesSnapshot()); got != after {

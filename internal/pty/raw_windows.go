@@ -2,7 +2,10 @@
 
 package pty
 
-import "time"
+import (
+	"sync"
+	"time"
+)
 
 // defaultResizePollInterval is how often startResizeWatcher checks the
 // console size when Mux has not overridden resizePollInterval for a test.
@@ -32,6 +35,18 @@ const defaultResizePollInterval = 250 * time.Millisecond
 // without a real console, and keeps GetConsoleScreenBufferInfo out of this
 // file entirely: on Windows, term.GetSize, m.getSize's production value,
 // already calls it.
+//
+// stop returns only once the goroutine below has exited, so no m.resize
+// call can still be in flight when it does. Closing done and returning was
+// not enough: a tick already selected leaves the goroutine on its way into
+// m.resize, and the count of resizes could therefore still grow after stop
+// had returned. That is issue #141, seen as an intermittently red
+// Test (windows-latest) under -race, which blocked every merge whenever it
+// landed on the losing side of the race.
+//
+// stop is safe to call more than once, matching Mux.restoreOnce's
+// discipline, and every caller waits for the exit rather than only the
+// first.
 func startResizeWatcher(m *Mux) (stop func()) {
 	interval := m.resizePollInterval
 	if interval <= 0 {
@@ -44,7 +59,11 @@ func startResizeWatcher(m *Mux) (stop func()) {
 	lastCols, lastRows, _ := m.getSize(m.fd)
 
 	done := make(chan struct{})
+
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -64,7 +83,10 @@ func startResizeWatcher(m *Mux) (stop func()) {
 			}
 		}
 	}()
+
+	var stopOnce sync.Once
 	return func() {
-		close(done)
+		stopOnce.Do(func() { close(done) })
+		wg.Wait()
 	}
 }
