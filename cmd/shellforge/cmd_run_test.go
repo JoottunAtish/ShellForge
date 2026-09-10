@@ -7,6 +7,7 @@ import (
 	"io"
 	goruntime "runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -464,16 +465,20 @@ func (f *fakeVerifier) Run(ctx context.Context, checks []verify.Check, env verif
 // existing path.
 func TestPrepareControlChannelRecreatesTheFifos(t *testing.T) {
 	s := &fakeSession{}
-	const req, res = "/home/learner/.shellforge/control.req", "/home/learner/.shellforge/control.res"
+	const dir = "/home/learner/.shellforge"
+	const req, res = dir + "/control.req", dir + "/control.res"
 
-	if err := prepareControlChannel(context.Background(), s, req, res); err != nil {
+	if err := prepareControlChannel(context.Background(), s, dir, req, res); err != nil {
 		t.Fatalf("prepareControlChannel: %v", err)
 	}
 	if len(s.argvs) != 2 {
 		t.Fatalf("prepareControlChannel made %d calls, want 2: %v", len(s.argvs), s.argvs)
 	}
 
-	wantRemove := []string{"rm", "-f", "--", req, res}
+	// The advance sentinel is removed with them. A stale one, left by a
+	// level whose shell ended before it read the file, would make the next
+	// level end the moment the learner typed `next`.
+	wantRemove := []string{"rm", "-f", "--", req, res, dir + "/" + advanceSentinel}
 	wantCreate := []string{"mkfifo", "--", req, res}
 	if got := strings.Join(s.argvs[0], " "); got != strings.Join(wantRemove, " ") {
 		t.Errorf("first call = %q, want %q", got, strings.Join(wantRemove, " "))
@@ -492,7 +497,7 @@ func TestPrepareControlChannelFailsOnANonZeroExit(t *testing.T) {
 			return runtime.ExecResult{}, nil
 		},
 	}
-	err := prepareControlChannel(context.Background(), s, "/a/req", "/a/res")
+	err := prepareControlChannel(context.Background(), s, "/a", "/a/req", "/a/res")
 	if err == nil {
 		t.Fatal("prepareControlChannel reported success even though mkfifo exited non-zero")
 	}
@@ -813,10 +818,10 @@ func TestPrintLiveTransitionsWritesEachBatchAndStopsOnClose(t *testing.T) {
 	}
 	close(transitions)
 
-	var buf bytes.Buffer
+	var rec recordingInterjector
 	done := make(chan struct{})
 	go func() {
-		printLiveTransitions(context.Background(), transitions, &buf, false)
+		printLiveTransitions(context.Background(), transitions, &rec, false)
 		close(done)
 	}()
 
@@ -826,9 +831,31 @@ func TestPrintLiveTransitionsWritesEachBatchAndStopsOnClose(t *testing.T) {
 		t.Fatal("printLiveTransitions did not return when its channel closed")
 	}
 
-	if !strings.Contains(buf.String(), "quest/answer.txt holds the folder you are standing in") {
-		t.Errorf("nothing was printed for the transition: %q", buf.String())
+	if !strings.Contains(rec.joined(), "quest/answer.txt holds the folder you are standing in") {
+		t.Errorf("nothing was printed for the transition: %q", rec.joined())
 	}
+}
+
+// recordingInterjector stands in for pty.Mux in the printer's own tests. The
+// printer's whole job is now deciding WHAT to hand Interject and when to
+// stop, so what it hands over is what these tests assert on; where and when
+// those bytes reach the terminal is internal/pty's contract and is tested
+// there.
+type recordingInterjector struct {
+	mu   sync.Mutex
+	msgs []string
+}
+
+func (r *recordingInterjector) Interject(msg string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.msgs = append(r.msgs, msg)
+}
+
+func (r *recordingInterjector) joined() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return strings.Join(r.msgs, "")
 }
 
 // TestPrintLiveTransitionsStopsOnContextCancellation covers the disabled
@@ -840,7 +867,7 @@ func TestPrintLiveTransitionsStopsOnContextCancellation(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		printLiveTransitions(ctx, transitions, io.Discard, false)
+		printLiveTransitions(ctx, transitions, &recordingInterjector{}, false)
 		close(done)
 	}()
 
@@ -884,3 +911,98 @@ func (f *fakeSession) PullFile(_ context.Context, _ string) ([]byte, error) {
 }
 
 func (f *fakeSession) Close() error { return nil }
+
+// --------------------------------------------------------------------------
+// The briefing reprinted after a clear
+// --------------------------------------------------------------------------
+
+// briefingPlayable is a playable whose PrintBriefing writes a real level's
+// briefing through the real renderer, which is what makes the assertions
+// below about CRLF and the leading blank line worth anything.
+type briefingPlayable struct {
+	plainPlayable
+	level *content.Level
+}
+
+func (b briefingPlayable) PrintBriefing(w io.Writer, color bool) {
+	printBriefing(w, b.level, defaultBriefWidth, color)
+}
+
+func TestClearBannerRestoresWhatTheBriefingShowed(t *testing.T) {
+	lvl := briefingPlayable{level: &content.Level{
+		ID:      "nav-01",
+		Title:   "First Contact",
+		Version: 1,
+		Briefing: "## 08:15, Monday. Your first day.\n\n" +
+			"There is a folder called `quest` in your home directory.\n",
+		Objectives: []content.Objective{
+			{ID: "location", Text: "quest/answer.txt holds the folder you are standing in"},
+			{ID: "used-pwd", Text: "Found it with a single command", Optional: true},
+		},
+	}}
+
+	got := clearBanner(lvl, false)
+
+	// Everything the learner lost has to be in it: the title, the prose, and
+	// the checklist, which is the only place a level's deliverable filenames
+	// appear when the briefing does not name them.
+	for _, want := range []string{
+		"First Contact",
+		"first day",
+		"quest/answer.txt holds the folder you are standing in",
+		"Found it with a single command (bonus)",
+		"Type `check`",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the reprinted briefing is missing %q:\n%q", want, got)
+		}
+	}
+}
+
+// TestClearBannerIsCRLFTerminated pins the one mechanical requirement
+// internal/pty puts on this text. It is written into a terminal held in raw
+// mode, where a bare LF moves down without returning the carriage, so a
+// briefing that kept its plain newlines would come out as a staircase down
+// the right of the screen.
+func TestClearBannerIsCRLFTerminated(t *testing.T) {
+	lvl := briefingPlayable{level: &content.Level{
+		ID: "nav-01", Title: "First Contact", Version: 1,
+		Briefing:   "Line one.\n\nLine two.\n",
+		Objectives: []content.Objective{{ID: "a", Text: "do the thing"}},
+	}}
+
+	got := clearBanner(lvl, false)
+	for i := 0; i < len(got); i++ {
+		if got[i] == '\n' && (i == 0 || got[i-1] != '\r') {
+			t.Fatalf("byte %d is an LF with no CR before it:\n%q", i, got)
+		}
+	}
+}
+
+// TestClearBannerStartsAtTheTopOfTheScreen pins the other difference from the
+// pre-attach briefing. That one opens with a blank line because it prints
+// partway down a screen that already has output on it; this one is written to
+// a screen that was just erased, with the cursor at the top left, where a
+// leading blank line is just a wasted row.
+func TestClearBannerStartsAtTheTopOfTheScreen(t *testing.T) {
+	lvl := briefingPlayable{level: &content.Level{
+		ID: "nav-01", Title: "First Contact", Version: 1,
+		Briefing:   "Line one.\n",
+		Objectives: []content.Objective{{ID: "a", Text: "do the thing"}},
+	}}
+
+	got := clearBanner(lvl, false)
+	if strings.HasPrefix(got, "\r\n") || strings.HasPrefix(got, "\n") {
+		t.Errorf("the reprinted briefing opens with a blank line:\n%q", got)
+	}
+}
+
+// TestClearBannerIsEmptyWithNoBriefing keeps the off switch honest: a
+// playable with nothing to reprint must hand internal/pty an empty string,
+// which turns the behaviour off rather than printing an empty frame after
+// every clear.
+func TestClearBannerIsEmptyWithNoBriefing(t *testing.T) {
+	if got := clearBanner(plainPlayable{}, false); got != "" {
+		t.Errorf("clearBanner on a playable with no briefing = %q, want empty", got)
+	}
+}

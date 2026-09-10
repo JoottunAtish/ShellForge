@@ -5,7 +5,7 @@ push, get CI green, and add a line here. No silent carry-over. If an exit criter
 is unchecked the next morning, it either gets done before new work or it gets
 formally cut.
 
-**Current state: the campaign is complete at 25 levels and Day 4's game core is in. `shellforge play` is the command a learner types: it opens the progress database, resolves the next unlocked level from the curriculum DAG, says which level it chose and why BEFORE provisioning anything, plays it through the Session Orchestrator, scores it, and prints a pass banner with the arithmetic shown line by line. Inside a level, `check` scores, `hint` quotes its price and then spends it on a second confirming request, and `reset` names what it would delete and then rebuilds. `skip` records a level skipped so its dependants unlock, `stats` prints XP, rank, per-act progress and all fourteen achievements with the locked ones shown as locked, and `map` is unchanged. Fourteen achievements run as bus subscribers with no orchestrator involvement. Day 5 wrote the sixteen outstanding levels, `files-05` through `boss-final`, with their assets, and all 25 now pass the golden contract against a real Docker daemon. That first real run was worth what it cost: it found a stray process outliving proc-01's teardown, a sandbox container being reused three weeks after the image under it had changed, a top rank 20 XP above what every level in the pack awards together, a world-writable `/etc/wsl.conf` in any image built through WSL, and a curriculum that demanded output redirection in level 1 and did not teach it until level 6. Still NOT done: nobody has played the campaign start to finish in one sitting, which is a Day 5 exit criterion and is carried rather than cut. Windows still plays from inside WSL.**
+**Current state: the campaign is complete at 25 levels and Day 4's game core is in. `shellforge play` is the command a learner types: it opens the progress database, resolves the next unlocked level from the curriculum DAG, says which level it chose and why BEFORE provisioning anything, plays it through the Session Orchestrator, scores it, and prints a pass banner with the arithmetic shown line by line. Inside a level, `check` scores, `hint` quotes its price and then spends it on a second confirming request, and `reset` names what it would delete and then rebuilds. `skip` records a level skipped so its dependants unlock, `stats` prints XP, rank, per-act progress and all fourteen achievements with the locked ones shown as locked, and `map` is unchanged. Fourteen achievements run as bus subscribers with no orchestrator involvement. Day 5 wrote the sixteen outstanding levels, `files-05` through `boss-final`, with their assets, and all 25 now pass the golden contract against a real Docker daemon. That first real run was worth what it cost: it found a stray process outliving proc-01's teardown, a sandbox container being reused three weeks after the image under it had changed, a top rank 20 XP above what every level in the pack awards together, a world-writable `/etc/wsl.conf` in any image built through WSL, and a curriculum that demanded output redirection in level 1 and did not teach it until level 6. Still NOT done: nobody has played the campaign start to finish in one sitting, which is a Day 5 exit criterion and is carried rather than cut. The first real play of nav-01 immediately paid for itself: it found that `Journal.SetLevel` had no production caller, so every `command_matched` bonus in the pack was unreachable, and that a live objective tick left the learner staring at a prompt that had scrolled out of reach. It also found that `clear` wipes the quest briefing beyond recovery, scrollback included, and that a learner who passes a level is told their score and nothing about how to reach the next one. A sixth turned up on the way out: `exit` reported a level failure, because a read of the pseudo terminal master returns EIO once the shell is gone and nothing treated that as the clean exit it is. All are fixed, `play` now carries on to the next level once one is passed, and `next` typed at the prompt takes the learner there itself: see the Day 6 follow-ups at the bottom. Windows still plays from inside WSL.**
 
 ---
 ---
@@ -5692,3 +5692,375 @@ When behind, cut in this order:
 
 A game with 12 levels that installs cleanly and cannot hurt anyone beats a game with
 25 levels that strands a beginner at step three.
+
+---
+
+### Day 6 follow-up, 2026-09-08: the journal reaches the checks, and a tick leaves a prompt behind
+
+Two defects found by playing nav-01 rather than by any test. Both were
+invisible to the golden contract, and the reason each was invisible is worth
+as much as the fix.
+
+**Every `command_matched` bonus in the pack was unreachable.**
+`Journal.SetLevel` had no production caller. Nothing but two tests in
+`internal/journal` had ever named it, and `Commands` answers `scope.Level`
+with nothing at all until it has been called, deliberately, because the
+newest row in the `events` table can belong to a different level than the
+one being verified. So `buildLevel` handed `game.NewSession` a bare
+`journal.New(st)`, every `scope: level` journal query came back empty with
+`errNoLevelSet` recorded on `Err()`, and the fifteen journal checks across
+fourteen levels split two ways: every `command_matched` failed however the
+learner had solved the level, and every `command_not_matched` passed
+vacuously. A learner who solved nav-01 with `pwd > quest/answer.txt` earned
+the objective and was told they had not used a single command to find it.
+
+`cmd/shellforge/cmd_run.go` now builds that journal through `levelJournal`,
+which reads the new `Journal.LastEventID` and calls `SetLevel` with it. The
+boundary is read while the level is being assembled, the last moment before
+that attempt can record anything, so every row already in the table belongs
+to an earlier level or an earlier attempt and every row after it belongs to
+this one. A failed read degrades to zero rather than surfacing: nothing the
+learner could do would fix it, a journal read is never allowed to decide
+pass or fail, and zero is the generous direction, since it can only award a
+bonus already earned on an earlier attempt, never withhold one earned on
+this one.
+
+Why the golden contract was blind to it: `author test` supplies its own
+`solutionJournal`, built from the solution text, exactly so a journal check
+is exercised there. That was the right call in #154 and it stays. It just
+means the harness never touches the wiring that was missing, and the fix is
+therefore pinned twice, once in `internal/journal` on the boundary itself
+and once in `cmd/shellforge` on the wiring, through `verify.JournalReader`
+rather than the concrete type, because what broke was what a check could
+see.
+
+**A live tick left the learner looking at a hung terminal.** The live
+printer wrote to `os.Stdout` beside the multiplexer's own copy loop with
+nothing ordering the two, and by the time a pass finished, 750ms of debounce
+plus 90ms to 1.5s of verification later, bash had already drawn its next
+prompt. The tick landed under it, the prompt scrolled out of reach, and the
+cursor sat on a blank line. Pressing Enter was the only way to get a prompt
+back, and a learner who had just solved their first level did exactly that.
+
+The fix is not keystroke injection. The shell is real bash, the foreground
+program might be `vim`, and a stray `\C-x\C-l` there decrements the number
+under the cursor. `internal/pty` gains a `screen` type that owns every byte
+written to the host terminal, and `Mux.Interject`, which writes only at a
+moment when writing is provably safe:
+
+- The shell is idle at a prompt (between OSC 133;B and the next OSC 133;C)
+  and the learner has typed nothing into it. Write the message, then reprint
+  the prompt underneath. The prompt is not guessed at: the bytes between OSC
+  133;A and OSC 133;B are the rendered prompt by construction, so `screen`
+  captures them as the parser forwards them and replays them verbatim.
+  Reprinting rather than moving the cursor is what makes this correct with
+  the prompt on the last row of the screen, where inserting a line above it
+  would push it off the bottom.
+- Anything else: a command is running, the learner is mid-line, no prompt
+  has been captured yet. Queue it, and flush at the next OSC 133;A,
+  immediately before the shell draws its prompt, so the message lands above
+  it with no reprint needed.
+
+`Mux.typedSincePrompt` answers the mid-line question, fed by the stdin tap
+that already existed for `UsedTab` and cleared at OSC 133;B. The remaining
+race with the learner's own fingers is benign in the only direction it can
+go: a keystroke already echoed to the screen was seen by the tap first, so
+the flag is already set, and one not yet echoed arrives after the reprinted
+prompt, which is where it belongs.
+
+Both bounds are set because the learner owns the shell that emits the
+markers: a prompt past 4096 bytes is forgotten rather than half-reprinted,
+and past 16 queued messages the oldest is dropped, since the newest
+description of an objective is the true one. A forged OSC 133;B, which is a
+real Act VI scenario, promotes nothing: the bytes before a marker closing a
+window nothing opened are command output, not a prompt.
+
+`Mux` no longer holds its own `out` field. `screen` is the single writer,
+set at construction rather than in `Run` so that a tick arriving before
+`Run` starts is queued rather than dropped, and a test that wants to swap
+the host writer calls `mux.screen.open`. The assertion this mechanism could
+not be allowed to break has its own test in `interject_test.go`: the
+forwarded stream must come out byte for byte, escape sequences included,
+because capture reads those bytes on their way past and `vim` depends on
+that stream arriving literally, not approximately, unmodified.
+
+Still open, and recorded as `TODO(v0.2)` on `screen`: the queued path can
+still make a learner wait for their next prompt to see a tick they earned a
+minute ago. Printing above a line the learner is typing into means owning
+the screen, which is the TUI `CLAUDE.md` cuts for v0.1.
+
+---
+
+### Day 6 follow-up, 2026-09-08: `clear` no longer takes the quest with it
+
+Third defect from the same play session. The briefing is printed once, on the
+host, before the shell is attached, so it lives in the terminal's scrollback
+and nowhere else. `clear` erases the scrollback along with the display
+(terminfo's `clear` is `ESC [ H`, `ESC [ 2 J`, `ESC [ 3 J`, and the third
+one is the scrollback), so scrolling up does not find it either. A learner
+three commands into a level who has forgotten which file they were asked to
+write had nothing left to read.
+
+There was already an escape hatch, the `brief` shim, and it had been there
+since the control channel landed. Nobody could find it: the checklist footer
+says "Type `check` when you think you have it. Type `exit` to leave." and
+has never mentioned `brief` or `hint`. An affordance nobody is told about is
+not an affordance.
+
+`pty.Mux.SetClearBanner` takes an opaque string and reprints it immediately
+above the next prompt whenever the learner clears their screen, through the
+same queue-and-flush-at-OSC-133;A path the live objective ticks use.
+`cmd/shellforge`'s `clearBanner` renders it by calling the same
+`PrintBriefing` the pre-attach screen calls, so the two cannot drift: what
+comes back is what was there, minus the leading blank line (the cursor is at
+the top left of a screen that was just erased) and run through `crlf`
+(internal/pty holds the terminal in raw mode by then).
+
+**Telling a real clear from vim's is the whole problem**, and the alternate
+screen buffer is the answer. `vim`, `less`, `man` and `htop` all switch to
+the alternate buffer, erase that, and switch back on exit, which is why
+quitting one restores the screen that was underneath it. `clear`, and
+readline's own Ctrl-L, erase the primary screen. So `csi.go` scans the
+forwarded byte stream for an erase-display outside the alternate buffer and
+nothing else. Without that distinction the feature would be unusable:
+nav-04 asks the learner to run `man ls`, and a briefing reprinted on every
+repaint of a pager would be unreadable noise.
+
+`csiScanner` is a streaming state machine for the same reason the OSC parser
+is one, since an escape sequence split across two `Read` calls is the normal
+case rather than the exotic one, and it is a passive observer: it reads the
+bytes on their way past and never consumes, holds, reorders or alters one,
+because the OSC parser upstream has already promised the terminal gets
+everything but this project's own markers unmodified. In `stateNormal` it
+memchrs to the next ESC rather than stepping a byte at a time, because this
+runs over every byte a vim session redraws.
+
+The briefing prints above any queued objective tick, deliberately: the
+reprint shows every box unchecked the way it did at the start of the level,
+so a tick printed above it would be contradicted by the checklist
+underneath.
+
+Known and accepted: an ordinary `clear` at the prompt works because
+readline redraws PS1 in full, OSC 133 markers included, so the prompt
+boundary the flush hangs off arrives either way. A program that clears the
+primary screen without using the alternate buffer, `watch` for instance,
+also brings the briefing back when it exits. That is a nicety rather than a
+misfire, and nothing in the shipped pack runs one.
+
+---
+
+### Day 6 follow-up, 2026-09-08: a learner who passes a level is no longer stranded
+
+Fourth defect from the same play session, and the one that actually stopped
+somebody playing. The pass banner ended on the XP total and said nothing
+about how to reach the next level. The learner typed `next`, got
+`bash: next: command not found`, typed `shellforge next`, got
+`bash: shellforge: command not found`, and stopped there.
+
+Both errors were correct. `play` finishes one level and returns to the host
+shell rather than provisioning the next, which cmd_play.go records as a
+decision rather than an omission ("auto-advancing is a bigger interaction
+decision than it looks: it makes Ctrl-C ambiguous"). And `shellforge` is a
+program on the learner's own computer that the sandbox cannot reach and must
+never be able to reach: that is non-negotiable 2, not a gap. What was
+missing was anybody saying so.
+
+Three changes, none of them to how the game advances:
+
+- The pass banner now ends with a `nextStep` block: the id and title of the
+  level that comes next, then how to start it. It goes last, after the score
+  arithmetic and the rank line, because it is the one thing the learner has
+  to act on and a line above the arithmetic is a line they scroll past.
+  `gameResponder.nextStep` works it out by the same route `shellforge play`
+  takes, reading the recorded level states, resolving the curriculum and
+  asking `game.Next`, and it runs after `Orchestrator.Check` has already
+  recorded this level as passed, so the answer is genuinely the next one.
+- `next` is a real verb now, wired through the control channel like `check`,
+  `hint`, `brief` and `reset`, with its own shim in `images/bin`. It answers
+  the question at any point in the level rather than only in the seconds
+  after passing, because the banner scrolls away like everything else does.
+- `docs/03-quickstart.md`'s in-sandbox command table lists `next` and
+  `exit`. `exit` was missing from it too, which is its own small
+  indictment.
+
+**Every wording names `exit` before it names `shellforge`**, and a table
+test pins that ordering across all three cases (a named next level, a failed
+lookup, a finished campaign). Advice that names the host command first earns
+the learner the same "command not found" they already had.
+
+Every lookup failure degrades to the generic wording rather than surfacing.
+A learner who has just passed a level must not be handed an error instead of
+their score because a store read went wrong, and "type `exit`, then run
+`shellforge play`" is true whether or not the next level could be named.
+That is the same call `xpOf` in cmd_play.go already makes for the same
+reason.
+
+Not done, and still the open question underneath all of this: `play` does
+not advance on its own. The guidance makes the manual path discoverable
+rather than replacing it. Auto-advancing is worth revisiting, and the
+Ctrl-C ambiguity in cmd_play.go's comment is the thing to solve first.
+
+---
+
+### Day 6 follow-up, 2026-09-08: `play` carries on, and Ctrl-C never means two things
+
+The question the follow-up above left open. `play` finished one level and
+returned to the host shell, and cmd_play.go recorded why rather than
+pretending it was finished work: "auto-advancing is a bigger interaction
+decision than it looks: it makes Ctrl-C ambiguous."
+
+**What the ambiguity actually was.** Inside a level the host terminal is in
+raw mode, so Ctrl-C is byte 0x03 forwarded to the sandbox and belongs to
+bash: it interrupts the learner's own command and nothing else, which is
+what non-negotiable 1 requires and what `watchTerminatingSignals` already
+documents. If the game chained straight from a passed level into
+provisioning the next one, there would be a window where the same keystroke
+means something else entirely, stop the game, with nothing on screen marking
+where one meaning ended and the other began. A learner who mashed it during
+a slow provision could not say what they had just cancelled, and neither
+could we.
+
+**The fix is to ask, and where the question is asked is the whole of it.**
+`offerNextLevel` prints "Carry on to the next level? [Y/n]" on the host,
+after the shell has exited and internal/pty has restored the terminal out of
+raw mode. At that prompt Ctrl-C is the ordinary interrupt every other
+command-line program gives it: it ends the game with no level open and
+nothing half provisioned. Before the prompt Ctrl-C is the sandbox's, and it
+still is. After the answer, everything that happens was explicitly asked
+for. There is no third state, which is what makes this a fix rather than a
+smaller version of the same problem.
+
+`exit` is untouched, which is the other half. It still means what it means
+in every shell, leave this shell, and it does not quietly become a game verb
+meaning "next level, please". Overloading a builtin is how the ambiguity
+would have come back somewhere else.
+
+The mechanics:
+
+- `runLevel` returns whether the level was passed, read from
+  `Orchestrator.Passed` rather than from the store. The difference matters:
+  it is a fact about THIS session, so a learner replaying a level they had
+  already passed and walking away without passing it this time is not
+  offered the next one on the strength of what they did last week.
+- `runPlay` loops, re-resolving the curriculum from the store on every pass
+  rather than walking a list decided up front. Progress changed while they
+  were playing and the campaign is a DAG, so what comes next is a question
+  to ask again, not an index to increment. The existing ordering guarantee
+  holds on every iteration: the choice is printed before anything slow.
+- `readLine` reads the answer a byte at a time rather than through a
+  `bufio.Scanner`, and that is not a style preference. This stdin is not
+  finished with: the next thing to read it is internal/pty, handing
+  keystrokes to the next level's shell. A Scanner reads ahead by up to its
+  whole buffer, so a learner who typed the answer and their first command in
+  one go would lose the command. `cmd_sandbox.go` can afford a Scanner
+  because nothing reads that stdin again.
+- `canAsk` refuses a stdin that is not a terminal. A question nobody can
+  answer must not be asked and must not be treated as answered, so under a
+  script or in CI `play` does exactly what it did before any of this.
+- Enter means yes, anything else including EOF means no. Carrying on
+  provisions a container and starts a level; a learner whose answer could
+  not be read did not ask for either.
+
+`play <level-id>` does not loop. It names one level, and what the loop would
+go on to afterwards is the resume order, which the learner did not ask for.
+`run` does not loop either, and never will: it plays the level it was given.
+
+The pass banner's closing instruction now splits on which of those is
+driving, through `nextStep.Offered`, and a test pins the split against the
+behaviour. Telling a learner to run `shellforge play` when they are about to
+be asked instead sends them to do by hand something that is about to happen
+anyway; promising a question under `run`, where nobody will ask, leaves them
+waiting for one. Both are instructions that do not match what the screen
+then does, which is the same class of defect as the four above.
+
+Known cost, deliberately taken: each level round the loop re-resolves the
+backend and re-opens the sandbox through `runLevel`, so `choice.Reason`
+prints again per level. Provisioning is idempotent and fast once the image
+exists. Hoisting the session out of `runLevel` would mean `run` and `play`
+stop sharing one flow, and that shared flow is what has kept the FIFO
+plumbing, the teardown ordering and the raw-mode rules from existing twice.
+Not worth breaking for a repeated line.
+
+---
+
+### Day 6 follow-up, 2026-09-08: `exit` is not an error, and `next` does the thing
+
+Two more from the same play session, and the first of them was quietly
+eating the fix above.
+
+**Typing `exit` reported a level failure.** A learner passed nav-03, typed
+`exit`, and read:
+
+```
+Error: run the level "nav-03"
+  pty: copy sandbox output to host: read /dev/ptmx: input/output error
+
+Try this: If your terminal is behaving oddly, run `reset`.
+```
+
+Nothing was wrong with their terminal. On Linux, once the last file
+descriptor on the slave side of a pseudo terminal closes, which is exactly
+what `exit` does, a read on the master returns EIO rather than zero bytes.
+It is how the kernel spells "the shell is gone" on that side of the pair.
+`Mux.Run` treated anything that was not `io.EOF` as a fault.
+
+It was intermittent because `Run`'s select is a race between two ways of
+hearing the same news: `Wait` reporting the process gone, and the read side
+goroutine reporting EIO. Whichever finishes first decides which branch runs,
+so the identical clean exit printed "Shell exited." or a `ux.Fail`,
+depending on scheduling. `sessionOver` now names the errors that mean the
+session ended normally: nil, `io.EOF`, `syscall.EIO`, and `os.ErrClosed` for
+the case where `drain`'s own `Close` wins the race with the read.
+
+This is also why the advance question never appeared: a level that ends in
+an error ends the run, so `play` returned before it could ask anything. One
+kernel convention read as a bug took the whole feature above it down.
+
+**`next` printed instructions instead of following them.** It said which
+level was next and told the learner to type `exit`. Asked for the obvious
+thing, it now does it.
+
+The mechanism, and why it is shaped the way it is:
+
+- `next` moved out of `images/bin` and into `images/rc/instrument.bash` as a
+  shell function. Carrying on means this shell has to end, and a script
+  cannot exit the shell that ran it: it is a child process, and `exit` in a
+  child exits the child. A function runs in the learner's shell, so its
+  `exit` is that shell's.
+- The host decides, not the function. `gameResponder.next` checks that the
+  level was passed IN THIS SESSION, through `Orchestrator.Passed`, and that
+  `play` is driving. Only then does it drop an `advance` sentinel in the
+  level's state directory and record the request. The function looks for
+  that file and exits only if it is there.
+- So a learner who types `next` halfway through an unsolved level reads why
+  they are staying, and stays. Being thrown out of an unfinished level is
+  losing work nobody agreed to lose, and `next` is a request, not a command.
+- The sentinel is written BEFORE the reply, which is what makes it race free
+  rather than usually right: the shell reads the file only after the reply
+  has been printed, so a sentinel written first is always there to find.
+- A failed write degrades to the old instructions rather than to an error.
+  They are true whether or not the automatic path worked, and a learner who
+  has just passed a level should not be handed a sandbox error because a
+  `touch` did not land. The advance is NOT recorded in that case, on
+  purpose: if the sentinel did not land the shell is not going to end, and
+  recording it anyway would leave `play` carrying on from a level that still
+  holds a live shell.
+- `prepareControlChannel` removes a stale sentinel alongside the stale
+  FIFOs, and for the same reason: the container outlives any one `run`, and
+  a file left by a level whose shell died before reading it would end the
+  next level's shell the moment its learner typed `next`.
+
+**`next` and the question are the same decision, asked once.** `runLevel`
+returns a `levelOutcome` with two facts rather than one. `Passed` decides
+whether there is anywhere to go; `Advanced` decides whether to ask before
+going. A learner who typed `next` already answered while the shell was up,
+so asking again would be asking them to say it twice. Everyone else goes
+through `offerNextLevel`, where Ctrl-C is unambiguous. Neither path
+overloads `exit`.
+
+`images/rc/instrument_test.bash` grew a case for each branch, extracting the
+function the same way it already extracts `__sf_urlencode` and swapping the
+absolute path to the control shim for a stub. Each runs in a subshell,
+because the entire behaviour under test is that one branch calls `exit` and
+the other does not, and a test that ran it in place would end on its first
+passing case.

@@ -207,3 +207,133 @@ func TestTheBannerIsCRLFTerminatedOnlyOnTheSandboxPath(t *testing.T) {
 		}
 	}
 }
+
+// --------------------------------------------------------------------------
+// What to do once the level is over
+// --------------------------------------------------------------------------
+
+// TestRenderNextStepAlwaysSaysExitBeforeShellforge is the regression test for
+// the fourth defect a learner hit: the banner ended on their XP total and
+// said nothing about how to reach the next level. They tried `next`, then
+// `shellforge next`, and got "command not found" from both, because
+// shellforge runs on their own computer and the sandbox cannot reach it.
+//
+// Whatever the wording, `exit` has to come before `shellforge` in it, or the
+// advice earns them the same error again.
+func TestRenderNextStepAlwaysSaysExitBeforeShellforge(t *testing.T) {
+	cases := []struct {
+		name string
+		next nextStep
+	}{
+		{"a named next level", nextStep{LevelID: "nav-03", Title: "Hidden in Plain Sight"}},
+		{"the lookup failed", nextStep{}},
+		{"the campaign is finished", nextStep{Complete: true}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := renderNextStep(tc.next)
+
+			if !strings.Contains(got, "exit") {
+				t.Fatalf("the learner is not told to leave the sandbox: %q", got)
+			}
+			if !strings.Contains(got, "shellforge ") {
+				t.Fatalf("the learner is not told what to run: %q", got)
+			}
+			if strings.Index(got, "exit") > strings.Index(got, "shellforge ") {
+				t.Errorf("`shellforge` is named before `exit`, so following this earns a command-not-found: %q", got)
+			}
+		})
+	}
+}
+
+func TestRenderNextStepNamesTheLevel(t *testing.T) {
+	got := renderNextStep(nextStep{LevelID: "nav-03", Title: "Hidden in Plain Sight"})
+	for _, want := range []string{"nav-03", "Hidden in Plain Sight", "shellforge play"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the next step does not mention %q: %q", want, got)
+		}
+	}
+}
+
+// TestRenderNextStepOnAFinishedCampaign pins the ending. There is no next
+// level, and saying "run `shellforge play`" to somebody who has passed
+// everything would send them to a message telling them the same thing again.
+func TestRenderNextStepOnAFinishedCampaign(t *testing.T) {
+	got := renderNextStep(nextStep{Complete: true})
+	if strings.Contains(got, "shellforge play") {
+		t.Errorf("a finished campaign is pointed back at `play`: %q", got)
+	}
+	if !strings.Contains(got, "shellforge stats") {
+		t.Errorf("a finished campaign is not offered `stats`: %q", got)
+	}
+}
+
+// TestPassBannerEndsWithTheNextStep pins that the block reaches the banner at
+// all, and that it is last: it is the one thing the learner has to act on,
+// and a line above the score arithmetic is a line they scroll past.
+func TestPassBannerEndsWithTheNextStep(t *testing.T) {
+	got := renderPassBanner(passSummaryData{
+		Level:  &content.Level{ID: "nav-02", Title: "Taking Stock"},
+		Result: verify.LevelResult{Passed: true},
+		Score:  score.Result{Total: 55},
+		Next:   nextStep{LevelID: "nav-03", Title: "Hidden in Plain Sight"},
+	}, false)
+
+	if !strings.Contains(got, "Next up: nav-03") {
+		t.Fatalf("the banner does not say what comes next: %q", got)
+	}
+	if strings.Index(got, "Next up: nav-03") < strings.Index(got, "XP earned") {
+		t.Errorf("the next step printed above the score arithmetic: %q", got)
+	}
+}
+
+// TestRenderNextStepMatchesWhatActuallyHappensNext pins the wording split
+// against the behaviour it describes. Under `play`, the learner is asked
+// whether to carry on the moment the shell exits, so telling them to run
+// `shellforge play` sends them to do by hand something that is about to
+// happen anyway. Under `run` and `play <level-id>` nobody is going to ask,
+// so promising a question leaves them waiting for one. Either way the
+// instruction has to match what their screen then does.
+func TestRenderNextStepMatchesWhatActuallyHappensNext(t *testing.T) {
+	named := nextStep{LevelID: "nav-03", Title: "Hidden in Plain Sight"}
+
+	t.Run("play will ask", func(t *testing.T) {
+		offered := named
+		offered.Offered = true
+		got := renderNextStep(offered)
+
+		if !strings.Contains(got, "asked") {
+			t.Errorf("the learner is not told they will be asked: %q", got)
+		}
+		if strings.Contains(got, "shellforge play") {
+			t.Errorf("the learner is told to run `shellforge play` when they are about to be asked instead: %q", got)
+		}
+		if !strings.Contains(got, "nav-03") {
+			t.Errorf("the next level is not named: %q", got)
+		}
+	})
+
+	t.Run("run will not ask", func(t *testing.T) {
+		got := renderNextStep(named)
+
+		if strings.Contains(got, "asked") {
+			t.Errorf("the learner is promised a question nobody will ask: %q", got)
+		}
+		if !strings.Contains(got, "shellforge play") {
+			t.Errorf("the learner is not told what to run: %q", got)
+		}
+	})
+
+	t.Run("the wording still names exit first either way", func(t *testing.T) {
+		for _, n := range []nextStep{named, {LevelID: "nav-03", Title: "x", Offered: true}, {Offered: true}, {}} {
+			got := renderNextStep(n)
+			if !strings.Contains(got, "exit") {
+				t.Errorf("nextStep %+v does not tell the learner to leave the sandbox: %q", n, got)
+			}
+			if i := strings.Index(got, "shellforge "); i >= 0 && strings.Index(got, "exit") > i {
+				t.Errorf("nextStep %+v names `shellforge` before `exit`: %q", n, got)
+			}
+		}
+	})
+}

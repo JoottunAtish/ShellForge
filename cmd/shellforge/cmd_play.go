@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/JoottunAtish/ShellForge/internal/content"
 	"github.com/JoottunAtish/ShellForge/internal/game"
@@ -25,11 +27,34 @@ import (
 // the store for what is passed, scoring for the award, and the renderers
 // for the banner.
 //
-// It plays one level and returns to the host shell rather than provisioning
-// the next one automatically. Auto-advancing is a bigger interaction
-// decision than it looks: it makes Ctrl-C ambiguous, and `play` is one
-// keystroke away. Worth revisiting on Day 6, recorded here so it reads as a
-// decision.
+// It carries on to the next level once one is passed, but only after asking,
+// and the asking is the whole design rather than a politeness.
+//
+// The reason this was deferred for so long was that silently provisioning
+// the next level makes Ctrl-C ambiguous. Inside a level the host terminal is
+// in raw mode, so Ctrl-C is byte 0x03 forwarded to the sandbox and belongs
+// to bash: it interrupts the learner's own command and nothing else, which
+// is what non-negotiable 1 requires. If the game then chained straight into
+// provisioning the next level, there would be a window where the same
+// keystroke means something else entirely, "stop the game", with nothing on
+// screen marking where one meaning ended and the other began. A learner who
+// mashed it would not be able to say what they had just cancelled, and nor
+// could we.
+//
+// Asking removes the ambiguity rather than working around it. The question
+// is printed on the host, after the shell has exited and the terminal is
+// back in cooked mode, so at that prompt Ctrl-C is the ordinary interrupt
+// every other command-line program gives it: it stops the game, cleanly,
+// with no level open and nothing half provisioned. Before the prompt, Ctrl-C
+// is the sandbox's. After the answer, everything that happens was explicitly
+// asked for. There is no third state.
+//
+// Nothing about `exit` changes either, which is the other half of it. It
+// still means what it means in every shell, "leave this shell", and it does
+// not quietly become a game verb meaning "next level, please". The decision
+// is made by answering a question, not by overloading a builtin.
+//
+// See offerNextLevel.
 
 // playOptions is what `play` parsed out of its arguments.
 type playOptions struct {
@@ -45,6 +70,11 @@ type playOptions struct {
 	// Live is --live-check, threaded into the shared run flow. Defaults to
 	// on, matching `run`.
 	Live bool
+
+	// In is where the answer to "carry on to the next level?" is read from.
+	// Nil means os.Stdin, which is what the command itself passes; a test
+	// supplies its own.
+	In io.Reader
 }
 
 // newPlayCommand returns `shellforge play`.
@@ -59,6 +89,7 @@ func newPlayCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			opts.In = os.Stdin
 			return runPlay(cmd.Context(), cmd.OutOrStdout(), opts)
 		},
 	}
@@ -127,12 +158,17 @@ func parsePlayArgs(args []string) (playOptions, error) {
 	return opts, nil
 }
 
-// runPlay resolves the level to play and plays it.
+// runPlay resolves the level to play, plays it, and offers the one after it.
 //
 // The order matters and is pinned by a test: the pack, the database and the
 // choice of level all happen BEFORE anything slow, so a learner who
 // expected a different level can read the reason and press Ctrl-C rather
-// than wait several minutes for a container they did not want.
+// than wait several minutes for a container they did not want. That holds on
+// every pass round the loop, not only the first, which is the point of
+// re-resolving from the store each time rather than walking a list decided
+// up front: the learner's progress changed while they were playing, and the
+// campaign is a DAG, so what comes next is a question to be asked again, not
+// an index to increment.
 func runPlay(ctx context.Context, out io.Writer, opts playOptions) error {
 	pack, err := content.Embedded()
 	if err != nil {
@@ -145,43 +181,159 @@ func runPlay(ctx context.Context, out io.Writer, opts playOptions) error {
 	}
 	defer st.Close()
 
-	states, err := st.LevelStates(ctx, profile.ID, pack.ID)
-	if err != nil {
-		return ux.Fail("read your recorded progress", err, remediationRunDoctor, "")
+	// Consumed by the first pass only. `play <level-id>` names one level;
+	// what the loop would go on to after it is the resume order, which the
+	// learner did not ask for, so the loop stops there instead.
+	levelID := opts.LevelID
+
+	for {
+		states, err := st.LevelStates(ctx, profile.ID, pack.ID)
+		if err != nil {
+			return ux.Fail("read your recorded progress", err, remediationRunDoctor, "")
+		}
+
+		nodes, err := game.Resolve(pack, states)
+		if err != nil {
+			return ux.Fail("resolve the campaign map", err, remediationPackCycle, docAnchorPackInvalid)
+		}
+
+		choice, reason, err := chooseLevel(pack, nodes, levelID)
+		if err != nil {
+			return err
+		}
+
+		if choice == nil {
+			// A complete campaign is an ending, not an error.
+			fmt.Fprint(out, renderCampaignComplete(pack, nodes, xpOf(ctx, st, profile.ID, pack.ID)))
+			return nil
+		}
+
+		fmt.Fprintf(out, "Next: %s, %s.\n", choice.ID, choice.Title)
+		if reason != "" {
+			// Empty for a level that is in the pack but listed in no act, which
+			// a half-written pack produces. Printing the blank line anyway would
+			// look like something failed to render.
+			fmt.Fprintln(out, reason)
+		}
+		if opts.DryRun {
+			return nil
+		}
+
+		if err := checkInteractiveShellSupported(choice.ID); err != nil {
+			return err
+		}
+
+		// `play <level-id>` names one level and stops after it, so nothing
+		// here offers to carry on from a level the learner chose by hand.
+		advance := levelID == ""
+		outcome, err := runLevel(ctx, runOptions{
+			levelID: choice.ID,
+			debug:   opts.Debug,
+			live:    opts.Live,
+			advance: advance && canAsk(opts.In),
+		}, pack, choice)
+		if err != nil {
+			return err
+		}
+
+		if !outcome.Passed || !advance {
+			return nil
+		}
+
+		// A learner who typed `next` said what they wanted while the shell
+		// was still up, so asking again here would be asking them to say it
+		// twice. Everything else goes through the question, including the
+		// learner who simply typed `exit`.
+		if !outcome.Advanced && !offerNextLevel(opts.In, out) {
+			return nil
+		}
+		levelID = ""
+	}
+}
+
+// offerNextLevel asks whether to carry on, and reports the answer.
+//
+// This question is the whole of the Ctrl-C fix, so where it is asked matters
+// as much as that it is asked. By the time it prints, internal/pty has
+// restored the host terminal out of raw mode and the sandbox shell is gone,
+// so Ctrl-C here is the ordinary interrupt it is in every other command-line
+// program: it ends the game with no level open and nothing half provisioned.
+// Inside a level it was the sandbox's, and it still is. There is no moment
+// where it is neither.
+//
+// Enter means yes, because a learner working through the campaign presses it
+// far more often than they stop, and because the alternative to answering is
+// always available and never destructive. Anything else, including EOF from
+// a closed stdin, means no: this provisions a container and a learner who
+// did not answer did not ask for one.
+func offerNextLevel(in io.Reader, out io.Writer) bool {
+	fmt.Fprint(out, "\nCarry on to the next level? [Y/n] ")
+
+	line, ok := readLine(in)
+	if !ok {
+		// EOF with nothing typed leaves the cursor at the end of the
+		// question. The newline is what stops the shell prompt that follows
+		// from landing on it.
+		fmt.Fprintln(out)
+		return false
 	}
 
-	nodes, err := game.Resolve(pack, states)
-	if err != nil {
-		return ux.Fail("resolve the campaign map", err, remediationPackCycle, docAnchorPackInvalid)
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "", "y", "yes":
+		return true
+	}
+	return false
+}
+
+// readLine reads one line from in, one byte at a time, and reports whether
+// it read anything at all before EOF.
+//
+// A byte at a time rather than a bufio.Scanner, which is what the sandbox
+// confirmation in cmd_sandbox.go uses, and the difference is not stylistic.
+// A Scanner reads ahead by up to its whole buffer, and this stdin is not
+// finished with: the very next thing that reads it is internal/pty, handing
+// the learner's keystrokes to the next level's shell. Anything buffered here
+// would be swallowed, so a learner who typed ahead would lose it. Reading to
+// the newline and no further leaves the rest where it belongs. cmd_sandbox.go
+// can afford a Scanner because nothing reads that stdin again.
+func readLine(in io.Reader) (string, bool) {
+	if in == nil {
+		return "", false
 	}
 
-	choice, reason, err := chooseLevel(pack, nodes, opts.LevelID)
-	if err != nil {
-		return err
+	var (
+		b   strings.Builder
+		buf [1]byte
+		any bool
+	)
+	for {
+		n, err := in.Read(buf[:])
+		if n > 0 {
+			any = true
+			if buf[0] == '\n' {
+				return strings.TrimSuffix(b.String(), "\r"), true
+			}
+			b.WriteByte(buf[0])
+		}
+		if err != nil {
+			return strings.TrimSuffix(b.String(), "\r"), any
+		}
 	}
+}
 
-	if choice == nil {
-		// A complete campaign is an ending, not an error.
-		fmt.Fprint(out, renderCampaignComplete(pack, nodes, xpOf(ctx, st, profile.ID, pack.ID)))
-		return nil
+// canAsk reports whether there is somebody at the other end of in to answer
+// the question.
+//
+// A stdin that is not a terminal is a script, a pipe, or CI, and a question
+// nobody can answer must not be asked: `play` then does exactly what it did
+// before any of this, which is to play one level and return. A nil reader is
+// the same answer for the same reason.
+func canAsk(in io.Reader) bool {
+	f, ok := in.(*os.File)
+	if !ok {
+		return false
 	}
-
-	fmt.Fprintf(out, "Next: %s, %s.\n", choice.ID, choice.Title)
-	if reason != "" {
-		// Empty for a level that is in the pack but listed in no act, which
-		// a half-written pack produces. Printing the blank line anyway would
-		// look like something failed to render.
-		fmt.Fprintln(out, reason)
-	}
-	if opts.DryRun {
-		return nil
-	}
-
-	if err := checkInteractiveShellSupported(choice.ID); err != nil {
-		return err
-	}
-
-	return runLevel(ctx, runOptions{levelID: choice.ID, debug: opts.Debug, live: opts.Live}, pack, choice)
+	return term.IsTerminal(int(f.Fd()))
 }
 
 // chooseLevel decides which level to play and why.
