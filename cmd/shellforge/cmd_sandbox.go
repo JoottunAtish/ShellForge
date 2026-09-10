@@ -19,7 +19,7 @@ import (
 )
 
 // Doc anchors this file's ux.Fail calls need, named as constants rather
-// than inlined so cmd/shellforge/docanchor_test.go can resolve every one of
+// than inlined so internal/docanchor can resolve every one of
 // them the same way it resolves a literal.
 const (
 	anchorSandboxMissing   = "sandbox-missing"

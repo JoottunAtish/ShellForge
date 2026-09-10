@@ -3011,6 +3011,119 @@ than pretending otherwise. Silent precedence between two spellings of one
 setting is the same shape as the `optional` disagreement #97 describes, so it
 belongs in a ticket with that one, not smuggled into this branch.
 
+### Day 2 follow-up, 2026-08-16: the first-run error that named the wrong problem
+
+Issue #74. A user on Windows with Docker Desktop installed but WSL integration
+switched off for their distribution was told this, and nothing else:
+
+```
+Error: provision the sandbox
+  build the sandbox image: docker build exited 1: https://docs.docker.com/go/wsl2/
+
+Try this: Run `docker info` to confirm the daemon is running, then run `shellforge run demo` again.
+```
+
+Docker had printed "The command 'docker' could not be found in this WSL 2
+distro. We recommend to activate the WSL integration in Docker Desktop
+settings." We had that sentence in a byte slice and threw it away, then told
+them to run a command that would tell them more than we did. Non-negotiable 6
+asks for what failed, why, and the next command; this managed none of the three
+on the first thing a new user does.
+
+**Two independent causes, and fixing either alone leaves the symptom.**
+
+`summarizeFailure` takes the last non-empty line, which is right for a build
+failure: BuildKit writes the fatal error last, and an earlier first-line version
+reliably surfaced the "Sending build context" banner instead. It is wrong when
+the failure is "docker is not really here", where the output is a human-written
+wrapper whose diagnosis is the first line and whose last line is a bare URL. The
+fallback is now exactly one sentence wide: a summary line that is nothing but a
+URL is useless, so use the first line instead. Both directions are pinned in one
+table on purpose, because they pull against each other and split across two
+tests the next person would break one while fixing the other.
+
+The second cause was ours. `ux.Render` resolves with `errors.As`, which binds the
+outermost `*ux.Error`, so `runDemo` wrapping an already-classified error did not
+add context, it overwrote the better answer. `classifyFailure` had done its job
+and returned `docker-daemon-down`; the CLI replaced it with `sandbox-unhealthy`
+and a vaguer remediation. Introduced by #11, in #11's own code. The `Setup` call
+site already had the conditional pass-through inline with a good comment
+explaining it; the other four did not. That is now
+`failUnlessAlreadyUserFacing`, applied at all five.
+
+**Found while writing a regression pin the ticket asked for, and fixed:** the
+permission-denied branch never fired. It matched a lowercase "docker daemon
+socket", and Docker capitalises its own product name, so what actually arrives
+is "Got permission denied while trying to connect to the Docker daemon socket".
+`docs/05-troubleshooting.md` quotes it correctly, so the docs and the code had
+disagreed since the branch was written. A user in the wrong group fell through
+to the `docker version` probe, which fails on the same message and had the same
+casing bug in its own arm, and was told to start a daemon that was already
+running. Matching is case-insensitive now and both casings are pinned. This was
+outside the ticket, and writing a pin around the lowercase spelling would have
+been pinning a fiction.
+
+`docker-wsl-integration-off` is a new anchor with a new heading, placed with the
+other `docker-` entries. It is not a duplicate of `windows-needs-wsl`: that one
+refuses on a Windows host because `creack/pty` cannot allocate a host pseudo
+terminal, this one is about running inside WSL where the pty works and Docker is
+unreachable. The heading says so, since the two are easy to confuse.
+
+The doc anchor gate needed extending rather than satisfying. Converting five
+call sites from `ux.Fail` to a helper removed all five from a test that walks the
+AST looking for `ux.Fail`, which is the same blind-spot shape the gate was
+written to close after #11. It now follows registered forwarders to their call
+sites, and an unregistered forwarder is reported with a message saying to
+register it. Verified by typo-ing an anchor at a forwarder call site and
+confirming the gate catches it.
+
+Every guard here was mutation-checked: the URL fallback, the branch ordering, the
+casing fix, the pass-through, and both directions of the anchor gate.
+
+**Not verified, and it is the ticket's own definition of done:** the manual
+reproduction with WSL integration switched off. That needs Windows with Docker
+Desktop, and this environment has neither Docker nor Windows. Every unit test
+here runs without a daemon, but the end-to-end proof is outstanding and someone
+with the setup should run it before this is trusted.
+
+#### Review round, 2026-08-19
+
+One real question, answered by fixing rather than by argument. `classifyFailure`
+only ever looked at stderr, and `summarizeFailure`'s own doc comment already
+established that docker does not pick a stream by convention: BuildKit writes
+its fatal error to stdout, the classic builder to stderr. The WSL wrapper
+message has no daemon behind it to pick one either, and the #74 reproduction
+never established which stream actually carried it. If it was stdout, the WSL
+branch never fired in production and the fix shipped doing nothing on the one
+platform it was written for, with nothing in CI able to notice, since the
+existing tests called `classifyFailure` directly with hand-built bytes rather
+than through a real caller.
+
+Fixed by not needing the answer: every `classifyFailure` call site now passes
+`combinedOutput(stdout, stderr)` instead of `stderr` alone, at all nine call
+sites across `docker build`, `docker run`, `docker start`, `docker inspect`,
+and `docker rm`, not only the one the review comment named. Two new tests
+drive the failure through `Provision`, the real caller, rather than calling
+`classifyFailure` directly: the WSL message and the permission-denied message
+are each planted on stdout only, with empty stderr, which the pre-fix code
+could not have classified. Both fail on the pre-fix code and pass on the fix,
+confirmed by reverting the call site back to stderr-alone and watching them
+go red before restoring it.
+
+Two smaller items. `docs/05-troubleshooting.md`'s `wsl -l -v` reference was
+wrapped mid code-span across a line break; harmless in rendered Markdown,
+wrong for someone grepping the raw file. Rewrapped. And the possible buildx
+"View build details:" trailer line, which could make `summarizeFailure` hand
+a learner a link instead of the real error, is filed as #133 rather than
+guessed at: this environment has no Docker daemon, so nothing about it could
+be confirmed against a real failing build, and the review comment that raised
+it was explicit that it should not be acted on blind.
+
+Rebased onto `main` past #108, #109, #111, and #131. Only `PROGRESS.md`
+conflicted; `docs/05-troubleshooting.md` and `internal/runtime/docker/`
+picked up unrelated changes from #109 and #131 respectively and merged
+clean.
+
 ### Day 3, 2026-08-17: the rootfs tarball, made to agree with itself
 
 Issue #67, Day 3 ticket A. CI, no Go layer. Fixes the three-different-tarballs
@@ -3093,6 +3206,123 @@ problem the issue named, and bakes in the marker file the WSL destroy path
   reasonably founded expectation (both are the same GNU gzip implementation)
   rather than a proven one, and stays that way until someone with both
   platforms records the two digests by hand, per the issue's own test plan.
+
+### Day 2 follow-up, 2026-08-17: the doc anchor gate that was checking one comment
+
+Issue #86. The `Docs` job's "Every doc anchor emitted by Go code exists in the
+docs" step grepped for the struct-literal form, `DocAnchor:\s*"..."`. Every real
+call site in this repository writes the positional form instead,
+`ux.Fail(op, err, remediation, "...")`, and running the gate's own grep over the
+tree found exactly one match: a comment in `internal/verify/snapshot.go`, not a
+line of code. All 85 real call sites were invisible to it. The gate had been
+reporting green while checking nothing since the day it was written, and the two
+places in this file that credited it with keeping anchors honest were more
+optimistic than it was.
+
+`internal/docanchor` replaces the grep with a Go test, following
+`internal/archtest`'s own shape as the precedent for a module-wide governance
+test: parse every non-test `.go` file, find both the positional form and the
+struct-literal one (`ux.Error{DocAnchor: "..."}`, since the type is constructible
+directly), resolve a string literal or a same-package string constant, and check
+every resolved anchor against a heading in `docs/05-troubleshooting.md`. Anything
+else, a function parameter, a call result, is reported as unverifiable rather
+than silently skipped, which is the whole point: a silently-skipped anchor is
+exactly how the old grep went blind. Registered in `internal/archtest`'s own
+layer table at 99, alongside `internal/archtest` itself, since it is governance
+over the whole module rather than a layer.
+
+Running it against the tree found 17 real anchors and zero missing headings, so
+there was nothing to reconcile; the gate had been silently correct in outcome
+while being unable to prove it, which the ticket's context section already
+suspected ("nothing is broken today, and that is the problem").
+
+Two false positives showed up while building it, and both were bugs in this new
+code rather than the repository, caught before either reached the tree:
+
+- The heading-match direction was backwards on the first pass: it tested whether
+  a heading line appeared inside the short anchor string, rather than the anchor
+  inside the heading, so all 17 real anchors briefly reported as missing despite
+  having correct headings. `internal/archtest`'s own `dependencies_test.go`
+  precedent wasn't the model here; `strings.Contains(heading, anchor)`, the
+  direction that already existed in `cmd/shellforge`'s local #103 gate, is.
+- `ux.Fail` itself constructs `&Error{..., DocAnchor: docAnchor, ...}` from its
+  own parameter, which the composite-literal detector flagged as unverifiable on
+  every single run: correct behavior applied to the wrong site, since every real
+  anchor that function can ever carry is already checked at the call site that
+  supplied it. Suppressed specifically inside `internal/platform/ux`, and a
+  matching case added so a hypothetical unqualified `Fail(...)` called from
+  inside that package, the shape a same-package caller would actually write,
+  is still caught rather than exempted along with the plumbing.
+
+Verified against a deliberate violation twice, once in each shape a real call
+site could take: a qualified `ux.Fail(...)` from an unrelated package with an
+invented anchor, and a bare `Fail(...)` from inside `internal/platform/ux`
+itself. Both were caught, both removed afterward. Twelve fixture tests pin the
+mechanism independently of what the repository currently contains, including one
+proving an unrelated function that merely happens to be named `Fail` outside the
+`ux` package is not mistaken for it, and one proving a `// DocAnchor: "..."`
+comment is not treated as code.
+
+The `Docs` job now runs `go test ./internal/docanchor/...`, which needed
+`actions/setup-go` added to that job for the first time. The same test also
+runs for free inside `go test ./...` in both `Test` jobs, so a developer
+finds a missing heading locally before pushing, which was the whole appeal of
+option 2 over widening the grep.
+
+#### Review round, 2026-08-19
+
+One blocking finding, real: matching a call site on the literal identifier
+text `ux` made an aliased import, `uxpkg "internal/platform/ux"`, or a dot
+import invisible to the gate. "Not broken, just unable to notice" is exactly
+the state issue #86 describes, and nothing in the tree does either today, so
+it would have shipped unnoticed. Fixed at the root rather than guarded
+against: `uxBinding` now records how each file actually refers to package
+ux, computed from that file's own import declarations, and matches against
+the real local name instead of assuming one. Two fixture tests pin it, an
+aliased import and a dot import, each with a bad anchor that must be found.
+
+A suggestion narrowed the plumbing exemption from #86's own build: ux.Fail
+constructing `&Error{..., DocAnchor: docAnchor, ...}` from its own parameter
+was being exempted by skipping the whole ux package's composite literals,
+which would have also skipped a real literal anchor written by some future
+second constructor in that package. Narrowed to exempt the unresolvable
+value specifically, not the site. A new fixture, a literal `DocAnchor` in a
+hypothetical second ux constructor, proves the narrower version still
+catches what the broad one would have missed.
+
+A second suggestion closed a silent gap: `ux.Fail(spreadArgs()...)` is legal
+Go with `len(v.Args) == 1`, and the old code read that as "not a Fail call"
+rather than "a Fail call I cannot read," so the anchor argument passed
+through unreported in the one shape a call arity check could not name. Now
+reported as unverifiable like every other unresolvable anchor, with its own
+fixture.
+
+Two nits: an unreachable `&` unwrap in `resolveString` guarding against a
+string-typed value that can never structurally be a pointer, with a comment
+that misdescribed how the struct-literal form was actually found (`ast.Inspect`
+already recurses into the composite literal inside the unary expression on
+its own); and a stale comment on `parsedFile` describing an `fset` field the
+struct does not have. Both fixed; `parsedFile` earned its second field
+anyway once it started carrying the per-file `uxBinding`.
+
+Rebased onto `main` past #108, #109, and #131, none of which touch this
+package; only `PROGRESS.md` conflicted, resolved by keeping both entries.
+
+Not fixed here, filed as #132 instead, per the reviewer's own read that it
+is a clean follow-up and not something to bolt onto this branch: three
+implementations of the same doc-anchor rule now exist in the tree
+(`cmd/shellforge`'s local gate from #103, `internal/store`'s hardcoded
+anchor list, and this package), and roughly 250 lines of near-identical AST
+walking and heading matching exist in two of them. The alias and dot-import
+guard has moved across in this round, closing the gap the reviewer named
+explicitly. A second gap was found while writing that fix rather than
+reported by review: `cmd/shellforge`'s local gate also follows a registered
+`anchorForwarders` map so a helper function forwarding its caller's anchor
+is not flagged, and this package has no equivalent. #103's
+`failUnlessAlreadyUserFacing` is the one real forwarder that shape covers,
+and #103 has not merged yet, so this package has nothing to regress against
+today; #132 records that the two gates must be reconciled on that point
+before the narrower one is deleted, not after.
 
 ### Day 3 follow-up, 2026-08-17: optional has one home, the objective
 
@@ -5662,6 +5892,163 @@ rather than closed here. 6.8, the clean VM install run, is the acceptance
 test for this whole ticket, not part of it, and is still owed: it needs a
 person and two virtual machines, which this session had neither of.
 
+
+### 2026-09-09: three tickets merged into one branch, and the doc anchor rule collapses to one implementation
+
+Issues #74, #86 and #132, landed together because they cannot land apart.
+#132 says so in its own text: its work cannot start until #103 (for #74) and
+#107 (for #86) have merged, and it predicted the exact way those two branches
+would collide. They did.
+
+**Each branch was green alone and the pair was red.** #74 adds
+`failUnlessAlreadyUserFacing`, a helper that takes its caller's `docAnchor`
+and hands it to `ux.Fail`. #86 adds `internal/docanchor`, a module-wide gate
+that reports any anchor it cannot resolve to a literal or a constant. Merge
+both and the gate reports the helper's own `ux.Fail`, because that anchor is
+a parameter and no static analysis can read it. A false positive on the very
+first `go test ./...` after the merge:
+
+```
+doc anchor at cmd/shellforge/cmd_run.go:569:39 is not a string literal or a
+package-level string constant
+```
+
+Nothing was wrong with either branch. The interaction was the defect, and it
+was only ever going to appear once both had landed.
+
+**The merge conflict was in `internal/runtime/docker/docker.go`, and taking
+either side wholesale would have been wrong.** Main split
+`ensureContainerRunning` into `createContainer`, `removeContainer`,
+`containerIsStale` and `inspectContainer` after #74 branched, so the branch
+carried a rewrite of a function that no longer exists. Main's structure was
+kept and #74's actual behaviour, classifying from combined stdout and stderr
+rather than stderr alone, was reapplied on top of it, including at the four
+call sites main added that the branch never saw. That reasoning is #74's own
+and it holds for the new call sites for the same reason it held for the old:
+docker picks no stream by convention, BuildKit writes to stdout and the
+classic builder to stderr, and the Docker Desktop WSL shim has no daemon
+behind it to pick one either. A call site that reads one stream is right by
+luck.
+
+**Forwarders are now discovered, not registered.** `cmd/shellforge`'s
+retired gate knew about `failUnlessAlreadyUserFacing` through a
+hand-maintained `anchorForwarders` map. `internal/docanchor` finds
+forwarders by reading the source instead: an unexported function whose own
+recognised anchor site reads one of its own string parameters is a
+forwarder, its internal `ux.Fail` stops being reported, and its call sites
+are checked exactly as a `ux.Fail` is. The loop runs to a fixed point, so a
+forwarder calling a forwarder is found whichever order the files parsed in.
+A registry works right up to the moment somebody writes the second forwarder
+and does not know the registry exists.
+
+Three shapes are deliberately not followed, and each fails closed and loudly
+rather than quietly: an exported function, because it could be called from a
+package this walk never connects to it and its call sites would go unchecked
+in silence; a method, for the same reason; and a parameter that shares a
+package constant's name, because `resolveString` would resolve the constant
+and an exemption nobody can predict is worse than no exemption. In all three
+the internal `ux.Fail` is reported as unverifiable, which says so out loud.
+
+Nine fixture tests cover the mechanism, including the one that matters most:
+following a forwarder must not become a way to launder an unreadable anchor
+past the gate, so a forwarder call site whose anchor is a call result is
+reported, and the report names the CALL SITE rather than the forwarder.
+
+**Verified against a deliberate violation**, the same procedure the layer
+rule and the punctuation gate were verified with on Day 0. A call to
+`failUnlessAlreadyUserFacing` with the anchor `no-such-heading-anywhere` was
+added to `cmd_run.go`, the gate was confirmed to fail and name it, and the
+call was removed. The gate follows the forwarder to the call site and reads
+the anchor there.
+
+**Three implementations of the rule became one, and there turned out to be
+three rather than the two #132 counted on top of the module-wide gate.**
+Retired: `cmd/shellforge/docanchor_test.go`, and
+`internal/sandbox/anchors_test.go`, which #132 did not know about and which
+was the same AST walk again, scoped to one package.
+`internal/store/guards_test.go`'s `TestDocAnchorsHaveTroubleshootingHeadings`
+and its `declaredDocAnchors` walk went with them. Each deletion was earned
+before it was made: `internal/docanchor` was run against each package
+directory in turn and returns exactly the same anchor set the local gate
+found, with nothing unverifiable. `cmd/shellforge`: the same nine.
+`internal/sandbox`: the same three. `internal/store`: all six of its
+constants appear in the module-wide set.
+
+`internal/store`'s anchor constants themselves stay. #132 asked whether the
+list serves a purpose the gate does not, and it does: this package
+references them by name in its own tests, asserting which anchor a given
+failure carries. That is not the doc heading contract and the gate does not
+replace it. What was duplicated was the rule, not the constants.
+
+`internal/doctor/anchors_test.go` stays too, and is not a fourth copy. It
+drives every probe's `Run` for both goos values and the interrupted path and
+checks the anchor the probe carries at runtime, which no walk over source
+can see. Its comment now says so, rather than pointing at a deleted file.
+
+Two `TestThisPackageDoesNotDotImportUx` tests went with the walks they
+guarded. Both existed to hold up an assumption the retired gates rested on,
+that `ux.Fail` is spelled with the selector `ux.Fail`.
+`internal/docanchor` computes each file's real import binding, so a dot
+import or an alias is handled rather than assumed away, and it has its own
+tests for both.
+
+Gates run here: `gofmt`, `go build ./...`, `go vet ./...`, `go test ./...`,
+`go test -race` on every package touched, `./scripts/check-punctuation.sh`,
+`./scripts/check-allowlist-regexp.sh`, `./scripts/check-links.sh`,
+`./scripts/check-cli-package.sh`, `python3 scripts/check-ci-gates.py`, and
+`go test ./internal/archtest/`. Not run here, and CI is the only witness:
+`govulncheck` and `gosec` are not installed on this machine, there is no
+Docker daemon, and `pytest` is not installed so `scripts/tests` did not run.
+
+**Review of #160 found two real defects, both fixed on the branch.**
+
+The first is the better catch. `combinedOutput` was applied to
+`classifyFailure`'s fourth argument, the bytes it classifies from, and not
+to the second, the error the learner actually reads. Five of the six call
+sites built that message from `stderr` alone; only `ensureImage` had both,
+through `summarizeFailure`. Driving `Destroy` with the WSL stub message on
+stdout only, the learner got:
+
+```
+Error: remove the sandbox container
+  docker rm exited 1:
+```
+
+Classification and remediation were right, so nothing bare reached the
+terminal, but the diagnosis line was empty on a ticket titled "report the
+real Docker failure instead of a bare URL". An empty diagnosis is worse than
+the bare URL was. The branch's own argument, that a call site reading one
+stream is right by luck, had been applied to one argument and not the other.
+Fixed at all four remaining sites, with a regression test that drives
+`Destroy` rather than calling `classifyFailure` directly, so it pins the
+call site rather than a fixture.
+
+The second: `hasAnchor` was a substring test, so the gate could pass while
+the learner's link landed nowhere. `ux.DocURL` builds an exact fragment, and
+an anchor of `db-corrupt` passed on the strength of `## progress-db-corrupt`
+and then resolved to nothing on the page. `check-links.sh` does not cover
+it: it checks relative links written in Markdown, not a fragment emitted
+from Go. The doc comment had justified the looseness as matching the CI Docs
+job's rule, which is the rule this package exists because it had been
+finding one comment and reporting green. Now an exact match. All 27 live
+anchors already matched exactly, so nothing regressed, and the old hole is
+pinned as a regression case rather than asserted as behaviour.
+
+Also fixed, from a nit: `combinedOutput` joined the two streams with no
+separator, so an unterminated stdout glued its last line to stderr's first
+and could synthesise a phrase across the seam that neither stream contained,
+which `classifyFailure`'s substring predicates would have believed.
+
+Each fix was confirmed by reverting it and watching the new test go red
+first.
+
+**Carried, not closed.** #74's acceptance criteria include a manual
+reproduction with Docker Desktop's WSL integration switched off, pasted into
+the pull request. This environment has no Docker Desktop and no Windows, so
+that confirmation is still owed by whoever has the machine. It is the one
+acceptance criterion on these three tickets that no amount of CI can supply.
+
+---
 
 ## Day 6: hardening, CI, packaging
 

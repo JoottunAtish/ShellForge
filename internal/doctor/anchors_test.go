@@ -35,8 +35,13 @@ func troubleshootingHeadings(t *testing.T) map[string]bool {
 }
 
 // doctorModuleRoot walks up from the test's working directory until it
-// finds go.mod, matching the same helper cmd/shellforge/docanchor_test.go
-// uses.
+// finds go.mod, matching internal/docanchor's own helper.
+//
+// This package keeps its own heading check rather than leaning on
+// internal/docanchor, because the two prove different things. That gate
+// reads anchors out of the source. These tests drive every probe's Run,
+// for both goos values and the interrupted path, and check the anchor the
+// probe actually carries at runtime, which no source walk can see.
 func doctorModuleRoot(t *testing.T) string {
 	t.Helper()
 	dir, err := os.Getwd()
