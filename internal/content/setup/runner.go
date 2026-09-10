@@ -27,7 +27,14 @@ const (
 	// mount at all on the Docker backend today, but the WSL backend and the
 	// Day 3 decision make it one, and this constant is what keeps the state
 	// directory off of it before that can bite.
-	DefaultStateDir = "/home/learner/.shellforge"
+	//
+	// The value moved to internal/platform in #116 so that the validator in
+	// internal/content can check a level root against it too. This package
+	// cannot export it to the validator directly: internal/content/setup
+	// imports internal/content, so the dependency can only run one way. The
+	// name stays here because every caller in this package reads better for
+	// it.
+	DefaultStateDir = platform.DefaultStateDir
 
 	// LevelRootPrefix is the only prefix a level root, or the state
 	// directory, may live under. It is platform.LearnerHomePrefix by another
@@ -174,10 +181,17 @@ func validateLevelRoot(root string) error {
 // is lexically legal under the /home/learner/ prefix rule, but teardown on
 // it would delete the journal, the history, and every other level's
 // sentinel.
+//
+// The rule itself lives in platform.LevelRootCollidesWithStateDir, shared
+// with the validator in internal/content since #116, so that an author
+// hears about the collision from `shellforge author validate` rather than
+// from a level failing at play time. This wrapper keeps the runner's own
+// voice and its ErrUnsafeLevelRoot sentinel, and it is still the gate that
+// actually stops the delete: the validator only checks the default state
+// directory, and WithStateDir can move it.
 func (r *Runner) refuseIfInsideStateDir(clean string) error {
-	state := path.Clean(r.stateDir)
-	if clean == state || strings.HasPrefix(clean, state+"/") || strings.HasPrefix(state, clean+"/") {
-		return fmt.Errorf("refusing to use %q as a level root: it contains or is contained by the state directory %q: %w", clean, state, ErrUnsafeLevelRoot)
+	if reason := platform.LevelRootCollidesWithStateDir(clean, r.stateDir); reason != nil {
+		return fmt.Errorf("refusing to use %q as a level root: %v: %w", clean, reason, ErrUnsafeLevelRoot)
 	}
 	return nil
 }
