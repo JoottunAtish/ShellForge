@@ -447,3 +447,47 @@ func TestCanAskRefusesANonTerminal(t *testing.T) {
 func TestPlayAsksBeforeProvisioningTheNextLevel(t *testing.T) {
 	assertReturnsBefore(t, "cmd_play.go", "offerNextLevel(opts.In, out)", "levelID = \"\"")
 }
+
+// TestPlayNeverReadsAStdinItCannotAsk is the regression test for the review
+// finding on this PR: `canAsk` was consulted for the pass banner's wording
+// and then dropped, so the guard that decides whether to ask used the raw
+// "is this a resume" flag on its own. With a stdin that is not a terminal
+// the question was printed where nobody could answer it, and `readLine` took
+// a line of somebody else's input on the way past.
+//
+// Asserted against the source rather than by running a level, for the same
+// reason the two ordering guarantees above it are: observing it needs a
+// Docker daemon. What is pinned is that the decision is made once, so the
+// value handed to runLevel and the value guarding the question cannot drift
+// apart again.
+func TestPlayNeverReadsAStdinItCannotAsk(t *testing.T) {
+	src := readSource(t, "cmd_play.go")
+
+	if !strings.Contains(src, `advance := levelID == "" && canAsk(opts.In)`) {
+		t.Error("the advance decision no longer folds canAsk in, so the question can be asked where nobody can answer it")
+	}
+	if strings.Contains(src, "advance && canAsk(") {
+		t.Error("canAsk is being applied to one use of the advance decision and not the other, which is how the two drifted apart before")
+	}
+}
+
+// TestOfferNextLevelReadsExactlyOneLine is the other half of the same
+// finding. Even asked at the right moment, the question must take the answer
+// and nothing after it: the next thing to read this stdin is internal/pty,
+// handing keystrokes to the next level's shell.
+func TestOfferNextLevelReadsExactlyOneLine(t *testing.T) {
+	in := strings.NewReader("y\nls -la\n")
+	var out strings.Builder
+
+	if !offerNextLevel(in, &out) {
+		t.Fatal("offerNextLevel did not read the y")
+	}
+
+	rest, err := io.ReadAll(in)
+	if err != nil {
+		t.Fatalf("read the rest of the stream: %v", err)
+	}
+	if string(rest) != "ls -la\n" {
+		t.Errorf("offerNextLevel swallowed keystrokes meant for the next level's shell: %q left, want %q", rest, "ls -la\n")
+	}
+}

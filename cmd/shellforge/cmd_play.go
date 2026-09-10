@@ -223,14 +223,19 @@ func runPlay(ctx context.Context, out io.Writer, opts playOptions) error {
 			return err
 		}
 
-		// `play <level-id>` names one level and stops after it, so nothing
-		// here offers to carry on from a level the learner chose by hand.
-		advance := levelID == ""
+		// Two reasons not to carry on, and they are one condition rather
+		// than two because they mean the same thing here. `play <level-id>`
+		// names one level and stops after it, so nothing offers to carry on
+		// from a level the learner chose by hand. And a stdin that is not a
+		// terminal has nobody behind it to answer, so the question must not
+		// be asked, which also means it must not be read from: readLine
+		// would take a line of somebody else's input.
+		advance := levelID == "" && canAsk(opts.In)
 		outcome, err := runLevel(ctx, runOptions{
 			levelID: choice.ID,
 			debug:   opts.Debug,
 			live:    opts.Live,
-			advance: advance && canAsk(opts.In),
+			advance: advance,
 		}, pack, choice)
 		if err != nil {
 			return err
