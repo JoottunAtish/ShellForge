@@ -182,6 +182,38 @@ shopt -s histappend
 export PATH="/opt/shellforge/bin:$PATH"
 
 # ---------------------------------------------------------------------------
+# `next`: go on to the level after this one.
+#
+# A function rather than a script in /opt/shellforge/bin, and that is the
+# whole reason it lives here instead of beside check, hint, brief and reset.
+# Carrying on means this shell has to end, and a script cannot exit the shell
+# that ran it: it is a child process, and `exit` in a child exits the child.
+# A function runs in this shell, so its `exit` is this shell's.
+#
+# The host decides whether that happens, not this function. It answers the
+# request first, printing either "Loading nav-04" or an explanation of why
+# not, and only when it has accepted does it drop the sentinel file this then
+# looks for. So a learner who types `next` halfway through an unsolved level
+# reads why they are staying and stays, rather than being thrown out of work
+# they did not agree to lose.
+#
+# The sentinel is removed before exiting rather than left for the host to
+# clear, because the container outlives any one level and a file left behind
+# would end the next level's shell the moment its learner typed `next`. The
+# host clears it at level start as well, for the case where this shell died
+# before it got here.
+# ---------------------------------------------------------------------------
+# BEGIN __sf_next
+next() {
+  /opt/shellforge/bin/_sf-request next "$@"
+  if [ -f "${SF_STATE}/advance" ]; then
+    rm -f "${SF_STATE}/advance"
+    exit 0
+  fi
+}
+# END __sf_next
+
+# ---------------------------------------------------------------------------
 # Mild anti-tamper.
 #
 # This stops an accidental `PROMPT_COMMAND=` from silently disabling scoring. It

@@ -254,3 +254,71 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+func TestLastEventIDIsZeroOnAnEmptyTable(t *testing.T) {
+	j, _ := newTestJournal(t)
+
+	got, err := j.LastEventID(context.Background())
+	if err != nil {
+		t.Fatalf("LastEventID: %v", err)
+	}
+	if got != 0 {
+		t.Errorf("LastEventID on an empty events table = %d, want 0", got)
+	}
+}
+
+// TestLastEventIDBoundsAFreshAttempt is the regression test for the bug that
+// made every command_matched bonus in the shipped pack unreachable: the
+// journal was handed to the verifier with no level ever set, so scope.Level
+// answered with nothing and a bonus the learner had earned failed anyway.
+//
+// It pins the whole sequence a level in play goes through: rows exist from
+// an earlier attempt, the boundary is read, SetLevel names the level, the
+// attempt records its own commands, and scope.Level answers with those and
+// only those.
+func TestLastEventIDBoundsAFreshAttempt(t *testing.T) {
+	ctx := context.Background()
+	j, _ := newTestJournal(t)
+
+	appendRaw := func(seq int64, levelID, raw string) {
+		t.Helper()
+		if err := j.Append(ctx, Entry{Seq: seq, TS: time.Now().UTC(), LevelID: levelID, Cwd: "/home/learner", Raw: raw}); err != nil {
+			t.Fatalf("Append %q: %v", raw, err)
+		}
+	}
+
+	appendRaw(1, "nav-01", "ls")
+	appendRaw(2, "nav-01", "pwd")
+	appendRaw(3, "nav-02", "cd /etc")
+
+	boundary, err := j.LastEventID(ctx)
+	if err != nil {
+		t.Fatalf("LastEventID: %v", err)
+	}
+	if boundary != 3 {
+		t.Fatalf("LastEventID after three rows = %d, want 3", boundary)
+	}
+
+	j.SetLevel("nav-01", boundary)
+
+	if got := j.Commands(scope.Scope{Kind: scope.Level}); len(got) != 0 {
+		t.Errorf("scope.Level before this attempt ran anything = %q, want none", got)
+	}
+
+	appendRaw(1, "nav-01", "pwd > quest/answer.txt")
+	appendRaw(2, "nav-01", "cat quest/answer.txt")
+
+	got := j.Commands(scope.Scope{Kind: scope.Level})
+	if err := j.Err(); err != nil {
+		t.Fatalf("Commands reported %v", err)
+	}
+	want := []string{"pwd > quest/answer.txt", "cat quest/answer.txt"}
+	if len(got) != len(want) {
+		t.Fatalf("scope.Level = %q, want %q", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("scope.Level[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}

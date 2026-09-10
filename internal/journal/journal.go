@@ -328,3 +328,23 @@ func scanCommands(rows *sql.Rows) ([]string, error) {
 	}
 	return cmds, nil
 }
+
+// LastEventID returns the highest events.id currently recorded, or zero when
+// the table is empty. It is the boundary SetLevel wants: read it the moment a
+// level is assembled, before that attempt has recorded anything, and every
+// row added afterwards is that attempt's and every row already there is not.
+//
+// A caller with no useful error handling of its own may treat a failure as
+// zero. That is a deliberately generous fallback rather than a silent one:
+// zero includes every row ever recorded for the level, so a journal check
+// can only award a bonus the learner already earned on an earlier attempt,
+// never withhold one they earned on this one, and no journal read has ever
+// been allowed to decide pass or fail.
+func (j *Journal) LastEventID(ctx context.Context) (int64, error) {
+	var id int64
+	if err := j.s.DB().QueryRowContext(ctx,
+		"SELECT COALESCE(MAX(id), 0) FROM events").Scan(&id); err != nil {
+		return 0, fmt.Errorf("read the last recorded command id: %w", err)
+	}
+	return id, nil
+}
