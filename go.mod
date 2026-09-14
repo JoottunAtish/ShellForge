@@ -1,6 +1,6 @@
 module github.com/JoottunAtish/ShellForge
 
-go 1.25.0
+go 1.26.0
 
 // Day 1 Session A introduces spf13/cobra (#12) and creack/pty (#9, #10).
 // creack/pty lands here directly: internal/runtime/docker imports it for
@@ -84,8 +84,8 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/goccy/go-yaml v1.19.2
 	github.com/spf13/cobra v1.10.2
-	golang.org/x/sys v0.34.0
-	golang.org/x/term v0.33.0
+	golang.org/x/sys v0.48.0
+	golang.org/x/term v0.46.0
 	modernc.org/sqlite v1.38.0
 )
 
