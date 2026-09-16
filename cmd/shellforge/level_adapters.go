@@ -283,6 +283,7 @@ func (r *gameResponder) Reply(ctx context.Context, verb, args string) string {
 		var b strings.Builder
 		b.WriteString("\n" + renderMarkdown(r.level.Briefing, defaultBriefWidth, r.color) + "\n")
 		printObjectiveChecklist(&b, r.level)
+		printCommandFooter(&b)
 		return crlf(b.String())
 
 	case "hint":
@@ -297,12 +298,46 @@ func (r *gameResponder) Reply(ctx context.Context, verb, args string) string {
 		}
 		return crlf(renderResetReply(ctx, r.resets, r.level.Setup.Root, args))
 
+	case "help":
+		return crlf(r.help())
+
 	case "next":
 		return crlf(r.next(ctx))
 
 	default:
 		return crlf(fmt.Sprintf("\nunknown request %q\n", verb))
 	}
+}
+
+// help lists what a learner can type, and is the answer to the word they
+// reach for first.
+//
+// Inside the sandbox `help` is a bash builtin, so nothing on PATH can claim
+// it and a beginner asking for help gets the list of shell builtins instead:
+// an answer that reads as "there is no help here". instrument.bash defines a
+// function, which outranks the builtin, and hands the bare word to this.
+//
+// It names only what this session will actually honour. Advertising a verb
+// that then refuses is the failure this whole change exists to remove, so
+// `hint` and `reset` follow the same nil checks the verbs themselves use,
+// and `next` appears only where gameResponder.canAdvance could say yes.
+func (r *gameResponder) help() string {
+	var b strings.Builder
+	b.WriteString("\nCommands you can type here:\n\n")
+	b.WriteString("  check   check your work against the objectives\n")
+	if r.hints != nil {
+		b.WriteString("  hint    a nudge. It says what it costs before you spend it\n")
+	}
+	b.WriteString("  brief   reprint the briefing and the objectives\n")
+	if r.resets != nil {
+		b.WriteString("  reset   rebuild this level from scratch, if you have broken it\n")
+	}
+	if r.pass != nil && r.pass.advance {
+		b.WriteString("  next    once you have passed, go straight to the next level\n")
+	}
+	b.WriteString("  exit    leave the sandbox\n")
+	b.WriteString("\nEverything else is a real Linux shell. `help cd` still asks bash.\n")
+	return b.String()
 }
 
 // check runs the level's checks and renders the result.

@@ -396,3 +396,42 @@ func TestGoDirectiveStaysAtTheSupportedFloor(t *testing.T) {
 			"See the comment above the require block in go.mod.", found, wantFloor)
 	}
 }
+
+// TestCommandFooterNamesEveryWayOut is the regression test for the defect five
+// recorded playthroughs made obvious: the footer named `check` and `exit` and
+// nothing else, so the only two things a stuck learner knew were the check they
+// had already failed and the way to quit.
+//
+// Everything that could have rescued them was invisible. The pack ships 101
+// hints across its 25 levels, `brief` is the only way back to objectives that
+// have scrolled off the top, and `reset` is the only way out of a level world
+// they have broken. No briefing in the pack names any of the three, so this
+// footer is the only place they can be named at all.
+func TestCommandFooterNamesEveryWayOut(t *testing.T) {
+	var b strings.Builder
+	printCommandFooter(&b)
+	got := b.String()
+
+	for _, want := range []string{"`check`", "`hint`", "`brief`", "`reset`", "`exit`"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the footer does not name %s, so nothing in the game does: %q", want, got)
+		}
+	}
+}
+
+// TestCommandFooterReachesALevelWithNoObjectives pins why the footer is its own
+// function. It used to be the last line of printObjectiveChecklist, which
+// returns early when a level declares no objectives, and a learner on such a
+// level was told nothing whatsoever.
+func TestCommandFooterReachesALevelWithNoObjectives(t *testing.T) {
+	var b strings.Builder
+	printBriefing(&b, &content.Level{
+		ID:       "empty-01",
+		Title:    "No Objectives",
+		Briefing: "A level that declares no objectives.",
+	}, defaultBriefWidth, false)
+
+	if !strings.Contains(b.String(), "`hint`") {
+		t.Errorf("a level with no objectives leaves the learner with no commands: %q", b.String())
+	}
+}

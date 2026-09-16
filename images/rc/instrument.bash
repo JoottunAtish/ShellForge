@@ -182,6 +182,31 @@ shopt -s histappend
 export PATH="/opt/shellforge/bin:$PATH"
 
 # ---------------------------------------------------------------------------
+# `help`: what can I type?
+#
+# A function rather than a script in /opt/shellforge/bin, and for a different
+# reason than `next`. `help` is a bash builtin, and a builtin outranks PATH, so
+# a script by that name is never reached. A beginner who types the one word
+# everybody types when stuck would get the list of shell builtins instead,
+# which reads as "there is no help here" on the page where that is least true:
+# the pack ships 101 hints and nothing in the game named `hint` until now.
+#
+# A function outranks a builtin, so this one wins. With arguments it hands
+# straight back to the builtin, because `help cd` is a real question with a
+# real answer and this is a game about learning the shell. Only the bare word
+# is ours.
+# ---------------------------------------------------------------------------
+# BEGIN __sf_help
+help() {
+  if [ "$#" -gt 0 ]; then
+    builtin help "$@"
+    return
+  fi
+  /opt/shellforge/bin/_sf-request help
+}
+# END __sf_help
+
+# ---------------------------------------------------------------------------
 # `next`: go on to the level after this one.
 #
 # A function rather than a script in /opt/shellforge/bin, and that is the

@@ -55,6 +55,7 @@ func printBriefing(w io.Writer, level *content.Level, width int, color bool) {
 	fmt.Fprintf(w, "\n%s\n", strings.TrimRight(body, "\n"))
 
 	printObjectiveChecklist(w, level)
+	printCommandFooter(w)
 
 	fmt.Fprintf(w, "%s\n\n", briefingRule)
 }
@@ -83,7 +84,6 @@ func printObjectiveChecklist(w io.Writer, level *content.Level) {
 		}
 		fmt.Fprintf(w, "  %d. [ ] %s\n", i+1, label)
 	}
-	fmt.Fprintf(w, "\nType `check` when you think you have it. Type `exit` to leave.\n")
 }
 
 // renderMarkdown turns a briefing into text for a terminal.
@@ -93,6 +93,25 @@ func printObjectiveChecklist(w io.Writer, level *content.Level) {
 // indefensible: the raw markdown is perfectly readable, and a learner who cannot
 // play because of a formatting library has been failed by us rather than by
 // their answer. The caller logs the reason only under --log-level=debug.
+// printCommandFooter writes the only list of in-level commands a learner
+// ever sees, so it names all of them.
+//
+// It used to name `check` and `exit` alone, which is the quit button and the
+// one thing a stuck learner has already tried. The hint ladder is 101 written
+// hints across 25 levels, `brief` is the only way back to objectives that have
+// scrolled off, and `reset` is the only way out of a level world the learner
+// has broken. None of the three is discoverable anywhere else: no briefing in
+// the pack mentions them, and `help` inside the sandbox reaches bash before it
+// reaches us unless something claims the name.
+//
+// It is its own function rather than the last line of printObjectiveChecklist
+// because that returns early on a level with no objectives, which left the
+// learner told nothing at all.
+func printCommandFooter(w io.Writer) {
+	fmt.Fprintf(w, "\nType `check` when you think you have it, or `hint` if you are stuck.\n")
+	fmt.Fprintf(w, "`brief` reprints this, `reset` rebuilds the level, and `exit` leaves.\n")
+}
+
 func renderMarkdown(md string, width int, color bool) string {
 	if strings.TrimSpace(md) == "" {
 		return ""
