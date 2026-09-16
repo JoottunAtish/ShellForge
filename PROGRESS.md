@@ -5,7 +5,7 @@ push, get CI green, and add a line here. No silent carry-over. If an exit criter
 is unchecked the next morning, it either gets done before new work or it gets
 formally cut.
 
-**Current state: the campaign is complete at 25 levels and Day 4's game core is in. `shellforge play` is the command a learner types: it opens the progress database, resolves the next unlocked level from the curriculum DAG, says which level it chose and why BEFORE provisioning anything, plays it through the Session Orchestrator, scores it, and prints a pass banner with the arithmetic shown line by line. Inside a level, `check` scores, `hint` quotes its price and then spends it on a second confirming request, and `reset` names what it would delete and then rebuilds. `skip` records a level skipped so its dependants unlock, `stats` prints XP, rank, per-act progress and all fourteen achievements with the locked ones shown as locked, and `map` is unchanged. Fourteen achievements run as bus subscribers with no orchestrator involvement. Day 5 wrote the sixteen outstanding levels, `files-05` through `boss-final`, with their assets, and all 25 now pass the golden contract against a real Docker daemon. That first real run was worth what it cost: it found a stray process outliving proc-01's teardown, a sandbox container being reused three weeks after the image under it had changed, a top rank 20 XP above what every level in the pack awards together, a world-writable `/etc/wsl.conf` in any image built through WSL, and a curriculum that demanded output redirection in level 1 and did not teach it until level 6. Still NOT done: nobody has played the campaign start to finish in one sitting, which is a Day 5 exit criterion and is carried rather than cut. The first real play of nav-01 immediately paid for itself: it found that `Journal.SetLevel` had no production caller, so every `command_matched` bonus in the pack was unreachable, and that a live objective tick left the learner staring at a prompt that had scrolled out of reach. It also found that `clear` wipes the quest briefing beyond recovery, scrollback included, and that a learner who passes a level is told their score and nothing about how to reach the next one. A sixth turned up on the way out: `exit` reported a level failure, because a read of the pseudo terminal master returns EIO once the shell is gone and nothing treated that as the clean exit it is. All are fixed, `play` now carries on to the next level once one is passed, and `next` typed at the prompt takes the learner there itself: see the Day 6 follow-ups at the bottom. Windows still plays from inside WSL.**
+**Current state: the documentation describes the build that exists, and v0.1.0 is one tag push away, with one release blocker filed against it (#172: a release install cannot provision a sandbox on either platform, because the installers place the binary and not the sandbox image). The campaign is complete at 25 levels and Day 4's game core is in. `shellforge play` is the command a learner types: it opens the progress database, resolves the next unlocked level from the curriculum DAG, says which level it chose and why BEFORE provisioning anything, plays it through the Session Orchestrator, scores it, and prints a pass banner with the arithmetic shown line by line. Inside a level, `check` scores, `hint` quotes its price and then spends it on a second confirming request, and `reset` names what it would delete and then rebuilds. `skip` records a level skipped so its dependants unlock, `stats` prints XP, rank, per-act progress and all fourteen achievements with the locked ones shown as locked, and `map` is unchanged. Fourteen achievements run as bus subscribers with no orchestrator involvement. Day 5 wrote the sixteen outstanding levels, `files-05` through `boss-final`, with their assets, and all 25 now pass the golden contract against a real Docker daemon. That first real run was worth what it cost: it found a stray process outliving proc-01's teardown, a sandbox container being reused three weeks after the image under it had changed, a top rank 20 XP above what every level in the pack awards together, a world-writable `/etc/wsl.conf` in any image built through WSL, and a curriculum that demanded output redirection in level 1 and did not teach it until level 6. Still NOT done: nobody has played the campaign start to finish in one sitting, which is a Day 5 exit criterion and is carried rather than cut. The first real play of nav-01 immediately paid for itself: it found that `Journal.SetLevel` had no production caller, so every `command_matched` bonus in the pack was unreachable, and that a live objective tick left the learner staring at a prompt that had scrolled out of reach. It also found that `clear` wipes the quest briefing beyond recovery, scrollback included, and that a learner who passes a level is told their score and nothing about how to reach the next one. A sixth turned up on the way out: `exit` reported a level failure, because a read of the pseudo terminal master returns EIO once the shell is gone and nothing treated that as the clean exit it is. All are fixed, `play` now carries on to the next level once one is passed, and `next` typed at the prompt takes the learner there itself: see the Day 6 follow-ups at the bottom. Windows still plays from inside WSL.**
 
 ---
 ---
@@ -5672,7 +5672,11 @@ person and two virtual machines, which this session had neither of.
 ## Day 7: documentation and release
 
 - [ ] Someone who has never seen the project installs and plays using only the README
+      (blocked on #172: a release install cannot provision a sandbox on either
+      platform. The documentation is written and honest about it; the criterion
+      cannot be met until that lands.)
 - [ ] `v0.1.0` released with binaries and the rootfs artifact attached
+      (the workflow and the checklist are ready; the tag follows the #171 merge)
 
 ---
 
@@ -6064,3 +6068,92 @@ absolute path to the control shim for a stub. Each runs in a subshell,
 because the entire behaviour under test is that one branch calls `exit` and
 the other does not, and a test that ran it in place would end on its first
 passing case.
+
+---
+
+### Day 7, 2026-09-16: the documentation and release pass (issue #171)
+
+Day 7 of the seven-day plan: tasks 7.1 to 7.5 and the mergeable half of
+7.7, on one branch, as `docs/design/DAY-7-TICKETS.md` argued for and issue
+#171 specified. 7.6 was excluded on purpose, being #86 and #132 with PR
+#160 already open against them, and changing a gate inside a
+documentation pull request is the move the workflow forbids.
+
+**The headline is that writing the install guides against the real binary
+found a release blocker, filed as #172.** Neither backend can find a
+sandbox image outside a clone of this repository. On Linux,
+`dockerRuntime.ensureImage` builds from `images/Containerfile` resolved by
+walking up to the nearest `go.mod`, which a machine holding only
+`~/.local/bin/shellforge` does not have. On Windows, `wsl.defaultRootfs`
+looks in the cache directory that its own comment says "a future
+installer" would fill, and neither installer fetches the `rootfs.tar.gz`
+the release already publishes. The `rootfs-not-found` remediation told the
+reader to run `make rootfs`, which needs a clone, a Makefile and a
+container engine, and the person reading it has none of the three.
+
+Nothing caught it because every green path in CI and in development runs
+from inside the repository, where both fallbacks resolve. Task 6.8, the
+clean VM install, is what would have caught it and is still owed. The
+documentation now says so rather than papering over it: both install
+guides and both troubleshooting entries name the bug, link #172, and give
+the clone-based workaround that works today.
+
+**The gate.** `cmd/shellforge/docs_commands_test.go` reads the twelve
+user-facing documents, pulls every `shellforge ...` invocation out of
+their code spans and fenced blocks, and resolves each against the tree
+`NewRootCommand` builds. Run against the unfixed tree it named exactly
+five defects across ten occurrences: `shellforge uninstall` and
+`shellforge export --format=json`, neither ever a registered verb;
+`shellforge --ascii`, where `--ascii` is a flag on `map`; `shellforge
+reset --hard`, where `reset` takes `--yes`; and `shellforge author
+scaffold` in four documents, which resolves to a stub. Then one
+deliberate violation of each of the three failure kinds was injected,
+named, and removed. Same procedure the layer rule and the punctuation gate
+were verified with on Day 0.
+
+Three decisions inside it. Only code counts, because reading prose as a
+command turns "`shellforge author scaffold` generates the skeleton for
+you" into an invocation whose arguments are the rest of the sentence; that
+also supplies the only escape hatch, since a page sometimes has to say a
+verb does not exist and code formatting here means "you can paste this".
+Flags need two rules, because `play`, `run`, `check`, `hint` and `reset`
+all set `DisableFlagParsing` and register none of the flags they
+advertise, so for those the usage line is the declaration. `docs/design/**`
+and `PROGRESS.md` are out of the doc set: the design record is intent, and
+this file is a log whose August lines were true in August.
+
+**What the accuracy pass turned up beyond the five.** `platform.ConfigDir`
+has no production caller, so v0.1.0 writes no configuration file, and
+nothing writes to `platform.LogDir` either, which `internal/bugreport`
+already knew and said in a comment. Two of the four directories the
+uninstall page tells you to delete may simply not exist, and both pages
+now say that empty or absent is the expected outcome.
+`04-how-it-works.md` had put config in `~/.local/share/shellforge` on
+Linux, where `paths.go` puts the database. `02-install-linux.md` required
+"Docker or Podman" against a CLAUDE.md that rules Podman out explicitly.
+`03-quickstart.md` still said nine levels were playable.
+
+**What is not done, and is not hidden.** `docs/assets/demo.gif` is not
+recorded: `demo.tape` and `make demo` are in, the tape passes `vhs
+validate`, and the target was run to confirm it refuses by naming VHS, but
+this container's network policy denies the Docker registry so no sandbox
+can be built here. `README.md` carries a comment at the position the image
+will occupy rather than a reference to a file that does not exist. No
+Windows screenshots were captured, for the same reason 6.8 has not
+happened: nobody has sat in front of a clean Windows 11 VM.
+`docs/01-install-windows.md` carries no placeholder text either way, and
+`docs/assets/README.md` lists the eleven shots worth taking.
+`govulncheck` could not run here, `vuln.go.dev` being denied by the same
+policy; `gosec` is clean and CI runs both.
+
+`CHANGELOG.md` and `docs/design/RELEASE-CHECKLIST.md` are new. The
+checklist carries the ordering constraint that is easiest to get
+backwards: the tag goes up immediately after this merges, because between
+the two, `main` describes a release that does not exist, and tagging first
+would publish a release whose README says there is no release. It names
+all six assets `release.yml` attaches, because a partial upload looks like
+a successful one from the workflow log, and it says plainly that section
+5, two clean machines following only the written documentation, is the
+release and the rest is preparation.
+
+Closes #139, by making the uninstall page describe only verbs that exist.
