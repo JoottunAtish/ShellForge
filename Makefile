@@ -218,6 +218,11 @@ golden-go: golden-image
 #
 # It needs a working sandbox, so a container engine has to be up. The tape
 # provisions one in a hidden block rather than making anyone watch it.
+#
+# Deliberately not mirrored in make.ps1, which the header above otherwise asks
+# to be kept in sync. The demo is recorded once per release by whoever cuts it,
+# on the platform the GIF is recorded on, and a Windows twin nobody has run
+# would be a target that looks supported and is not.
 demo: build
 	@command -v vhs >/dev/null 2>&1 || { \
 	  echo "FAIL: vhs is not installed, so there is nothing to record with." >&2; \
