@@ -97,6 +97,9 @@ func TestEveryCommandInTheDocsResolves(t *testing.T) {
 	}
 
 	cmd := NewRootCommand(VersionInfo{})
+	// cobra generates `help` on demand, so without this it is absent from
+	// Commands() and a page documenting it would fail here for existing.
+	cmd.InitDefaultHelpCmd()
 	for _, inv := range invocations {
 		if err := resolve(cmd, inv); err != nil {
 			t.Errorf("%s:%d: `%s`\n  %v", inv.File, inv.Line, inv, err)

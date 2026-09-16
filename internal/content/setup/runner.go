@@ -91,7 +91,7 @@ const (
 
 	remediationSandboxUnhealthy = "Run `shellforge sandbox rebuild`."
 
-	remediationLevelStateCorrupted = "Run `shellforge reset --hard`. If that does not help, remove the sandbox with `docker rm -f shellforge-sandbox` and let the next run build a clean one."
+	remediationLevelStateCorrupted = "Type `reset` at the prompt inside the level to see what a rebuild would delete, then `reset --yes` to do it. If that does not help, leave the sandbox and run `shellforge sandbox rebuild`."
 )
 
 // ownerPattern matches a bare user or a user:group pair, such as "learner"
