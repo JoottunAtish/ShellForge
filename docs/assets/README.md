@@ -12,7 +12,21 @@ does not.
 `demo.tape` is the script. `make demo` runs it and writes `demo.gif` here.
 
 Target: under 5 MB, roughly 25 seconds, showing a real level actually being
-solved.
+solved. The committed recording is 478 KB and 27 seconds, 1200 by 750, made
+against `pipe-05` on the Docker backend.
+
+### Re-recording it
+
+`make demo` needs `vhs`, `ttyd` and `ffmpeg` on PATH. VHS renders through a
+headless Chromium it downloads on first run, so a minimal Linux box also needs
+that browser's shared libraries (`libatk`, `libgbm`, `libnss3` and the rest) and
+at least one installed font. With no font the terminal records as empty boxes.
+
+**Use VHS v0.10.0.** v0.12.0 captures its frames and then exits 0 having written
+no file: it never invokes `ffmpeg`, prints no error, and leaves you with its
+"Creating demo.gif" line and nothing on disk. `make demo` catches it anyway,
+because the target lists the GIF afterwards and fails when it is absent, but the
+failure does not say why and this paragraph is the reason it does not have to.
 
 Storyboard:
 

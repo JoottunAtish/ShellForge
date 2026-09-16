@@ -9,11 +9,7 @@
 
 [![Shellforge on GitHub](https://githubcard.com/JoottunAtish/ShellForge.svg?d=4S7ENYlgGRMx)](https://github.com/JoottunAtish/ShellForge)
 
-<!-- The demo GIF goes here, above the fold, as soon as it is recorded. Add an
-     image line pointing at docs/assets/demo.gif, with alt text describing the
-     level being solved. Record it with `make demo`; see docs/assets/README.md.
-     The link is described rather than written out because check-links.sh reads
-     inside comments and a target that does not exist yet fails the build. -->
+![Solving the pipe-05 level: the briefing opens on a billing service alarm, three rotated logs are searched for ERROR lines and the total written to report.txt, then check turns every objective green and awards the XP.](docs/assets/demo.gif)
 
 Shellforge drops you into a real Linux shell inside a disposable sandbox and gives
 you jobs to do. Not multiple choice. Not a simulator. You type real commands into a
