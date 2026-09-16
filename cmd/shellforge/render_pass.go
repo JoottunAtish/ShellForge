@@ -155,6 +155,14 @@ func renderPassBanner(d passSummaryData, color bool) string {
 // reach it. Telling them to run it without telling them to leave first earns
 // them a "command not found" and no explanation, which is exactly what
 // happened to the first person to finish a level.
+//
+// `next` is named first in the one case where it works, because it is the
+// better answer wherever it is available: it carries the learner into the
+// next level without leaving the terminal at all. Naming it anywhere else
+// would be worse than not naming it, because gameResponder.canAdvance
+// refuses unless a next level is known and `play` is driving, which is
+// exactly what the Offered and LevelID pair describes. Under `run` and
+// `play <level-id>` a learner who typed it would be told no.
 func renderNextStep(n nextStep) string {
 	if n.Complete {
 		return "That was the last level in the pack.\n" +
@@ -167,7 +175,7 @@ func renderNextStep(n nextStep) string {
 		return "Type `exit` to leave the sandbox, then run `shellforge play` to carry on."
 	}
 	if n.Offered {
-		return fmt.Sprintf("Next up: %s, %s.\nType `exit` to leave the sandbox, and you will be asked whether to start it.",
+		return fmt.Sprintf("Next up: %s, %s.\nType `next` to go straight there, or `exit` to leave the sandbox and be asked whether to start it.",
 			n.LevelID, n.Title)
 	}
 	return fmt.Sprintf("Next up: %s, %s.\nType `exit` to leave the sandbox, then run `shellforge play` to start it.",
