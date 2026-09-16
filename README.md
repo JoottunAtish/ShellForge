@@ -9,9 +9,11 @@
 
 [![Shellforge on GitHub](https://githubcard.com/JoottunAtish/ShellForge.svg?d=4S7ENYlgGRMx)](https://github.com/JoottunAtish/ShellForge)
 
-<!-- The demo GIF goes here, above the fold, as soon as it is recorded:
-     ![Solving a Shellforge level: the briefing, three log files, one pipeline, and a pass](docs/assets/demo.gif)
-     Record it with `make demo`. See docs/assets/README.md. -->
+<!-- The demo GIF goes here, above the fold, as soon as it is recorded. Add an
+     image line pointing at docs/assets/demo.gif, with alt text describing the
+     level being solved. Record it with `make demo`; see docs/assets/README.md.
+     The link is described rather than written out because check-links.sh reads
+     inside comments and a target that does not exist yet fails the build. -->
 
 Shellforge drops you into a real Linux shell inside a disposable sandbox and gives
 you jobs to do. Not multiple choice. Not a simulator. You type real commands into a
