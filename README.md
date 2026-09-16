@@ -5,7 +5,7 @@
 [![CI](https://github.com/JoottunAtish/ShellForge/actions/workflows/ci.yml/badge.svg)](https://github.com/JoottunAtish/ShellForge/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Go 1.25+](https://img.shields.io/badge/go-1.25%2B-00ADD8.svg)](https://go.dev/dl/)
-[![Status: pre-alpha](https://img.shields.io/badge/status-pre--alpha-orange.svg)](PROGRESS.md)
+[![Release: v0.1.0](https://img.shields.io/badge/release-v0.1.0-brightgreen.svg)](https://github.com/JoottunAtish/ShellForge/releases/latest)
 
 [![Shellforge on GitHub](https://githubcard.com/JoottunAtish/ShellForge.svg?d=4S7ENYlgGRMx)](https://github.com/JoottunAtish/ShellForge)
 
@@ -15,11 +15,6 @@ real `bash` process, and the game checks whether you actually did the thing.
 
 You are a new junior sysadmin at Meridian Logistics. The last engineer left without
 documentation. There are 25 tickets waiting.
-
-> **Status: pre-alpha, under active construction.** The design is complete and the
-> repository is scaffolded. The engine is not built yet. See [PROGRESS.md](PROGRESS.md)
-> for exactly what works today and [docs/design/SEVEN-DAY-PLAN.md](docs/design/SEVEN-DAY-PLAN.md)
-> for what lands when. There is no installable release yet.
 
 ---
 
@@ -36,7 +31,7 @@ pass. That is the difference between teaching a command and teaching a skill.
 | | |
 |---|---|
 | **Real shell** | Actual `bash` in a PTY. `vim`, `less`, `htop`, job control, tab completion, Ctrl-C all work. |
-| **Real verification** | 13 check types that read filesystem state, process state, file modes, ownership and shell environment. |
+| **Real verification** | 14 check types that read filesystem state, process state, file modes, ownership, shell environment and the command journal. |
 | **Really disposable** | `rm -rf /` inside the sandbox destroys nothing on your machine, and `reset` rebuilds the level in under a second. |
 | **Really offline** | No account, no server, no telemetry. Progress is a SQLite file on your disk. |
 | **Really yours** | Levels are declarative YAML. Write your own, ship a pack. |

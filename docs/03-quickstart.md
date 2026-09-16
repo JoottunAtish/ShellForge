@@ -1,8 +1,5 @@
 # Quickstart
 
-> **Status: outline.** Written properly on Day 7. The loop below is real and
-> playable today, and so is every command in the two tables further down.
-
 You are installed. Here is the loop.
 
 ```

@@ -1,12 +1,5 @@
 # Install on Windows
 
-> **Status: outline.** This is the most important file in the repository and it is
-> written properly on Day 7, with every screenshot below actually taken against a
-> real build. `scripts/install.ps1` itself is real today, and step 4 below
-> describes exactly what it does; everything else on this page, including
-> whether the WSL steps still read this way once install.ps1 has been run on a
-> clean machine, is still owed.
-
 **Who this is for:** you are on Windows, you have never opened a terminal, and you
 would like to keep your laptop in one piece. That is exactly the right starting
 point.

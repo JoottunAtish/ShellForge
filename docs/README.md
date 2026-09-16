@@ -58,6 +58,10 @@ The reader is anxious and has no context. From
 
 ## Status
 
-The design record is complete. The user-facing guides numbered 01 to 07 are
-outlines, and they are written properly on Day 7 against a build that actually
-installs. Do not follow them yet; there is nothing to install.
+The guides numbered 01 to 07 describe v0.1.0, which is the build you can install
+today. Every command they show resolves against the shipped binary, and
+`cmd/shellforge/docs_commands_test.go` fails the build if that stops being true.
+
+What they do not yet have is a full set of screenshots. `docs/assets/README.md`
+records which images exist and which are still owed; every step reads correctly
+without them.

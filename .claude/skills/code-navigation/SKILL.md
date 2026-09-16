@@ -65,23 +65,25 @@ assemble_task_context { "repo": ".", "task": "<the task>" }
 
 ## What actually exists right now
 
-**This repository is a Day 0 scaffold.** Most of the architecture described in the
-documentation is not implemented. Before concluding that something is missing,
-check `PROGRESS.md`, which is the authoritative list of what is built.
+**Every layer in the map is implemented.** The CLI, both runtimes, the PTY
+multiplexer, the journal, the content engine, the verification engine, the game
+core, the store, the platform probes and `doctor` are all real, and all 25 levels
+pass the golden contract. `PROGRESS.md` remains the authoritative list and is
+worth checking before concluding anything, but the question it answers has
+changed: the trap is no longer "this is not built", it is a design document
+describing something the code now does differently.
 
-Implemented today:
+Two things in the CLI are still stubs and answer with a refusal rather than
+behaviour: `shellforge author scaffold` and `shellforge author record`. They are
+`cut: v0.2`. `stubCommand` in `cmd/shellforge/root.go` registers both, and the
+`shellforge.stub` annotation it sets is what
+`cmd/shellforge/docs_commands_test.go` reads to keep the user-facing
+documentation from naming them.
 
-| Path | Contents |
-|---|---|
-| `cmd/shellforge/` | CLI dispatcher, command table, `version`, help rendering |
-| `internal/platform/` | `ConfigDir`, `CacheDir`, `DataDir`, `LogDir`, `DatabasePath`, `EnsureDir` |
-| `internal/platform/ux/` | `Error`, `Fail`, `Render`, the palette and `NO_COLOR` handling |
-| `internal/archtest/` | Layer dependency enforcement |
-
-Every other `internal/*` package contains only a `doc.go` stating its layer and its
-import constraints. Those doc comments are the fastest way to understand the
-intended design of an unimplemented package, so `get_file_outline` on a `doc.go` is
-worth doing before assuming a package is empty.
+Every `internal/*` package carries a `doc.go` stating its layer and its import
+constraints. Those doc comments are the fastest way to understand the intended
+design of a package, so `get_file_outline` on a `doc.go` is still worth doing
+first.
 
 ## Routing by question
 

@@ -1,8 +1,8 @@
 # Troubleshooting
 
-> **Status: outline.** Written properly on Day 7 against a build that actually
-> installs. The headings below are the contract: every `doctor` probe emits a doc
-> anchor, and CI fails the build if the anchor has no heading here.
+Every heading on this page is a contract. Every `doctor` probe emits a doc
+anchor, and CI fails the build if an emitted anchor has no heading here, because
+a diagnostic that links to a page nobody wrote is worse than no link at all.
 
 Every entry follows the same shape, because someone reading this page is already
 frustrated and needs the answer, not an essay.

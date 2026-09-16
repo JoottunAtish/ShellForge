@@ -1,10 +1,5 @@
 # Install on Linux
 
-> **Status: outline.** Written properly on Day 7, with the per distribution
-> container runtime commands, rootless Podman, and the arm64 and macOS notes
-> below filled in. `scripts/install.sh` itself is real today, and section 2
-> below describes exactly what it does.
-
 **Who this is for:** you are on Linux and comfortable with a package manager. This
 page is deliberately short.
 

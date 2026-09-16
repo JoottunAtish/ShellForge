@@ -1,9 +1,5 @@
 # Authoring levels
 
-> **Status: outline.** Written on Day 7, derived from
-> [LEVEL-FORMAT.md](LEVEL-FORMAT.md), which is the authoritative schema. Read that
-> one until this page exists properly.
-
 A level is a YAML file plus its assets. You do not need to write any Go.
 
 ## Quick start

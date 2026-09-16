@@ -1,8 +1,5 @@
 # How it works
 
-> **Status: outline.** Written on Day 7. This is the trust document, and it is
-> worth the hour it costs.
-
 Five questions a reasonably suspicious person should ask before running an
 unfamiliar program that says it wants to teach them Linux.
 
