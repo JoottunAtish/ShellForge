@@ -9,8 +9,10 @@ A level is a YAML file plus its assets. You do not need to write any Go.
 ## Quick start
 
 ```bash
-shellforge author scaffold my-level
-$EDITOR packs/core-linux-basics/levels/my-level.yaml
+# Start from a level that already passes the golden contract.
+cp packs/core-linux-basics/levels/10-pipe-01.yaml \
+   packs/core-linux-basics/levels/26-my-level.yaml
+$EDITOR packs/core-linux-basics/levels/26-my-level.yaml
 shellforge author validate packs/core-linux-basics
 shellforge author test my-level
 shellforge run my-level

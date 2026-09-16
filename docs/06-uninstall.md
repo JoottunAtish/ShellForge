@@ -1,11 +1,8 @@
 # Uninstall
 
-> **Status: partial.** `shellforge sandbox destroy` is real as of issue #71 and
-> this page's sandbox section describes it. `shellforge export` and
-> `shellforge uninstall`, named below, are not built yet: neither verb is
-> registered today, and running either one prints cobra's own unknown command
-> error. That gap is tracked as issue #139, not hidden. Do not read this page
-> as a complete uninstall path until both verbs land.
+Removing Shellforge is two steps: the sandbox, then everything else. There is no
+single uninstall command in v0.1.0, so this page names every file and directory
+by hand, and the last section tells you how to confirm each one is gone.
 
 Be complete and be explicit. Orphaned 2 GB disk images are where the angry issues
 come from, and this page existing properly is the difference.
@@ -38,20 +35,72 @@ Keeping or removing that data is not this command's job.
 
 ## Keep your progress first, if you want it
 
-```
-shellforge export --format=json > shellforge-progress.json
+Everything Shellforge knows about you is one SQLite file. Copy it somewhere the
+uninstall will not reach and you have kept your progress:
+
+**Linux:**
+
+```bash
+cp ~/.local/share/shellforge/progress.db ~/shellforge-progress-backup.db
 ```
 
-**Not built yet.** `export` is not a registered verb today. Once it exists,
-uninstalling the rest of Shellforge will remove your progress permanently, and
-there is no cloud copy to fall back on, because there is no cloud.
+**Windows:**
 
-## Remove everything
+```powershell
+Copy-Item "$env:LOCALAPPDATA\shellforge\progress.db" "$env:USERPROFILE\shellforge-progress-backup.db"
+```
 
+Uninstalling removes your progress permanently, and there is no cloud copy to
+fall back on, because there is no cloud. Putting the file back where it came
+from restores it.
+
+There is no export verb in v0.1.0. A human-readable export is a v0.2 question;
+copying the file is the thing that works today, and it is the complete backup
+rather than a summary of one.
+
+## Remove everything else
+
+`sandbox destroy` deliberately leaves your progress, configuration and cache
+alone. Removing those is this section, and it is four directories on Linux and
+two on Windows.
+
+Look at each one before you delete it. If a directory holds something you did
+not expect, stop and read it rather than removing it: nothing else on your
+machine writes to these paths, so a surprise is worth understanding.
+
+**Linux:**
+
+```bash
+ls -la ~/.local/share/shellforge    # progress database
+ls -la ~/.config/shellforge         # config.toml
+ls -la ~/.cache/shellforge          # cached artifacts and rotated logs
 ```
-shellforge sandbox destroy      # real: removes the WSL distribution or the container
-shellforge uninstall            # not built yet: removes config, progress, and cache
+
+```bash
+rm -rf ~/.local/share/shellforge
+rm -rf ~/.config/shellforge
+rm -rf ~/.cache/shellforge
 ```
+
+**Windows:**
+
+```powershell
+Get-ChildItem "$env:LOCALAPPDATA\shellforge"   # progress database, sandbox files, and cache
+Get-ChildItem "$env:APPDATA\shellforge"        # config.toml
+```
+
+```powershell
+Remove-Item -Recurse -Force "$env:LOCALAPPDATA\shellforge"
+Remove-Item -Recurse -Force "$env:APPDATA\shellforge"
+```
+
+Two directories rather than three on Windows, because the cache lives at
+`%LocalAppData%\shellforge\cache`, one level inside the first path. Removing
+that path takes the cache with it.
+
+If you set `XDG_DATA_HOME`, `XDG_CONFIG_HOME` or `XDG_CACHE_HOME`, Shellforge
+used `$XDG_DATA_HOME/shellforge` and so on instead of the defaults above. Check
+with `echo $XDG_DATA_HOME` before you delete anything.
 
 Then remove the binary itself. `scripts/install.sh` and `scripts/install.ps1`
 each place it in one fixed default directory and, on Windows, add one entry to
@@ -146,8 +195,18 @@ docker rmi shellforge-sandbox
 
 ## What is left behind after all of this
 
-Your progress database, config, and cache: `sandbox destroy` deliberately does
-not touch them, per the section above. Once `export` and `uninstall` exist,
-this section states plainly what running both leaves behind, which should be
-nothing, and that claim gets verified on a real machine before release, with
-File Explorer open.
+Nothing, and here is the full list so you can check rather than take our word
+for it. Shellforge writes to these paths and no others:
+
+| What | Linux | Windows |
+|---|---|---|
+| Progress database | `~/.local/share/shellforge/progress.db` | `%LocalAppData%\shellforge\progress.db` |
+| Configuration | `~/.config/shellforge/` | `%AppData%\shellforge\` |
+| Cache and logs | `~/.cache/shellforge/` | `%LocalAppData%\shellforge\cache\` |
+| Sandbox | a Docker container and image named `shellforge-sandbox` | a WSL distribution named `shellforge-sandbox`, and its install directory under `%LocalAppData%\shellforge\` |
+| The binary | `~/.local/bin/shellforge` | `%LocalAppData%\Programs\shellforge\shellforge.exe` |
+| One `PATH` entry | none: `install.sh` never edits a shell profile | `%LocalAppData%\Programs\shellforge`, in the user `Path` |
+
+Nothing is written outside this list. No registry keys beyond the one `Path`
+entry above, no scheduled tasks, no services, no system-wide directories, and
+nothing in your home directory other than the paths named here.

@@ -615,8 +615,11 @@ tags: [text-processing, must-know]
 ## 7. Authoring workflow
 
 ```bash
-shellforge author scaffold pipe-06        # generate skeleton + assets dir
-$EDITOR packs/core-linux-basics/levels/pipe-06.yaml
+# There is no scaffold generator in v0.1.0. Start from a shipped level: it
+# already passes the golden contract, which an empty skeleton does not.
+cp packs/core-linux-basics/levels/10-pipe-01.yaml \
+   packs/core-linux-basics/levels/26-pipe-06.yaml
+$EDITOR packs/core-linux-basics/levels/26-pipe-06.yaml
 shellforge author validate packs/core-linux-basics
 shellforge author test pipe-06            # golden test: fails clean → solution → passes
 shellforge run pipe-06                    # play it yourself

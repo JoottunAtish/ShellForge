@@ -154,7 +154,9 @@ ever intercepting or re-executing your commands. Full design in
 ## Contributing
 
 Contributions are welcome, especially levels. A level is a YAML file plus its
-assets, and `shellforge author scaffold` generates the skeleton for you.
+assets. Copy the level in `packs/core-linux-basics/levels/` closest to what you
+have in mind, then `shellforge author validate` and `shellforge author test`
+hold your version to the same contract every shipped level passes.
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) first. The short version: LF line endings,
 no new dependencies without asking, every check needs a written failure message, and

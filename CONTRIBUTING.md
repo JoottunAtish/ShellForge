@@ -88,8 +88,12 @@ gofmt -s -w . && go vet ./... && go test ./...
 This is the path we most want people to take.
 
 ```bash
-shellforge author scaffold my-level-id     # generates the skeleton and assets dir
-$EDITOR packs/core-linux-basics/levels/my-level-id.yaml
+# Start from the shipped level closest to what you have in mind. There is no
+# scaffold generator in v0.1.0, and copying a level that already passes the
+# golden contract is a better starting point than an empty skeleton anyway.
+cp packs/core-linux-basics/levels/10-pipe-01.yaml \
+   packs/core-linux-basics/levels/26-my-level-id.yaml
+$EDITOR packs/core-linux-basics/levels/26-my-level-id.yaml
 shellforge author validate packs/core-linux-basics
 shellforge author test my-level-id         # golden test
 shellforge run my-level-id                 # play it yourself

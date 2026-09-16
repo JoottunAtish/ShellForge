@@ -137,10 +137,10 @@ func newAuthorCommand() *cobra.Command {
 	author.AddCommand(
 		newValidateCommand(),
 		stubCommand("shellforge author scaffold", "scaffold <level-id>", "",
-			"Generate a new level's YAML and asset skeleton", "Day 2"),
+			"Generate a new level's YAML and asset skeleton", "v0.2"),
 		newAuthorTestCommand(),
 		stubCommand("shellforge author record", "record <level-id>", "",
-			"Capture a golden recording for one level", "Day 2"),
+			"Capture a golden recording for one level", "v0.2"),
 	)
 	return author
 }
@@ -177,6 +177,12 @@ func inLevelCommand(name, usage, group, short string) *cobra.Command {
 	}
 }
 
+// stubAnnotation marks a command as a stub: registered so `shellforge help`
+// stays an honest map of the product, but with no behaviour behind it. It
+// lives here rather than beside its reader because stubCommand sets it, and a
+// marker whose two halves are declared in different files drifts.
+const stubAnnotation = "shellforge.stub"
+
 // stubCommand returns a *cobra.Command for a verb the build plan has not
 // reached yet. Registering it now, rather than only once it is implemented,
 // keeps `shellforge help` an honest map of the product: an unbuilt verb
@@ -184,18 +190,26 @@ func inLevelCommand(name, usage, group, short string) *cobra.Command {
 //
 // name is the full invocation for the error message, such as
 // "shellforge author validate". usage is the local Use line cobra shows
-// under this command, such as "validate <pack-path>".
+// under this command, such as "validate <pack-path>". when names where the
+// verb is expected to land, and goes into the remediation verbatim.
+//
+// The annotation is what docs_commands_test.go reads. A verb registered here
+// answers a reader with a refusal, so the user-facing documentation must not
+// tell anyone to run one, and that gate is the only thing standing between a
+// stub and four documents quietly instructing people to use it, which is
+// exactly what had happened to `author scaffold` by Day 7.
 func stubCommand(name, usage, group, short, when string) *cobra.Command {
 	return &cobra.Command{
-		Use:     usage,
-		GroupID: group,
-		Short:   short,
-		Args:    cobra.ArbitraryArgs,
+		Use:         usage,
+		GroupID:     group,
+		Short:       short,
+		Args:        cobra.ArbitraryArgs,
+		Annotations: map[string]string{stubAnnotation: "true"},
 		RunE: func(*cobra.Command, []string) error {
 			return ux.Fail(
 				fmt.Sprintf("`%s` is not built yet", name),
 				nil,
-				fmt.Sprintf("This verb lands on %s of the build plan. Run `shellforge help` to see what works today, or read PROGRESS.md.", when),
+				fmt.Sprintf("This verb is planned for %s. Run `shellforge help` to see what works today, or read PROGRESS.md.", when),
 				"",
 			)
 		},

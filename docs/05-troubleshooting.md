@@ -222,7 +222,9 @@ again.
 console does not.
 
 **Fix:** Install Windows Terminal from the Microsoft Store and run Shellforge in
-it. If you cannot, run `shellforge --ascii` or set `NO_COLOR=1`.
+it. If you cannot, set `NO_COLOR=1` in your environment, which every Shellforge
+command honours. `shellforge map` also takes `--ascii`, which forces plain output
+for that one command whatever the environment says.
 
 ---
 
@@ -377,17 +379,24 @@ platform.
 
 **You'll see:** Checks failing on a level you have not started, or setup errors.
 
-**Fix:**
+**Fix:** `reset` rebuilds the level's world from scratch. Type it at the prompt
+inside the level, not on your own shell. It prints exactly what it would delete
+first, and `reset --yes` then does it:
 
 ```
-shellforge reset --hard
+reset
+reset --yes
 ```
 
-If that does not help, or if `reset` is not available yet, remove the sandbox and
-let the next run build a clean one:
+It only ever touches the level's own folder, so anything you saved elsewhere in
+the sandbox survives.
+
+If the sandbox itself is the problem rather than the level, rebuild it. This
+destroys the sandbox and provisions a new one, and it does not touch your
+progress:
 
 ```
-docker rm -f shellforge-sandbox
+shellforge sandbox rebuild
 ```
 
 ---
