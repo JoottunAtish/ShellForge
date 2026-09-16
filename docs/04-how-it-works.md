@@ -39,12 +39,31 @@ so a file you saved elsewhere in your sandbox home survives.
 
 ## 4. What is stored, and where?
 
-A SQLite database and a small configuration file, in `%LOCALAPPDATA%\shellforge` on
-Windows or `~/.local/share/shellforge` on Linux.
+One SQLite database, `progress.db`. That is the whole of what Shellforge knows
+about you, and copying that one file is a complete backup.
 
-It records which levels you passed, which commands you ran, and how long you took.
-Command *output* is not stored beyond the current session. This page will list the
-exact tables and show you how to delete all of it.
+Shellforge resolves four directories and writes inside them and nowhere else:
+
+| Directory | Linux | Windows | What is in it at v0.1.0 |
+|---|---|---|---|
+| Data | `~/.local/share/shellforge/` | `%LocalAppData%\shellforge\` | `progress.db`, and on Windows the sandbox's WSL backing store under `wsl\shellforge-sandbox\`, which is where the roughly 2 GB `.vhdx` lives |
+| Cache | `~/.cache/shellforge/` | `%LocalAppData%\shellforge\cache\` | `rootfs/rootfs.tar.gz`, if the sandbox image was fetched rather than built locally. Otherwise the directory may not exist. |
+| Config | `~/.config/shellforge/` | `%AppData%\shellforge\` | Nothing. v0.1.0 has no configuration file, so this directory may never be created. |
+| Logs | `~/.cache/shellforge/logs/` | `%LocalAppData%\shellforge\cache\logs\` | Nothing. v0.1.0 writes no log files, so this directory may never be created. |
+
+The last two rows are listed because they are resolved and reserved, and because
+[Uninstall](06-uninstall.md) tells you to remove them. Finding them empty or
+absent is the expected outcome, not a sign that something went wrong.
+
+On Windows the cache sits one level inside the data directory, which means
+removing the data directory removes the cache with it. Linux keeps them apart,
+following the XDG convention, and honours `XDG_DATA_HOME`, `XDG_CONFIG_HOME` and
+`XDG_CACHE_HOME` if you have set them.
+
+The database records which levels you passed, your score and rank, which
+achievements you have earned, and, per level, the commands you ran with their
+exit codes and timings. Command *output* is not stored at all: not in the
+database, not on disk, not beyond the moment it reaches your screen.
 
 **Nothing leaves your machine.** There is no account, no server, and no telemetry,
 and none are planned.
@@ -60,10 +79,29 @@ output, and never the environment snapshot.
 
 ## 5. What does it install on my system?
 
-One binary. One WSL distribution, or one container image. One configuration
-directory. Nothing else: no background services, no startup entries, no drivers.
+Four things on Windows and three on Linux. Here is all of it:
 
-See [Uninstall](06-uninstall.md) for removing every one of those.
+1. **One binary.** `shellforge.exe` in `%LocalAppData%\Programs\shellforge\` on
+   Windows, or `shellforge` in `~/.local/bin/` on Linux. It is a single static
+   executable with no runtime to install alongside it.
+2. **One sandbox.** On Windows, a WSL distribution named `shellforge-sandbox`,
+   backed by a `.vhdx` of roughly 2 GB under your data directory. On Linux, a
+   Docker image and container, both named `shellforge-sandbox`.
+3. **The directories in section 4**, which amount to one SQLite file and possibly
+   one cached tarball.
+4. **On Windows only, one `PATH` entry**, adding
+   `%LocalAppData%\Programs\shellforge` to your user `Path` so that typing
+   `shellforge` works. `install.ps1` skips this if you pass `-NoPathChange`.
+   `install.sh` never edits a shell profile on Linux: it prints the `export` line
+   and leaves the decision to you.
+
+Nothing else. No background service, no scheduled task, no startup entry, no
+driver, no browser extension, no registry key beyond the one `PATH` entry, and
+nothing written outside your own user account. Shellforge never asks for
+Administrator or `sudo`, and neither installer elevates.
+
+[Uninstall](06-uninstall.md) removes every one of those and tells you how to
+confirm each is gone.
 
 ---
 

@@ -61,7 +61,7 @@ rather than a summary of one.
 ## Remove everything else
 
 `sandbox destroy` deliberately leaves your progress, configuration and cache
-alone. Removing those is this section, and it is four directories on Linux and
+alone. Removing those is this section, and it is three directories on Linux and
 two on Windows.
 
 Look at each one before you delete it. If a directory holds something you did
@@ -72,8 +72,8 @@ machine writes to these paths, so a surprise is worth understanding.
 
 ```bash
 ls -la ~/.local/share/shellforge    # progress database
-ls -la ~/.config/shellforge         # config.toml
-ls -la ~/.cache/shellforge          # cached artifacts and rotated logs
+ls -la ~/.cache/shellforge          # the cached rootfs tarball, if one was fetched
+ls -la ~/.config/shellforge         # v0.1.0 writes nothing here, so it may not exist
 ```
 
 ```bash
@@ -86,7 +86,7 @@ rm -rf ~/.cache/shellforge
 
 ```powershell
 Get-ChildItem "$env:LOCALAPPDATA\shellforge"   # progress database, sandbox files, and cache
-Get-ChildItem "$env:APPDATA\shellforge"        # config.toml
+Get-ChildItem "$env:APPDATA\shellforge"        # v0.1.0 writes nothing here, so it may not exist
 ```
 
 ```powershell
@@ -97,6 +97,11 @@ Remove-Item -Recurse -Force "$env:APPDATA\shellforge"
 Two directories rather than three on Windows, because the cache lives at
 `%LocalAppData%\shellforge\cache`, one level inside the first path. Removing
 that path takes the cache with it.
+
+A "path not found" on the config directory is the expected result rather than a
+problem: v0.1.0 has no configuration file, so the directory is resolved and
+reserved but never written to. The same goes for `logs` inside the cache.
+[How it works](04-how-it-works.md) section 4 has the full table.
 
 If you set `XDG_DATA_HOME`, `XDG_CONFIG_HOME` or `XDG_CACHE_HOME`, Shellforge
 used `$XDG_DATA_HOME/shellforge` and so on instead of the defaults above. Check
@@ -182,16 +187,50 @@ anything went wrong.
 
 ## Manual cleanup, if something went wrong
 
-The exact commands to unregister the distribution by hand, delete the
-directory, and a complete list of every path Shellforge could have written
-to, per operating system.
-
-To remove the `shellforge-sandbox` Docker image that `sandbox destroy`
-deliberately leaves behind and reclaim its disk space:
+**Linux: the image `sandbox destroy` leaves behind.** Removing it reclaims
+roughly 400 MB, at the cost of a rebuild next time you run `shellforge init`:
 
 ```bash
 docker rmi shellforge-sandbox
 ```
+
+**Windows: a distribution `sandbox destroy` could not remove.** This is the
+case that produces an orphaned `.vhdx`, so do it in this order.
+
+First look at what you have. This lists every WSL distribution on the machine,
+including ones that have nothing to do with Shellforge:
+
+```powershell
+wsl -l -v
+```
+
+If, and only if, `shellforge-sandbox` is in that list, unregister it by that
+exact name:
+
+```powershell
+wsl --unregister shellforge-sandbox
+```
+
+**Read that command before you run it.** `wsl --unregister` is instant. There
+is no confirmation, no recycle bin and no undo, and it permanently destroys
+everything inside whichever distribution you name. Type `shellforge-sandbox`
+and nothing else. If you have a `Ubuntu` or a `Debian` in that list, those are
+yours and unregistering one would take everything in it with no way back.
+`shellforge sandbox destroy` exists precisely so you do not have to type this
+command: it holds the name as a constant and checks the distribution is ours
+before touching it.
+
+Then remove the install directory, which is where the `.vhdx` lives and what
+an interrupted unregister leaves behind:
+
+```powershell
+Get-ChildItem "$env:LOCALAPPDATA\shellforge\wsl\shellforge-sandbox"
+Remove-Item -Recurse -Force "$env:LOCALAPPDATA\shellforge\wsl\shellforge-sandbox"
+```
+
+**Never edit `%USERPROFILE%\.wslconfig`.** That file configures every WSL
+distribution you have, not just this one, and nothing about installing or
+removing Shellforge requires touching it.
 
 ## What is left behind after all of this
 
@@ -202,7 +241,7 @@ for it. Shellforge writes to these paths and no others:
 |---|---|---|
 | Progress database | `~/.local/share/shellforge/progress.db` | `%LocalAppData%\shellforge\progress.db` |
 | Configuration | `~/.config/shellforge/` | `%AppData%\shellforge\` |
-| Cache and logs | `~/.cache/shellforge/` | `%LocalAppData%\shellforge\cache\` |
+| Cache | `~/.cache/shellforge/` | `%LocalAppData%\shellforge\cache\` |
 | Sandbox | a Docker container and image named `shellforge-sandbox` | a WSL distribution named `shellforge-sandbox`, and its install directory under `%LocalAppData%\shellforge\` |
 | The binary | `~/.local/bin/shellforge` | `%LocalAppData%\Programs\shellforge\shellforge.exe` |
 | One `PATH` entry | none: `install.sh` never edits a shell profile | `%LocalAppData%\Programs\shellforge`, in the user `Path` |
