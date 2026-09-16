@@ -29,7 +29,7 @@ CONTAINER_ENGINE := $(shell command -v docker 2>/dev/null || command -v podman 2
 .DEFAULT_GOAL := help
 .PHONY: help build install test race fuzz cover lint fmt vet punct allowlist links arch \
         cli labels sec vuln gosec image rootfs run golden golden-image golden-go validate \
-        dist clean tools ci
+        demo dist clean tools ci
 
 ## help: Show this help.
 help:
@@ -209,6 +209,27 @@ golden: build golden-image
 ## golden-go: The same contract as a Go test. Needs a Linux Docker daemon.
 golden-go: golden-image
 	SHELLFORGE_GOLDEN=1 go test -run '^TestEveryLevelGoldenPath$$|^TestLevelsRejectNearMisses$$' -timeout 30m ./cmd/shellforge/...
+
+## demo: Re-record the README demo GIF with VHS.
+#
+# The recording runs against a throwaway XDG_DATA_HOME so it can never show,
+# or write to, the recorder's own progress database. Without that the GIF
+# carries whoever made it: their XP, their rank, their achievement list.
+#
+# It needs a working sandbox, so a container engine has to be up. The tape
+# provisions one in a hidden block rather than making anyone watch it.
+demo: build
+	@command -v vhs >/dev/null 2>&1 || { \
+	  echo "FAIL: vhs is not installed, so there is nothing to record with." >&2; \
+	  echo "  The demo is a scripted recording rather than a screen capture." >&2; \
+	  echo "  Install VHS from https://github.com/charmbracelet/vhs, then run: make demo" >&2; \
+	  exit 1; }
+	@tmp=$$(mktemp -d) && \
+	  echo "recording with XDG_DATA_HOME=$$tmp" && \
+	  PATH="$(CURDIR)/$(BIN_DIR):$$PATH" XDG_DATA_HOME="$$tmp" vhs docs/assets/demo.tape; \
+	  status=$$?; rm -rf "$$tmp"; exit $$status
+	@ls -l docs/assets/demo.gif
+	@echo "Target is under 5 MB. If it is over, lower Set Framerate or Set Width in the tape."
 
 ## tools: Report the toolchain versions this repo expects.
 tools:
