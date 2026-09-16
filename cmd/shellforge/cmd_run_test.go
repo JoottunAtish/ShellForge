@@ -1006,3 +1006,46 @@ func TestClearBannerIsEmptyWithNoBriefing(t *testing.T) {
 		t.Errorf("clearBanner on a playable with no briefing = %q, want empty", got)
 	}
 }
+
+// TestAnnounceProvisioningOnlyWarnsAboutAWaitThatIsComing pins the fix for two
+// lines that printed before every single level, one of which was false.
+//
+// "The first run builds the image, which takes a few minutes" is honest once.
+// On a machine whose image is already built the briefing arrives about ten
+// seconds later, and a game that promises a wait it does not take teaches a
+// learner to disbelieve it, which is expensive on the one occasion the wait is
+// real. The backend line is a decision the learner does not act on and did not
+// ask about, so it goes with it.
+func TestAnnounceProvisioningOnlyWarnsAboutAWaitThatIsComing(t *testing.T) {
+	t.Run("already provisioned, so say nothing", func(t *testing.T) {
+		var b strings.Builder
+		rt := &fakeRuntime{status: runtime.Status{Provisioned: true, Running: true}}
+		announceProvisioning(context.Background(), rt, "chose the docker backend", &b)
+
+		if b.Len() != 0 {
+			t.Errorf("printed before a level that needed no build: %q", b.String())
+		}
+	})
+
+	t.Run("nothing provisioned, so warn and say which backend", func(t *testing.T) {
+		var b strings.Builder
+		rt := &fakeRuntime{status: runtime.Status{}}
+		announceProvisioning(context.Background(), rt, "chose the docker backend", &b)
+
+		for _, want := range []string{"takes a few minutes", "chose the docker backend"} {
+			if !strings.Contains(b.String(), want) {
+				t.Errorf("a real build was not announced (%q missing): %q", want, b.String())
+			}
+		}
+	})
+
+	t.Run("a Status that fails warns rather than staying silent", func(t *testing.T) {
+		var b strings.Builder
+		rt := &fakeRuntime{statusErr: errors.New("daemon unreachable")}
+		announceProvisioning(context.Background(), rt, "", &b)
+
+		if !strings.Contains(b.String(), "takes a few minutes") {
+			t.Errorf("silence through a possible five minute build looks like a hang: %q", b.String())
+		}
+	})
+}

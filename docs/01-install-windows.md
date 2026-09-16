@@ -205,6 +205,7 @@ shellforge play
 It picks your next level, says which one and why, provisions it, and prints the
 briefing. Read it, then type Linux commands at the prompt. `check` tells you how
 you are doing, `hint` costs you points and says so first, and `exit` leaves.
+If you forget any of that, type `help`.
 
 [Quickstart](03-quickstart.md) is the two-page version of everything you can type
 once you are in.

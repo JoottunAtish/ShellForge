@@ -395,3 +395,40 @@ func TestRenderNextStepOffersNextWhereItWorks(t *testing.T) {
 		}
 	})
 }
+
+// TestRenderEffortExplainsAMissingEfficiencyBonus covers the half of the score
+// the breakdown cannot show.
+//
+// score.Result omits a contribution that is zero, which is correct for the
+// arithmetic and means a learner who misses the efficiency bonus sees nothing
+// at all. They cannot tell whether they missed by one command or by forty, and
+// par is authored on every level and was printed nowhere.
+func TestRenderEffortExplainsAMissingEfficiencyBonus(t *testing.T) {
+	t.Run("over par, so say what par was", func(t *testing.T) {
+		got := renderEffort(passSummaryData{CommandsUsed: 12, Par: 5}, palette(false))
+		for _, want := range []string{"12", "par 5"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("effort line does not mention %q: %q", want, got)
+			}
+		}
+	})
+
+	t.Run("at or under par, so the bonus is accounted for", func(t *testing.T) {
+		got := renderEffort(passSummaryData{CommandsUsed: 4, Par: 5}, palette(false))
+		if !strings.Contains(got, "efficiency bonus") {
+			t.Errorf("a learner who earned the bonus is not told so: %q", got)
+		}
+	})
+
+	t.Run("a level with no par prints nothing", func(t *testing.T) {
+		if got := renderEffort(passSummaryData{CommandsUsed: 9, Par: 0}, palette(false)); got != "" {
+			t.Errorf("a level that disables the bonus still printed: %q", got)
+		}
+	})
+
+	t.Run("no counted commands prints nothing", func(t *testing.T) {
+		if got := renderEffort(passSummaryData{CommandsUsed: 0, Par: 5}, palette(false)); got != "" {
+			t.Errorf("a lost journal was reported as zero commands: %q", got)
+		}
+	})
+}

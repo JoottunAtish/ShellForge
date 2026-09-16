@@ -59,6 +59,7 @@ it properly later.
 
 | Command | What it does |
 |---|---|
+| `help` | List these commands. `help cd` still asks bash, as it always did |
 | `check` | Verify the current level |
 | `brief` | Reprint the briefing |
 | `hint` | Show what the next hint costs. `hint --yes` spends it, `hint --reveal` asks about the solution |

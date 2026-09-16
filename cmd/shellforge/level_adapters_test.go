@@ -817,3 +817,54 @@ func TestHelpVerbListsOnlyWhatThisSessionHonours(t *testing.T) {
 		}
 	})
 }
+
+// TestStuckNudgeOffersTheHintAndItsPrice covers the screen a learner reads
+// after a check that did not pass, which is the moment they leave.
+//
+// The reply used to end on the on_fail message. The pack ships 101 hints and
+// not one of them was named where somebody had just found out they needed one.
+// The price is named because a learner who does not know the first rung is
+// cheap assumes asking is expensive and quits instead of asking.
+func TestStuckNudgeOffersTheHintAndItsPrice(t *testing.T) {
+	level := &content.Level{ID: "nav-01", Title: "First Contact"}
+
+	t.Run("names the tier and what it costs", func(t *testing.T) {
+		r := &gameResponder{level: level, hints: &fakeHinter{
+			tiers: []game.Tier{{Index: 1, Total: 4, Cost: 10}, {Index: 2, Total: 4, Cost: 25}},
+		}}
+		got := r.stuckNudge()
+
+		for _, want := range []string{"`hint`", "1 of 4", "10 XP"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("the nudge does not mention %q: %q", want, got)
+			}
+		}
+	})
+
+	t.Run("says nothing about the answer", func(t *testing.T) {
+		r := &gameResponder{level: level, hints: &fakeHinter{
+			tiers: []game.Tier{{Index: 1, Total: 4, Cost: 10, Text: "run pwd and redirect it"}},
+		}}
+		if got := r.stuckNudge(); strings.Contains(got, "pwd") {
+			t.Errorf("the nudge leaked the hint it was only supposed to offer: %q", got)
+		}
+	})
+
+	t.Run("a spent ladder points at brief instead", func(t *testing.T) {
+		r := &gameResponder{level: level, hints: &fakeHinter{}}
+		got := r.stuckNudge()
+		if strings.Contains(got, "costs") {
+			t.Errorf("a spent ladder still quoted a price: %q", got)
+		}
+		if !strings.Contains(got, "`brief`") {
+			t.Errorf("a learner out of hints is offered nothing: %q", got)
+		}
+	})
+
+	t.Run("no hinter in this session, so no offer", func(t *testing.T) {
+		r := &gameResponder{level: level}
+		if got := r.stuckNudge(); got != "" {
+			t.Errorf("offered a hint in a session that has no ladder: %q", got)
+		}
+	})
+}

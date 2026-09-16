@@ -366,7 +366,34 @@ func (r *gameResponder) check(ctx context.Context) string {
 			return crlf(truncateReply(banner))
 		}
 	}
-	return renderCheckReply(res, r.color)
+	return renderCheckReply(res, r.color) + r.stuckNudge()
+}
+
+// stuckNudge is the line a learner reads after a check that did not pass.
+//
+// Until it existed, that reply ended on the on_fail message and stopped. It
+// is the highest traffic screen in the game and the moment people leave, and
+// it said nothing about what to do next: the pack ships 101 hints and not one
+// of them was mentioned where somebody had just discovered they needed one.
+//
+// It names the price, because a learner who does not know the first rung is
+// cheap assumes asking is expensive and quits instead of asking. It names
+// nothing about the answer itself. `hint` is what spends XP, and it asks
+// again before it does.
+//
+// Empty when this session has no hinter. Offering a hint that then refuses is
+// the defect this whole pass exists to remove.
+func (r *gameResponder) stuckNudge() string {
+	if r.hints == nil {
+		return ""
+	}
+	tier, ok := r.hints.PeekHint(false)
+	if !ok {
+		return crlf("\nOut of hints. `brief` reprints the objectives.\n")
+	}
+	return crlf(fmt.Sprintf(
+		"\nStuck? `hint` is hint %d of %d and costs %d XP. It asks before it spends.\n",
+		tier.Index, tier.Total, tier.Cost))
 }
 
 // drainJournal pulls the learner's commands out of the sandbox and onto the
@@ -433,16 +460,18 @@ func (r *gameResponder) passBanner(ctx context.Context, res verify.LevelResult) 
 	rankAfter, nextRank, _ := game.RankFor(r.pass.pack, xpAfter)
 
 	return renderPassBanner(passSummaryData{
-		Level:      r.level,
-		Result:     res,
-		Score:      awarded,
-		TotalXP:    xpAfter,
-		RankBefore: rankBefore,
-		RankAfter:  rankAfter,
-		NextRank:   nextRank,
-		HasRanks:   hasRanks,
-		Unlocked:   unlockedRules(r.pass.pack, r.pass.unlocks.drain()),
-		Next:       r.nextStep(ctx),
+		Level:        r.level,
+		Result:       res,
+		Score:        awarded,
+		TotalXP:      xpAfter,
+		RankBefore:   rankBefore,
+		RankAfter:    rankAfter,
+		NextRank:     nextRank,
+		HasRanks:     hasRanks,
+		Unlocked:     unlockedRules(r.pass.pack, r.pass.unlocks.drain()),
+		Next:         r.nextStep(ctx),
+		CommandsUsed: r.orch.CommandsUsed(),
+		Par:          r.level.ParCommands,
 	}, r.color), true
 }
 

@@ -6157,3 +6157,46 @@ a successful one from the workflow log, and it says plainly that section
 release and the rest is preparation.
 
 Closes #139, by making the uninstall page describe only verbs that exist.
+
+**Five playthroughs of the hardest levels, recorded, then read back.** VHS
+drove `find-04`, `proc-01`, `perm-03`, `script-01` and `boss-final` end to
+end against a real Docker sandbox. Watching them is what found the rest of
+this entry, and none of it was visible from the code.
+
+The only instruction a learner ever got was the last line of the briefing,
+and it named `check` and `exit`: the check they had already failed and the
+way to quit. The pack ships 101 hints, four per level with a solution tier
+on all 25, and nothing in the game named `hint`. `brief` is the only way
+back to objectives that have scrolled off, which on `perm-03` happens after
+one `ls -la`, and `reset` is the only way out of a level world the learner
+has broken, on levels like `find-04` whose whole task is `find -exec rm`.
+No briefing in the pack mentions any of them. So the footer now names all
+five, and it is its own function rather than the last line of
+`printObjectiveChecklist`, which returned early on a level with no
+objectives and told those learners nothing whatsoever.
+
+`help` is the other half. Inside the sandbox it reached bash and listed
+shell builtins, which reads as "there is no help here". It is a function in
+`instrument.bash` rather than a script in `/opt/shellforge/bin`, and for a
+different reason than `next`: a builtin outranks PATH, so a script by that
+name is never reached, while a function outranks the builtin. Only the bare
+word is claimed, so `help cd` still asks bash.
+
+**Three more the recordings made obvious.** A failed `check` ended on the
+`on_fail` message and stopped, on the highest traffic screen in the game;
+it now names the next hint and what it costs, and nothing about the answer.
+`Preparing the sandbox. The first run builds the image, which takes a few
+minutes.` printed before every level whether or not anything was built,
+alongside a line about which backend was chosen that the learner never acts
+on; both are now conditional on `Status` reporting nothing provisioned. And
+the efficiency bonus appeared in the breakdown only when it was earned, so
+a learner who missed it saw nothing at all and could not tell whether they
+missed by one command or by forty: the banner now prints commands used
+against the level's par.
+
+`shellforge reset --hard` was in `internal/content/setup` on five live
+`ux.Fail` call sites, one of the five wrong commands #171's own
+documentation gate had just finished removing from the docs. So the gate
+went where the defect was: `TestEveryCommandInASourceStringResolves` is
+that gate pointed at Go string literals, reading literals rather than
+source text so a comment quoting a wrong command stays legal.
