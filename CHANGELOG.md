@@ -74,10 +74,11 @@ release is rather than what changed in it.
   the binary and nothing else, so neither backend can find a sandbox image on a
   machine that has only the release. Both install guides give the workaround.
   [#172](https://github.com/JoottunAtish/ShellForge/issues/172)
-- **`shellforge author scaffold` and `shellforge author record` are stubs.** They
-  are registered so `shellforge help` stays an honest map of the product, and
-  they answer with a refusal. Copy an existing level instead; the authoring guide
-  says so.
+- **`shellforge author scaffold` and `shellforge author record` are not built.**
+  They are hidden from `shellforge help`, so nothing offers them, and they stay
+  registered, so typing one answers with a refusal naming where it went rather
+  than an unknown command error. Copy an existing level instead; the authoring
+  guide says so.
 - **There is no `uninstall` or `export` verb.** [Uninstall](docs/06-uninstall.md)
   names every file and directory by hand, and your progress is one SQLite file
   you can copy.
