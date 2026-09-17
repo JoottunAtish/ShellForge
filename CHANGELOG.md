@@ -74,6 +74,15 @@ release is rather than what changed in it.
   the binary and nothing else, so neither backend can find a sandbox image on a
   machine that has only the release. Both install guides give the workaround.
   [#172](https://github.com/JoottunAtish/ShellForge/issues/172)
+- **On Windows, play from inside WSL, not from PowerShell.** `play`, `run` and
+  `sandbox shell` are the three verbs that open an interactive shell, and
+  opening one allocates a pseudo terminal on the host, which the library
+  Shellforge uses for that does not implement on Windows at all. Both backends
+  are affected, so switching from Docker to WSL does not help. They refuse up
+  front with the fix rather than failing after provisioning. Every other verb,
+  `doctor` and `init` included, works natively. WSL2 is a real Linux host and
+  Docker Desktop shares one daemon with it, so the sandbox is not built twice.
+  [#138](https://github.com/JoottunAtish/ShellForge/issues/138)
 - **`shellforge author scaffold` and `shellforge author record` are not built.**
   They are hidden from `shellforge help`, so nothing offers them, and they stay
   registered, so typing one answers with a refusal naming where it went rather

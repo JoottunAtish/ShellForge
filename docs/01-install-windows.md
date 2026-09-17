@@ -198,13 +198,45 @@ instructions if you meet the error before reading this far.
 
 ## 9. Step 7: play
 
-```
-shellforge play
+**Play from inside WSL, not from this PowerShell window.**
+
+Everything up to here works natively on Windows. Opening a level does not.
+`play`, `run` and `sandbox shell` allocate a pseudo terminal on the host, and
+Windows consoles have no implementation of that yet, on either backend. The
+commands say so up front rather than failing halfway through setting a level up,
+and it is tracked as
+[issue #138](https://github.com/JoottunAtish/ShellForge/issues/138).
+
+WSL is a real Linux machine, so the game runs there normally, and Docker Desktop
+shares one daemon between Windows and WSL, so nothing is built or downloaded a
+second time. You need a general purpose distribution to play from, which is not
+the `shellforge-sandbox` one step 6 imported:
+
+```powershell
+wsl --install -d Ubuntu
 ```
 
-It picks your next level, says which one and why, provisions it, and prints the
-briefing. Read it, then type Linux commands at the prompt. `check` tells you how
-you are doing, `hint` costs you points and says so first, and `exit` leaves.
+It asks you to choose a username and a password for that distribution. Then, in
+the Ubuntu window it opens, install Go if you do not have it there
+(`sudo apt update && sudo apt install -y golang-go`), and build from the clone
+you already made in step 6:
+
+```bash
+cd /mnt/c/Users/you/ShellForge
+go build -o bin/shellforge ./cmd/shellforge
+./bin/shellforge play
+```
+
+[windows-needs-wsl](05-troubleshooting.md#windows-needs-wsl) has the same
+instructions, and says what to do if `docker version` does not work inside
+Ubuntu.
+
+Your progress is a file in the home directory of whichever side you are on, so
+play from the same place each time or you will start again from `nav-01`.
+
+`play` picks your next level, says which one and why, provisions it, and prints
+the briefing. Read it, then type Linux commands at the prompt. `check` tells you
+how you are doing, `hint` costs you points and says so first, and `exit` leaves.
 If you forget any of that, type `help`.
 
 [Quickstart](03-quickstart.md) is the two-page version of everything you can type
