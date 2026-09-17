@@ -46,9 +46,29 @@ import (
 // PROGRESS.md is absent for the same kind of reason: it is a historical log, and
 // a line written in August that correctly said `author scaffold` was a stub is
 // not a defect to be fixed in September.
+//
+// CHANGELOG.md is absent for a third reason, and it is the one worth stating
+// because it looks like an oversight. Its "Known issues" section names
+// `shellforge author scaffold` and `shellforge author record` precisely to say
+// they are not built. That is the opposite of instructing a reader to run one,
+// but this gate cannot tell the two apart: it resolves an invocation and asks
+// whether the verb works, not what the sentence around it claims. Including the
+// changelog would fail on the entry whose whole purpose is the warning, and the
+// only way to go green would be to delete the warning. The same distinction is
+// why source_commands_test.go reads string literals and not comments.
+//
+// This list is hand-written rather than a walk of every .md in the tree. That
+// is a liability and it has already cost something: it is how
+// packs/core-linux-basics/levels/README.md went on telling contributors to run
+// `shellforge author scaffold pipe-06` through the release pass that removed
+// that instruction from everywhere else, with this gate green the whole time. A
+// file added here is covered; a file nobody remembers is not. When you write a
+// document that tells somebody what to type, add it.
 var docSet = []string{
 	"README.md",
 	"CONTRIBUTING.md",
+	"SECURITY.md",
+	".github/PULL_REQUEST_TEMPLATE.md",
 	"docs/README.md",
 	"docs/01-install-windows.md",
 	"docs/02-install-linux.md",
@@ -59,6 +79,8 @@ var docSet = []string{
 	"docs/07-authoring-levels.md",
 	"docs/CURRICULUM.md",
 	"docs/LEVEL-FORMAT.md",
+	"docs/assets/README.md",
+	"packs/core-linux-basics/levels/README.md",
 }
 
 // docInvocation is one `shellforge ...` string found in a document.

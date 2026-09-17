@@ -10,11 +10,18 @@ Level designs, including objectives, checks and hints: [../../../docs/CURRICULUM
 ## Writing one
 
 ```bash
-shellforge author scaffold pipe-06
+# There is no scaffold generator in v0.1.0, so start from a level that already
+# passes the golden contract. An empty skeleton does not.
+cp packs/core-linux-basics/levels/12-pipe-03.yaml \
+   packs/core-linux-basics/levels/26-pipe-06.yaml
+$EDITOR packs/core-linux-basics/levels/26-pipe-06.yaml
 shellforge author validate packs/core-linux-basics
 shellforge author test pipe-06
 shellforge run pipe-06
 ```
+
+[../../../docs/07-authoring-levels.md](../../../docs/07-authoring-levels.md)
+walks the same path through a real level, and says how to think about each part.
 
 ## Non-negotiables for every level
 
@@ -28,21 +35,17 @@ shellforge run pipe-06
 
 ## Status
 
-Nine levels are written: `nav-01` to `nav-04`, `files-01` to `files-04`, and
-`pipe-05`. They validate clean, are embedded in the binary, and are playable with
-`shellforge run <id>`.
+All 25 levels are written, from `nav-01` to `boss-final`. They validate clean,
+are embedded in the binary, pass the golden contract in CI, and are playable
+with `shellforge run <id>`. [../../../docs/CURRICULUM.md](../../../docs/CURRICULUM.md)
+describes every one of them.
 
-`pipe-05` is out of curriculum order on purpose. It is the verification engine's
-reference fixture and the level `docs/LEVEL-FORMAT.md` section 6 is written
-against, so it exercises every reporting shape at once: two required objectives,
-one bonus objective, and one `severity: warn` note that produces advice rather
-than a checklist line. It is also the first level whose world comes from
-committed assets rather than inline content or a generator. Its
-`prerequisites: [pipe-04]` does not resolve yet, which `author validate` reports
-as a warning, and that is the intended signal rather than a problem.
-
-Levels 9 to 25 are Day 5. `shellforge author validate` reports each of them as
-a warning until its file exists, which is the intended signal.
+`pipe-05` is worth reading first if you are writing your own. It is the
+verification engine's reference fixture and the level `docs/LEVEL-FORMAT.md`
+section 6 is written against, so it exercises every reporting shape at once: two
+required objectives, one bonus objective, and one `severity: warn` note that
+produces advice rather than a checklist line. It is also the first level whose
+world comes from committed assets rather than inline content or a generator.
 
 ## Two things a level's assets have to satisfy
 
