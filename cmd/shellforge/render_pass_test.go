@@ -337,3 +337,98 @@ func TestRenderNextStepMatchesWhatActuallyHappensNext(t *testing.T) {
 		}
 	})
 }
+
+// TestRenderNextStepOffersNextWhereItWorks pins the pair, and it is a pair
+// rather than one assertion because naming `next` in the wrong branch is
+// worse than never naming it.
+//
+// `next` was built, tested and documented in docs/03-quickstart.md, and then
+// advertised nowhere the learner actually looks: the briefing footer names
+// `check` and `exit`, and this banner named `exit` alone. A learner who did
+// not read the quickstart had no way to find the one command that carries
+// them into the next level without leaving the terminal.
+//
+// It is named only where gameResponder.canAdvance will accept it, which is a
+// known next level with `play` driving. Under `run` and `play <level-id>`
+// nothing is going to advance, so a learner who typed it there would be told
+// no, which is the same command-not-found lesson in a politer voice.
+func TestRenderNextStepOffersNextWhereItWorks(t *testing.T) {
+	named := nextStep{LevelID: "nav-03", Title: "Hidden in Plain Sight"}
+
+	t.Run("play is driving, so next works and is named", func(t *testing.T) {
+		offered := named
+		offered.Offered = true
+		got := renderNextStep(offered)
+
+		if !strings.Contains(got, "`next`") {
+			t.Errorf("the learner is not told they can type `next`: %q", got)
+		}
+		if strings.Index(got, "`next`") > strings.Index(got, "`exit`") {
+			t.Errorf("`exit` is offered before `next`, burying the better option: %q", got)
+		}
+		if !strings.Contains(got, "`exit`") {
+			t.Errorf("stopping here is no longer offered at all: %q", got)
+		}
+	})
+
+	t.Run("run is driving, so next would refuse and is not named", func(t *testing.T) {
+		got := renderNextStep(named)
+
+		if strings.Contains(got, "`next`") {
+			t.Errorf("`next` is offered where canAdvance refuses it: %q", got)
+		}
+	})
+
+	t.Run("the next level is unknown, so next would refuse and is not named", func(t *testing.T) {
+		got := renderNextStep(nextStep{Offered: true})
+
+		if strings.Contains(got, "`next`") {
+			t.Errorf("`next` is offered with no level to advance to: %q", got)
+		}
+	})
+
+	t.Run("the campaign is finished, so there is nothing to advance to", func(t *testing.T) {
+		got := renderNextStep(nextStep{Complete: true})
+
+		if strings.Contains(got, "`next`") {
+			t.Errorf("`next` is offered after the last level: %q", got)
+		}
+	})
+}
+
+// TestRenderEffortExplainsAMissingEfficiencyBonus covers the half of the score
+// the breakdown cannot show.
+//
+// score.Result omits a contribution that is zero, which is correct for the
+// arithmetic and means a learner who misses the efficiency bonus sees nothing
+// at all. They cannot tell whether they missed by one command or by forty, and
+// par is authored on every level and was printed nowhere.
+func TestRenderEffortExplainsAMissingEfficiencyBonus(t *testing.T) {
+	t.Run("over par, so say what par was", func(t *testing.T) {
+		got := renderEffort(passSummaryData{CommandsUsed: 12, Par: 5}, palette(false))
+		for _, want := range []string{"12", "par 5"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("effort line does not mention %q: %q", want, got)
+			}
+		}
+	})
+
+	t.Run("at or under par, so the bonus is accounted for", func(t *testing.T) {
+		got := renderEffort(passSummaryData{CommandsUsed: 4, Par: 5}, palette(false))
+		if !strings.Contains(got, "efficiency bonus") {
+			t.Errorf("a learner who earned the bonus is not told so: %q", got)
+		}
+	})
+
+	t.Run("a level with no par prints nothing", func(t *testing.T) {
+		if got := renderEffort(passSummaryData{CommandsUsed: 9, Par: 0}, palette(false)); got != "" {
+			t.Errorf("a level that disables the bonus still printed: %q", got)
+		}
+	})
+
+	t.Run("no counted commands prints nothing", func(t *testing.T) {
+		if got := renderEffort(passSummaryData{CommandsUsed: 0, Par: 5}, palette(false)); got != "" {
+			t.Errorf("a lost journal was reported as zero commands: %q", got)
+		}
+	})
+}

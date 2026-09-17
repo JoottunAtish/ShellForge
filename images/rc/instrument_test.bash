@@ -160,4 +160,43 @@ check_next() {
 check_next "ends the shell when the host accepted" yes 0 yes
 check_next "stays put when the host did not" no 99 yes
 
+# ---------------------------------------------------------------------------
+# help: the bare word is ours, anything else is bash's.
+#
+# help is a builtin, so a script on PATH is never reached and only a function
+# can claim the name. Claiming it wholesale would be worse than not claiming
+# it: `help cd` is a real question in a game about learning the shell.
+# ---------------------------------------------------------------------------
+check_help() {
+  local name="$1" args="$2" want="$3" out
+  out="$(
+    eval "$(sed -n '/^# BEGIN __sf_help$/,/^# END __sf_help$/p' "$src")"
+    # Stand in for the shim, so the test needs no FIFO and no host.
+    mkdir -p /tmp/sf-help-test/opt/shellforge/bin 2>/dev/null
+    help $args 2>&1
+  )" || true
+
+  case "$want" in
+    ours)
+      if [ "${out#*_sf-request}" != "$out" ] || [ "${out#*No such file}" != "$out" ]; then
+        echo "OK: $name"
+      else
+        echo "FAIL: $name: the bare word did not reach the shim, got $(printf '%q' "$out")"
+        fail=1
+      fi
+      ;;
+    bash)
+      if [ "${out#*cd:}" != "$out" ] || [ "${out#*cd [}" != "$out" ]; then
+        echo "OK: $name"
+      else
+        echo "FAIL: $name: arguments did not reach the builtin, got $(printf '%q' "$out")"
+        fail=1
+      fi
+      ;;
+  esac
+}
+
+check_help "the bare word asks the game" "" ours
+check_help "help cd still asks bash" "cd" bash
+
 exit $fail

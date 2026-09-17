@@ -762,3 +762,109 @@ func TestNextFallsBackWhenTheSentinelCannotBeWritten(t *testing.T) {
 		t.Errorf("`next` did not fall back to telling the learner what to type: %q", got)
 	}
 }
+
+// TestHelpVerbListsOnlyWhatThisSessionHonours covers the verb a beginner
+// reaches for before they read anything, and the rule that keeps it honest.
+//
+// The list is built from the same nil checks the verbs themselves use, because
+// naming a command that then refuses is the defect this whole change exists to
+// remove. `next` is the sharpest case: it works only where canAdvance can say
+// yes, which is a session `play` is driving.
+func TestHelpVerbListsOnlyWhatThisSessionHonours(t *testing.T) {
+	level := &content.Level{ID: "nav-01", Title: "First Contact"}
+
+	t.Run("a full session names everything", func(t *testing.T) {
+		r := &gameResponder{
+			level:  level,
+			hints:  &fakeHinter{},
+			resets: &fakeResetter{},
+			pass:   &passContext{advance: true},
+		}
+		got := r.help()
+
+		for _, want := range []string{"check", "hint", "brief", "reset", "next", "exit"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("help does not name %q: %q", want, got)
+			}
+		}
+	})
+
+	t.Run("no hinter, so hint is not offered", func(t *testing.T) {
+		r := &gameResponder{level: level, resets: &fakeResetter{}}
+		if got := r.help(); strings.Contains(got, "hint ") {
+			t.Errorf("help offers `hint` in a session that refuses it: %q", got)
+		}
+	})
+
+	t.Run("no resetter, so reset is not offered", func(t *testing.T) {
+		r := &gameResponder{level: level, hints: &fakeHinter{}}
+		if got := r.help(); strings.Contains(got, "reset ") {
+			t.Errorf("help offers `reset` in a session that refuses it: %q", got)
+		}
+	})
+
+	t.Run("run is driving, so next is not offered", func(t *testing.T) {
+		r := &gameResponder{level: level, hints: &fakeHinter{}, resets: &fakeResetter{}}
+		if got := r.help(); strings.Contains(got, "next ") {
+			t.Errorf("help offers `next` where canAdvance would refuse it: %q", got)
+		}
+	})
+
+	t.Run("it says the shell is still a real shell", func(t *testing.T) {
+		r := &gameResponder{level: level}
+		if got := r.help(); !strings.Contains(got, "help cd") {
+			t.Errorf("help does not say bash still answers for builtins: %q", got)
+		}
+	})
+}
+
+// TestStuckNudgeOffersTheHintAndItsPrice covers the screen a learner reads
+// after a check that did not pass, which is the moment they leave.
+//
+// The reply used to end on the on_fail message. The pack ships 101 hints and
+// not one of them was named where somebody had just found out they needed one.
+// The price is named because a learner who does not know the first rung is
+// cheap assumes asking is expensive and quits instead of asking.
+func TestStuckNudgeOffersTheHintAndItsPrice(t *testing.T) {
+	level := &content.Level{ID: "nav-01", Title: "First Contact"}
+
+	t.Run("names the tier and what it costs", func(t *testing.T) {
+		r := &gameResponder{level: level, hints: &fakeHinter{
+			tiers: []game.Tier{{Index: 1, Total: 4, Cost: 10}, {Index: 2, Total: 4, Cost: 25}},
+		}}
+		got := r.stuckNudge()
+
+		for _, want := range []string{"`hint`", "1 of 4", "10 XP"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("the nudge does not mention %q: %q", want, got)
+			}
+		}
+	})
+
+	t.Run("says nothing about the answer", func(t *testing.T) {
+		r := &gameResponder{level: level, hints: &fakeHinter{
+			tiers: []game.Tier{{Index: 1, Total: 4, Cost: 10, Text: "run pwd and redirect it"}},
+		}}
+		if got := r.stuckNudge(); strings.Contains(got, "pwd") {
+			t.Errorf("the nudge leaked the hint it was only supposed to offer: %q", got)
+		}
+	})
+
+	t.Run("a spent ladder points at brief instead", func(t *testing.T) {
+		r := &gameResponder{level: level, hints: &fakeHinter{}}
+		got := r.stuckNudge()
+		if strings.Contains(got, "costs") {
+			t.Errorf("a spent ladder still quoted a price: %q", got)
+		}
+		if !strings.Contains(got, "`brief`") {
+			t.Errorf("a learner out of hints is offered nothing: %q", got)
+		}
+	})
+
+	t.Run("no hinter in this session, so no offer", func(t *testing.T) {
+		r := &gameResponder{level: level}
+		if got := r.stuckNudge(); got != "" {
+			t.Errorf("offered a hint in a session that has no ladder: %q", got)
+		}
+	})
+}

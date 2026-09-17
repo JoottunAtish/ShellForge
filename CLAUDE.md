@@ -17,8 +17,10 @@ simulator. Levels are declarative YAML data.
 Timeline: **7 days.** Scope is deliberately narrow. When in doubt, do the simpler
 thing and note the shortcut with `// TODO(v0.2):`.
 
-**Read `PROGRESS.md` before assuming anything exists.** This repository is a Day 0
-scaffold and most of what the design documents describe is not built yet.
+**Read `PROGRESS.md` before assuming anything exists.** The engine, the game core
+and all 25 levels are built and pass the golden contract, so the trap is no longer
+"it does not exist yet", it is the design documents describing something the code
+now does differently. `PROGRESS.md` is the authoritative list of what works.
 
 ---
 

@@ -283,6 +283,7 @@ func (r *gameResponder) Reply(ctx context.Context, verb, args string) string {
 		var b strings.Builder
 		b.WriteString("\n" + renderMarkdown(r.level.Briefing, defaultBriefWidth, r.color) + "\n")
 		printObjectiveChecklist(&b, r.level)
+		printCommandFooter(&b)
 		return crlf(b.String())
 
 	case "hint":
@@ -297,12 +298,46 @@ func (r *gameResponder) Reply(ctx context.Context, verb, args string) string {
 		}
 		return crlf(renderResetReply(ctx, r.resets, r.level.Setup.Root, args))
 
+	case "help":
+		return crlf(r.help())
+
 	case "next":
 		return crlf(r.next(ctx))
 
 	default:
 		return crlf(fmt.Sprintf("\nunknown request %q\n", verb))
 	}
+}
+
+// help lists what a learner can type, and is the answer to the word they
+// reach for first.
+//
+// Inside the sandbox `help` is a bash builtin, so nothing on PATH can claim
+// it and a beginner asking for help gets the list of shell builtins instead:
+// an answer that reads as "there is no help here". instrument.bash defines a
+// function, which outranks the builtin, and hands the bare word to this.
+//
+// It names only what this session will actually honour. Advertising a verb
+// that then refuses is the failure this whole change exists to remove, so
+// `hint` and `reset` follow the same nil checks the verbs themselves use,
+// and `next` appears only where gameResponder.canAdvance could say yes.
+func (r *gameResponder) help() string {
+	var b strings.Builder
+	b.WriteString("\nCommands you can type here:\n\n")
+	b.WriteString("  check   check your work against the objectives\n")
+	if r.hints != nil {
+		b.WriteString("  hint    a nudge. It says what it costs before you spend it\n")
+	}
+	b.WriteString("  brief   reprint the briefing and the objectives\n")
+	if r.resets != nil {
+		b.WriteString("  reset   rebuild this level from scratch, if you have broken it\n")
+	}
+	if r.pass != nil && r.pass.advance {
+		b.WriteString("  next    once you have passed, go straight to the next level\n")
+	}
+	b.WriteString("  exit    leave the sandbox\n")
+	b.WriteString("\nEverything else is a real Linux shell. `help cd` still asks bash.\n")
+	return b.String()
 }
 
 // check runs the level's checks and renders the result.
@@ -331,7 +366,34 @@ func (r *gameResponder) check(ctx context.Context) string {
 			return crlf(truncateReply(banner))
 		}
 	}
-	return renderCheckReply(res, r.color)
+	return renderCheckReply(res, r.color) + r.stuckNudge()
+}
+
+// stuckNudge is the line a learner reads after a check that did not pass.
+//
+// Until it existed, that reply ended on the on_fail message and stopped. It
+// is the highest traffic screen in the game and the moment people leave, and
+// it said nothing about what to do next: the pack ships 101 hints and not one
+// of them was mentioned where somebody had just discovered they needed one.
+//
+// It names the price, because a learner who does not know the first rung is
+// cheap assumes asking is expensive and quits instead of asking. It names
+// nothing about the answer itself. `hint` is what spends XP, and it asks
+// again before it does.
+//
+// Empty when this session has no hinter. Offering a hint that then refuses is
+// the defect this whole pass exists to remove.
+func (r *gameResponder) stuckNudge() string {
+	if r.hints == nil {
+		return ""
+	}
+	tier, ok := r.hints.PeekHint(false)
+	if !ok {
+		return crlf("\nOut of hints. `brief` reprints the objectives.\n")
+	}
+	return crlf(fmt.Sprintf(
+		"\nStuck? `hint` is hint %d of %d and costs %d XP. It asks before it spends.\n",
+		tier.Index, tier.Total, tier.Cost))
 }
 
 // drainJournal pulls the learner's commands out of the sandbox and onto the
@@ -398,16 +460,18 @@ func (r *gameResponder) passBanner(ctx context.Context, res verify.LevelResult) 
 	rankAfter, nextRank, _ := game.RankFor(r.pass.pack, xpAfter)
 
 	return renderPassBanner(passSummaryData{
-		Level:      r.level,
-		Result:     res,
-		Score:      awarded,
-		TotalXP:    xpAfter,
-		RankBefore: rankBefore,
-		RankAfter:  rankAfter,
-		NextRank:   nextRank,
-		HasRanks:   hasRanks,
-		Unlocked:   unlockedRules(r.pass.pack, r.pass.unlocks.drain()),
-		Next:       r.nextStep(ctx),
+		Level:        r.level,
+		Result:       res,
+		Score:        awarded,
+		TotalXP:      xpAfter,
+		RankBefore:   rankBefore,
+		RankAfter:    rankAfter,
+		NextRank:     nextRank,
+		HasRanks:     hasRanks,
+		Unlocked:     unlockedRules(r.pass.pack, r.pass.unlocks.drain()),
+		Next:         r.nextStep(ctx),
+		CommandsUsed: r.orch.CommandsUsed(),
+		Par:          r.level.ParCommands,
 	}, r.color), true
 }
 

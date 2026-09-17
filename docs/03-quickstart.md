@@ -1,12 +1,9 @@
 # Quickstart
 
-> **Status: outline.** Written properly on Day 7. The loop below is real and
-> playable today, and so is every command in the two tables further down.
-
 You are installed. Here is the loop.
 
 ```
-shellforge run nav-01
+shellforge play
 ```
 
 ## The loop
@@ -35,16 +32,34 @@ session survives it. Type `check` again when you are ready.
 
 ## The levels you can play today
 
-Nine, in this order: `nav-01` to `nav-04`, `files-01` to `files-04`, and
-`pipe-05`. Running an id that does not exist lists the ones that do.
+All 25, in six acts. `shellforge map` prints them as a tree of passed, available
+and locked, and [CURRICULUM.md](CURRICULUM.md) describes every one of them in
+detail.
 
-Levels 9 to 25 arrive later. `shellforge play` already starts you where you left
-off, and will pick those up as they land.
+| Act | Levels | What it teaches |
+|---|---|---|
+| I. Orientation | `nav-01` to `nav-04` | Moving around a filesystem, and reading the manual yourself |
+| II. Files | `files-01` to `files-05` | Creating, copying, moving, deleting, and globs |
+| III. Plumbing | `pipe-01` to `pipe-05` | Redirection and pipelines |
+| IV. Search | `find-01` to `find-04` | `grep` for text, `find` for files |
+| V. Permissions | `perm-01`, `perm-02`, `proc-01`, `perm-03` | `ls -l`, fixing permissions, managing processes |
+| VI. Automation | `env-01`, `script-01`, `boss-final` | Environment variables, and your first bash script |
+
+You do not have to pick. `shellforge play` resolves the next unlocked level from
+what you have already passed, says which one it chose and why before it
+provisions anything, and starts it. Running an id that does not exist lists the
+ones that do.
+
+A level stays locked until its prerequisites are passed. If you are stuck on one
+and want to move on, `shellforge skip <id>` records it as skipped so that
+whatever depends on it unlocks. It awards no XP, and you can come back and play
+it properly later.
 
 ## Commands you type inside the sandbox
 
 | Command | What it does |
 |---|---|
+| `help` | List these commands. `help cd` still asks bash, as it always did |
 | `check` | Verify the current level |
 | `brief` | Reprint the briefing |
 | `hint` | Show what the next hint costs. `hint --yes` spends it, `hint --reveal` asks about the solution |

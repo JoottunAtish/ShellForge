@@ -1,8 +1,8 @@
 # Troubleshooting
 
-> **Status: outline.** Written properly on Day 7 against a build that actually
-> installs. The headings below are the contract: every `doctor` probe emits a doc
-> anchor, and CI fails the build if the anchor has no heading here.
+Every heading on this page is a contract. Every `doctor` probe emits a doc
+anchor, and CI fails the build if an emitted anchor has no heading here, because
+a diagnostic that links to a page nobody wrote is worse than no link at all.
 
 Every entry follows the same shape, because someone reading this page is already
 frustrated and needs the answer, not an essay.
@@ -222,7 +222,9 @@ again.
 console does not.
 
 **Fix:** Install Windows Terminal from the Microsoft Store and run Shellforge in
-it. If you cannot, run `shellforge --ascii` or set `NO_COLOR=1`.
+it. If you cannot, set `NO_COLOR=1` in your environment, which every Shellforge
+command honours. `shellforge map` also takes `--ascii`, which forces plain output
+for that one command whatever the environment says.
 
 ---
 
@@ -307,6 +309,36 @@ shellforge sandbox rebuild
 
 ---
 
+## containerfile-not-found
+
+**You'll see:** `shellforge init` on Linux stops with `could not find
+images/Containerfile: no go.mod between ... and the filesystem root`.
+
+**What it means:** v0.1.0 builds the sandbox image from this repository's own
+`images/Containerfile`, and it looks for that file by walking up from the
+directory you are standing in. If you installed with `install.sh` and have no
+clone, there is nothing to find. This is a known bug rather than anything you
+did, and it is tracked as
+[issue #172](https://github.com/JoottunAtish/ShellForge/issues/172).
+
+**Fix:** Run `init` once from inside a clone:
+
+```bash
+git clone https://github.com/JoottunAtish/ShellForge.git
+cd ShellForge
+shellforge init
+```
+
+Once the image exists, Shellforge finds it by name and never rebuilds, so
+`shellforge play` works from anywhere afterwards.
+
+**Still stuck?** If `init` gets as far as running `docker build` and that fails,
+this is not your problem: read what Docker printed and check
+[docker-daemon-down](#docker-daemon-down) and
+[docker-permission-denied](#docker-permission-denied).
+
+---
+
 ## no-runtime-available
 
 **You'll see:** `shellforge init` or `shellforge sandbox shell` reports that
@@ -349,13 +381,27 @@ open an issue with the output of `shellforge doctor --json`.
 looks for one you built yourself first, then for one it downloaded earlier. Neither
 was there.
 
-**Fix:** Build one from the repository:
+**If you installed with `install.ps1`, this is a known bug and not something you
+did.** v0.1.0's installer places the binary and nothing else, so the tarball it
+then looks for was never fetched. It is tracked as
+[issue #172](https://github.com/JoottunAtish/ShellForge/issues/172).
+
+**Fix:** Build the tarball from a clone of the repository. This needs Git, Go and
+a working Docker, and takes a few minutes:
 
 ```bash
+git clone https://github.com/JoottunAtish/ShellForge.git
+cd ShellForge
 make rootfs
 ```
 
-That writes `images/out/rootfs.tar.gz`. Then run `shellforge init` again.
+That writes `images/out/rootfs.tar.gz`. Run `shellforge init` from inside that
+same directory and it finds it. Once the distribution is imported you never need
+the clone again.
+
+**Still stuck?** If `make rootfs` fails rather than `init`, the problem is the
+image build rather than this. Read what it printed and check
+[docker-daemon-down](#docker-daemon-down) first.
 
 ---
 
@@ -377,17 +423,24 @@ platform.
 
 **You'll see:** Checks failing on a level you have not started, or setup errors.
 
-**Fix:**
+**Fix:** `reset` rebuilds the level's world from scratch. Type it at the prompt
+inside the level, not on your own shell. It prints exactly what it would delete
+first, and `reset --yes` then does it:
 
 ```
-shellforge reset --hard
+reset
+reset --yes
 ```
 
-If that does not help, or if `reset` is not available yet, remove the sandbox and
-let the next run build a clean one:
+It only ever touches the level's own folder, so anything you saved elsewhere in
+the sandbox survives.
+
+If the sandbox itself is the problem rather than the level, rebuild it. This
+destroys the sandbox and provisions a new one, and it does not touch your
+progress:
 
 ```
-docker rm -f shellforge-sandbox
+shellforge sandbox rebuild
 ```
 
 ---
@@ -661,5 +714,42 @@ a small amount of XP and is there for exactly this.
 
 ## Common first problems
 
-To be written on Day 7, once there is real evidence of what people actually hit.
-The predicted list is above. The real list will differ, and the real one wins.
+Every heading above is one `doctor` can send you to. These are the ones a first
+install runs into most often, in the order they tend to happen. This is the
+predicted list rather than the measured one: v0.1.0 is the first release, so
+nobody has hit these yet in the wild. When there is real evidence it replaces
+this list, because the real one wins.
+
+| If this is your first run and | Go to |
+|---|---|
+| `shellforge` is not a recognised command after installing | [command-not-found](#command-not-found) |
+| You are on Linux and `init` cannot find `images/Containerfile` | [containerfile-not-found](#containerfile-not-found) |
+| You are on Windows and `init` cannot find a rootfs | [rootfs-not-found](#rootfs-not-found) |
+| Docker is installed but Shellforge says permission denied | [docker-permission-denied](#docker-permission-denied) |
+| Docker is installed but nothing responds | [docker-daemon-down](#docker-daemon-down) |
+| `wsl --install` failed or WSL is not there | [wsl-not-installed](#wsl-not-installed) |
+| WSL is there but the sandbox will not import | [wsl-import-blocked](#wsl-import-blocked) |
+| The output is full of `[0m` and `[1;32m` | [terminal-no-vt](#terminal-no-vt) |
+
+## If none of this helped
+
+Run this and attach what it writes to a GitHub issue:
+
+```
+shellforge bug-report
+```
+
+It bundles the `doctor` report, the sandbox probe, the versions, and a
+count-only summary of your progress into a zip file on your own machine. It
+uploads nothing: it prints the path and you decide whether to attach it.
+
+By default it does not include the commands you typed. `shellforge bug-report
+--journal` adds them, redacted through a closed list that strips password
+assignments, token flags, `Authorization` headers and key blocks. It never
+includes command output and never your environment. Read the zip before you
+attach it: it is a plain file and it is yours.
+
+Open the issue at
+[github.com/JoottunAtish/ShellForge/issues](https://github.com/JoottunAtish/ShellForge/issues)
+using the install problem template. Paste text rather than a screenshot where
+you can: the next person with your problem will be searching for it.

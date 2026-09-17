@@ -88,16 +88,22 @@ gofmt -s -w . && go vet ./... && go test ./...
 This is the path we most want people to take.
 
 ```bash
-shellforge author scaffold my-level-id     # generates the skeleton and assets dir
-$EDITOR packs/core-linux-basics/levels/my-level-id.yaml
+# Start from the shipped level closest to what you have in mind. There is no
+# scaffold generator in v0.1.0, and copying a level that already passes the
+# golden contract is a better starting point than an empty skeleton anyway.
+cp packs/core-linux-basics/levels/10-pipe-01.yaml \
+   packs/core-linux-basics/levels/26-my-level-id.yaml
+$EDITOR packs/core-linux-basics/levels/26-my-level-id.yaml
 shellforge author validate packs/core-linux-basics
 shellforge author test my-level-id         # golden test
 shellforge run my-level-id                 # play it yourself
 ```
 
-The schema and the full check catalogue are in
-[docs/LEVEL-FORMAT.md](docs/LEVEL-FORMAT.md). The authoring invariants there are
-enforced by the validator, so read them before you write.
+[docs/07-authoring-levels.md](docs/07-authoring-levels.md) is the guide: the
+anatomy of a level walked through against a real one, how to pick a check type,
+and the state-versus-journal distinction that decides most design questions.
+[docs/LEVEL-FORMAT.md](docs/LEVEL-FORMAT.md) is the schema, and the authoring
+invariants there are enforced by the validator, so read them before you write.
 
 ### What a good level looks like
 
@@ -117,15 +123,17 @@ enforced by the validator, so read them before you write.
 
 ### The golden test contract
 
-Every level must satisfy this, and CI runs it on every pull request:
+Every level must satisfy it, `shellforge author test` asserts it, and CI runs it
+on every pull request. Six steps: set up, every required check fails, run the
+solution, every required check passes, tear down cleanly, and run the checks
+twice with identical filesystem hashes either side.
 
-1. Fresh sandbox, run `setup`.
-2. Run checks. **All required checks must FAIL.** If a level passes before the
-   learner has done anything, the checks are wrong.
-3. Run `solution` as `learner` in a login shell.
-4. Run checks. **All required checks must PASS.**
-5. Run `teardown`. `setup.root` no longer exists and no stray processes remain.
-6. Run checks twice, hash the filesystem before and after. **Identical.**
+The full contract, including what step 2 asserts per objective and the
+`preserves: true` exemption, is in
+[docs/LEVEL-FORMAT.md section 7](docs/LEVEL-FORMAT.md#7-authoring-workflow).
+[docs/07-authoring-levels.md](docs/07-authoring-levels.md) section 8 covers what
+to do when it fails, and the rule that matters most: if the solution does not
+satisfy the check, the level is wrong, not the check.
 
 ---
 
@@ -138,6 +146,11 @@ and is worried about breaking their laptop.
 - Never write "just" or "simply".
 - Define jargon at first use: WSL, distro, shell, sandbox, PATH.
 - Every command shown must be copy-pasteable and correct. Run it first.
+  `cmd/shellforge/docs_commands_test.go` resolves every `shellforge ...`
+  invocation in the user-facing guides against the real command tree and fails
+  the build on a verb that does not exist, a flag the command does not take, or
+  a verb that is still a stub. It cannot check that the output matches what the
+  page claims, so running the command yourself is still the job.
 - Every `doctor` failure code needs a matching anchor in
   [docs/05-troubleshooting.md](docs/05-troubleshooting.md). CI enforces this.
 

@@ -388,3 +388,67 @@ func TestRenderableErrorPassesThroughAnExistingUxError(t *testing.T) {
 		t.Errorf("renderableError re-wrapped an error that was already user-facing")
 	}
 }
+
+// TestStubsAreHiddenButStillAnswer pins both halves of what a stub is for.
+//
+// `shellforge help author` used to list `scaffold` and `record` beside
+// `validate` and `test` in the same voice, under a group whose summary opened
+// with the word Scaffold, and a contributor who read that and ran one got a
+// refusal. Registering without hiding was the earlier answer, argued as
+// keeping help an honest map. It was the wrong half of honest: a map is not
+// honest because every room is drawn on it, only when the rooms it draws are
+// ones you can walk into.
+//
+// Hidden rather than removed, because the refusal is the useful part for
+// somebody arriving from an older document or from muscle memory.
+func TestStubsAreHiddenButStillAnswer(t *testing.T) {
+	root := NewRootCommand(VersionInfo{})
+
+	for _, path := range [][]string{{"author", "scaffold"}, {"author", "record"}} {
+		name := strings.Join(path, " ")
+
+		cmd, _, err := root.Find(path)
+		if err != nil {
+			t.Fatalf("%s is no longer registered, so it answers with cobra's unknown command: %v", name, err)
+		}
+		if cmd.Annotations[stubAnnotation] != "true" {
+			t.Errorf("%s lost its stub annotation, which is what the documentation gate reads", name)
+		}
+		if !cmd.Hidden {
+			t.Errorf("%s is offered in the help map and then refuses", name)
+		}
+		if cmd.RunE == nil {
+			t.Fatalf("%s has no RunE, so it cannot explain itself", name)
+		}
+		if err := cmd.RunE(cmd, nil); err == nil {
+			t.Errorf("%s reported success without doing anything", name)
+		}
+	}
+}
+
+// TestHelpOffersNothingThatRefuses is the assertion from the reader's side.
+// The test above checks the flag; this one checks what is actually printed,
+// because a hidden command that some other path re-lists would pass the first
+// and still mislead.
+func TestHelpOffersNothingThatRefuses(t *testing.T) {
+	root := NewRootCommand(VersionInfo{})
+	root.SetArgs([]string{"help", "author"})
+
+	var out strings.Builder
+	root.SetOut(&out)
+	root.SetErr(&out)
+	if err := root.Execute(); err != nil {
+		t.Fatalf("help author: %v", err)
+	}
+
+	for _, unwanted := range []string{"scaffold", "record", "Scaffold"} {
+		if strings.Contains(out.String(), unwanted) {
+			t.Errorf("help names %q, which is not built:\n%s", unwanted, out.String())
+		}
+	}
+	for _, wanted := range []string{"validate", "test"} {
+		if !strings.Contains(out.String(), wanted) {
+			t.Errorf("help no longer names %q, which does work:\n%s", wanted, out.String())
+		}
+	}
+}

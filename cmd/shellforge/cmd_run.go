@@ -631,14 +631,44 @@ func packFilesystem() (fs.FS, error) {
 // Resolution goes through internal/sandbox.Resolve rather than constructing
 // docker.New directly, so `run` and `init` share one resolution path and
 // neither picks a backend silently: Choice.Reason is printed either way.
+// sandboxNeedsBuilding reports whether the learner is about to wait.
+//
+// The warning about minutes is honest exactly once. On a machine whose image
+// is already built the briefing arrives about ten seconds later, and a game
+// that promises a wait it does not take teaches a learner to disbelieve it,
+// which is expensive on the one occasion the wait is real.
+//
+// A Status that fails counts as needing the build. Warning about a wait that
+// does not come costs a sentence; staying silent through a five minute image
+// build looks like a hang.
+func sandboxNeedsBuilding(ctx context.Context, rt runtime.Runtime) bool {
+	status, err := rt.Status(ctx)
+	return err != nil || !status.Provisioned
+}
+
+// announceProvisioning is what `run` prints before it provisions.
+//
+// Silence is the right answer on a machine that is already set up. The
+// backend line is a decision the learner does not act on and did not ask
+// about: `init` is where somebody chose a backend on purpose, and it still
+// prints there. Before every level it is noise above the briefing.
+func announceProvisioning(ctx context.Context, rt runtime.Runtime, reason string, out io.Writer) {
+	if !sandboxNeedsBuilding(ctx, rt) {
+		return
+	}
+	if reason != "" {
+		fmt.Fprintln(out, reason)
+	}
+	fmt.Fprintln(out, "Preparing the sandbox. The first run builds the image, which takes a few minutes.")
+}
+
 func openSandbox(ctx context.Context, levelID string) (runtime.Runtime, runtime.Session, func(), error) {
 	rt, choice, err := sandbox.Resolve(ctx, sandbox.Options{Want: sandbox.Auto})
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
-	fmt.Fprintln(os.Stdout, choice.Reason)
-	fmt.Fprintln(os.Stdout, "Preparing the sandbox. The first run builds the image, which takes a few minutes.")
+	announceProvisioning(ctx, rt, choice.Reason, os.Stdout)
 	if err := rt.Provision(ctx, sandbox.Spec()); err != nil {
 		return nil, nil, nil, ux.Fail(
 			"provision the sandbox",

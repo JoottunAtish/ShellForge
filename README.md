@@ -5,9 +5,11 @@
 [![CI](https://github.com/JoottunAtish/ShellForge/actions/workflows/ci.yml/badge.svg)](https://github.com/JoottunAtish/ShellForge/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Go 1.25+](https://img.shields.io/badge/go-1.25%2B-00ADD8.svg)](https://go.dev/dl/)
-[![Status: pre-alpha](https://img.shields.io/badge/status-pre--alpha-orange.svg)](PROGRESS.md)
+[![Release: v0.1.0](https://img.shields.io/badge/release-v0.1.0-brightgreen.svg)](https://github.com/JoottunAtish/ShellForge/releases/latest)
 
 [![Shellforge on GitHub](https://githubcard.com/JoottunAtish/ShellForge.svg?d=4S7ENYlgGRMx)](https://github.com/JoottunAtish/ShellForge)
+
+![Solving the pipe-05 level: the briefing opens on a billing service alarm, three rotated logs are searched for ERROR lines and the total written to report.txt, then check turns every objective green and awards the XP.](docs/assets/demo.gif)
 
 Shellforge drops you into a real Linux shell inside a disposable sandbox and gives
 you jobs to do. Not multiple choice. Not a simulator. You type real commands into a
@@ -15,11 +17,6 @@ real `bash` process, and the game checks whether you actually did the thing.
 
 You are a new junior sysadmin at Meridian Logistics. The last engineer left without
 documentation. There are 25 tickets waiting.
-
-> **Status: pre-alpha, under active construction.** The design is complete and the
-> repository is scaffolded. The engine is not built yet. See [PROGRESS.md](PROGRESS.md)
-> for exactly what works today and [docs/design/SEVEN-DAY-PLAN.md](docs/design/SEVEN-DAY-PLAN.md)
-> for what lands when. There is no installable release yet.
 
 ---
 
@@ -36,25 +33,22 @@ pass. That is the difference between teaching a command and teaching a skill.
 | | |
 |---|---|
 | **Real shell** | Actual `bash` in a PTY. `vim`, `less`, `htop`, job control, tab completion, Ctrl-C all work. |
-| **Real verification** | 13 check types that read filesystem state, process state, file modes, ownership and shell environment. |
+| **Real verification** | 14 check types that read filesystem state, process state, file modes, ownership, shell environment and the command journal. |
 | **Really disposable** | `rm -rf /` inside the sandbox destroys nothing on your machine, and `reset` rebuilds the level in under a second. |
 | **Really offline** | No account, no server, no telemetry. Progress is a SQLite file on your disk. |
 | **Really yours** | Levels are declarative YAML. Write your own, ship a pack. |
 
 ## Install
 
-There is no tagged release yet, but both installers are real and pull from this
-repository's own scripts, which you can read before running either one.
+Both installers verify the release checksum before anything is placed on your
+disk, neither edits a shell profile, and neither asks for Administrator or
+`sudo`. You can read either script at the URL below before running it.
 
 **Linux**, or from inside WSL on Windows:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/JoottunAtish/ShellForge/main/scripts/install.sh | sh
 ```
-
-This resolves the latest tagged release, and there is not one yet: until v0.1.0 is
-tagged, it fails with `could not resolve the latest release`. Build from source
-instead: `make build`.
 
 **Windows**, from an ordinary PowerShell window:
 
@@ -63,12 +57,16 @@ Invoke-WebRequest -Uri https://raw.githubusercontent.com/JoottunAtish/ShellForge
 powershell -ExecutionPolicy Bypass -Scope Process -File install.ps1
 ```
 
-The same applies here: this works once v0.1.0 is tagged, and fails the same way
-until then.
+**On Windows, play from inside WSL.** The PowerShell build does everything
+except open a level. `play`, `run` and `sandbox shell` allocate a pseudo
+terminal on the host, and Windows consoles have no implementation of that yet,
+on either backend
+([#138](https://github.com/JoottunAtish/ShellForge/issues/138)). They say so up
+front rather than failing halfway. Run the Linux line above from inside your WSL
+distribution and play there instead: Docker Desktop shares one daemon with WSL,
+so it is the same sandbox and nothing is built twice.
 
-Full detail on what each one does, and the manual verify-and-extract
-alternative, in the [Windows install guide](docs/01-install-windows.md) and the
-[Linux install guide](docs/02-install-linux.md).
+Then:
 
 ```
 shellforge doctor    # checks your machine and tells you how to fix anything
@@ -76,7 +74,19 @@ shellforge init      # sets up the sandbox (one time, a few minutes)
 shellforge play      # start
 ```
 
-macOS will probably work through Docker, but it is untested and will be labelled
+**One known rough edge in v0.1.0:** `shellforge init` needs a clone of this
+repository, because the installers place the binary and not the sandbox image.
+It is tracked as [issue #172](https://github.com/JoottunAtish/ShellForge/issues/172)
+and both install guides give the workaround.
+
+If you have never opened a terminal, start with the
+[Windows install guide](docs/01-install-windows.md), which assumes nothing and
+explains what WSL is before asking you to install it. On Linux the
+[Linux install guide](docs/02-install-linux.md) is the short version, and both
+cover the manual verify-and-extract alternative if you would rather not pipe a
+script from the network.
+
+macOS will probably work through Docker, but it is untested and is labelled
 community supported rather than supported.
 
 ## What you'll learn
@@ -145,6 +155,10 @@ ever intercepting or re-executing your commands. Full design in
 | Document | What it covers |
 |---|---|
 | [docs/](docs/README.md) | Documentation index |
+| [docs/03-quickstart.md](docs/03-quickstart.md) | Everything you can type, once you are in |
+| [docs/04-how-it-works.md](docs/04-how-it-works.md) | What it installs, what it records, and what it cannot reach |
+| [docs/05-troubleshooting.md](docs/05-troubleshooting.md) | Every `doctor` failure, with the fix |
+| [CHANGELOG.md](CHANGELOG.md) | What is in each release, and the known issues |
 | [docs/CURRICULUM.md](docs/CURRICULUM.md) | All 25 levels: concepts, objectives, checks, hints |
 | [docs/LEVEL-FORMAT.md](docs/LEVEL-FORMAT.md) | Level YAML schema and the check catalogue |
 | [docs/design/ARCHITECTURE.md](docs/design/ARCHITECTURE.md) | Full system design |
@@ -154,10 +168,14 @@ ever intercepting or re-executing your commands. Full design in
 ## Contributing
 
 Contributions are welcome, especially levels. A level is a YAML file plus its
-assets, and `shellforge author scaffold` generates the skeleton for you.
+assets. Copy the level in `packs/core-linux-basics/levels/` closest to what you
+have in mind, then `shellforge author validate` and `shellforge author test`
+hold your version to the same contract every shipped level passes.
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) first. The short version: LF line endings,
-no new dependencies without asking, every check needs a written failure message, and
+Read [CONTRIBUTING.md](CONTRIBUTING.md) first, and
+[docs/07-authoring-levels.md](docs/07-authoring-levels.md) for how to think about
+a level, walked through a real one. The short version: LF line endings, no new
+dependencies without asking, every check needs a written failure message, and
 every level needs a golden test that passes in CI.
 
 ## License

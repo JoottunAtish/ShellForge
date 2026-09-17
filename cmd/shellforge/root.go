@@ -132,15 +132,15 @@ func newAuthorCommand() *cobra.Command {
 	author := &cobra.Command{
 		Use:     "author",
 		GroupID: groupAuthor,
-		Short:   "Scaffold, validate, and golden-test levels",
+		Short:   "Validate and golden-test levels",
 	}
 	author.AddCommand(
 		newValidateCommand(),
 		stubCommand("shellforge author scaffold", "scaffold <level-id>", "",
-			"Generate a new level's YAML and asset skeleton", "Day 2"),
+			"Generate a new level's YAML and asset skeleton", "v0.2"),
 		newAuthorTestCommand(),
 		stubCommand("shellforge author record", "record <level-id>", "",
-			"Capture a golden recording for one level", "Day 2"),
+			"Capture a golden recording for one level", "v0.2"),
 	)
 	return author
 }
@@ -177,25 +177,52 @@ func inLevelCommand(name, usage, group, short string) *cobra.Command {
 	}
 }
 
+// stubAnnotation marks a command as a stub: registered, hidden, and with no
+// behaviour behind it. It
+// lives here rather than beside its reader because stubCommand sets it, and a
+// marker whose two halves are declared in different files drifts.
+const stubAnnotation = "shellforge.stub"
+
 // stubCommand returns a *cobra.Command for a verb the build plan has not
-// reached yet. Registering it now, rather than only once it is implemented,
-// keeps `shellforge help` an honest map of the product: an unbuilt verb
-// answers with a remediation instead of cobra's own "unknown command".
+// reached yet: registered so it answers with a remediation rather than
+// cobra's own "unknown command", and hidden so nothing offers it.
+//
+// Registering without hiding was the earlier answer, on the argument that
+// `shellforge help` should be an honest map of the product. It was the
+// wrong half of honest. `shellforge help author` listed `scaffold` and
+// `record` beside `validate` and `test` in the same voice, under a group
+// whose summary opened with the word Scaffold, and a contributor who read
+// that map and walked through the door got a refusal. A map is not honest
+// because every room is drawn on it; it is honest when the rooms it draws
+// are the ones you can walk into.
+//
+// Hidden rather than absent, because the refusal is worth keeping: somebody
+// arriving from an older document, a search result or muscle memory is told
+// where the verb went, which "unknown command" would not do.
 //
 // name is the full invocation for the error message, such as
 // "shellforge author validate". usage is the local Use line cobra shows
-// under this command, such as "validate <pack-path>".
+// under this command, such as "validate <pack-path>". when names where the
+// verb is expected to land, and goes into the remediation verbatim.
+//
+// The annotation is what docs_commands_test.go reads. A verb registered here
+// answers a reader with a refusal, so the user-facing documentation must not
+// tell anyone to run one, and that gate is the only thing standing between a
+// stub and four documents quietly instructing people to use it, which is
+// exactly what had happened to `author scaffold` by Day 7.
 func stubCommand(name, usage, group, short, when string) *cobra.Command {
 	return &cobra.Command{
-		Use:     usage,
-		GroupID: group,
-		Short:   short,
-		Args:    cobra.ArbitraryArgs,
+		Use:         usage,
+		GroupID:     group,
+		Short:       short,
+		Args:        cobra.ArbitraryArgs,
+		Hidden:      true,
+		Annotations: map[string]string{stubAnnotation: "true"},
 		RunE: func(*cobra.Command, []string) error {
 			return ux.Fail(
 				fmt.Sprintf("`%s` is not built yet", name),
 				nil,
-				fmt.Sprintf("This verb lands on %s of the build plan. Run `shellforge help` to see what works today, or read PROGRESS.md.", when),
+				fmt.Sprintf("This verb is planned for %s. Run `shellforge help` to see what works today, or read PROGRESS.md.", when),
 				"",
 			)
 		},

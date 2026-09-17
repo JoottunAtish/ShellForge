@@ -68,6 +68,16 @@ type passSummaryData struct {
 	// rule is what the banner needs.
 	Unlocked []achievements.Rule
 
+	// CommandsUsed and Par are the efficiency bonus made legible.
+	//
+	// The bonus line appears in the breakdown only when it is earned, so a
+	// learner who misses it sees nothing at all and cannot tell whether they
+	// missed by one command or by forty. Par is authored on every level and
+	// was never shown anywhere. Par of zero means the level disables the
+	// bonus, and then neither number is worth printing.
+	CommandsUsed int
+	Par          int
+
 	// Next is where the learner goes from here. See nextStep.
 	Next nextStep
 }
@@ -126,6 +136,7 @@ func renderPassBanner(d passSummaryData, color bool) string {
 	b.WriteString("\n\n")
 
 	b.WriteString(renderScoreBreakdown(d.Score, p))
+	b.WriteString(renderEffort(d, p))
 
 	for _, rule := range d.Unlocked {
 		b.WriteString("\n")
@@ -155,6 +166,14 @@ func renderPassBanner(d passSummaryData, color bool) string {
 // reach it. Telling them to run it without telling them to leave first earns
 // them a "command not found" and no explanation, which is exactly what
 // happened to the first person to finish a level.
+//
+// `next` is named first in the one case where it works, because it is the
+// better answer wherever it is available: it carries the learner into the
+// next level without leaving the terminal at all. Naming it anywhere else
+// would be worse than not naming it, because gameResponder.canAdvance
+// refuses unless a next level is known and `play` is driving, which is
+// exactly what the Offered and LevelID pair describes. Under `run` and
+// `play <level-id>` a learner who typed it would be told no.
 func renderNextStep(n nextStep) string {
 	if n.Complete {
 		return "That was the last level in the pack.\n" +
@@ -167,11 +186,32 @@ func renderNextStep(n nextStep) string {
 		return "Type `exit` to leave the sandbox, then run `shellforge play` to carry on."
 	}
 	if n.Offered {
-		return fmt.Sprintf("Next up: %s, %s.\nType `exit` to leave the sandbox, and you will be asked whether to start it.",
+		return fmt.Sprintf("Next up: %s, %s.\nType `next` to go straight there, or `exit` to leave the sandbox and be asked whether to start it.",
 			n.LevelID, n.Title)
 	}
 	return fmt.Sprintf("Next up: %s, %s.\nType `exit` to leave the sandbox, then run `shellforge play` to start it.",
 		n.LevelID, n.Title)
+}
+
+// renderEffort says how many commands the level took and what it was paid
+// for, which is the half of the score the breakdown cannot show.
+//
+// score.Result lists a contribution only when it is non-zero, which is right
+// for the arithmetic and leaves the efficiency bonus invisible in exactly the
+// case a learner would want to know about it: the one where they did not get
+// it. Naming par turns a silent absence into a target.
+func renderEffort(d passSummaryData, p colours) string {
+	if d.Par <= 0 || d.CommandsUsed <= 0 {
+		return ""
+	}
+	if d.CommandsUsed <= d.Par {
+		return fmt.Sprintf("\n%s\n", p.dim(fmt.Sprintf(
+			"%d commands, par %d. The efficiency bonus is in the total above.",
+			d.CommandsUsed, d.Par)))
+	}
+	return fmt.Sprintf("\n%s\n", p.dim(fmt.Sprintf(
+		"%d commands, par %d. Come in at or under par for the efficiency bonus.",
+		d.CommandsUsed, d.Par)))
 }
 
 // renderScoreBreakdown is the arithmetic block: one line per contribution,
