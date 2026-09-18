@@ -2,7 +2,10 @@
 
 package pty
 
-import "time"
+import (
+	"sync"
+	"time"
+)
 
 // defaultResizePollInterval is how often startResizeWatcher checks the
 // console size when Mux has not overridden resizePollInterval for a test.
@@ -32,6 +35,15 @@ const defaultResizePollInterval = 250 * time.Millisecond
 // without a real console, and keeps GetConsoleScreenBufferInfo out of this
 // file entirely: on Windows, term.GetSize, m.getSize's production value,
 // already calls it.
+//
+// The returned stop does not come back until the goroutine has actually
+// returned. Closing a channel and returning was not enough, and issue #141
+// is what that cost: the goroutine can be part way through a tick when stop
+// is called, so a resize could still land after stop had returned. That made
+// TestStartResizeWatcher_StopEndsTheGoroutine intermittently red on
+// windows-latest under -race, and it is a production bug as well as a test
+// one, because Resize reaches into the sandbox and must not be issued
+// against a session Run has already torn down.
 func startResizeWatcher(m *Mux) (stop func()) {
 	interval := m.resizePollInterval
 	if interval <= 0 {
@@ -44,10 +56,22 @@ func startResizeWatcher(m *Mux) (stop func()) {
 	lastCols, lastRows, _ := m.getSize(m.fd)
 
 	done := make(chan struct{})
+	stopped := make(chan struct{})
 	go func() {
+		defer close(stopped)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
+			// Checked first, and on its own, because a select with two
+			// ready cases picks between them at random. Without this,
+			// a closed done could lose the toss repeatedly and the
+			// goroutine would keep resizing after stop was called.
+			select {
+			case <-done:
+				return
+			default:
+			}
+
 			select {
 			case <-ticker.C:
 				cols, rows, err := m.getSize(m.fd)
@@ -64,7 +88,14 @@ func startResizeWatcher(m *Mux) (stop func()) {
 			}
 		}
 	}()
+
+	// sync.Once so a caller that stops twice does not panic on a second
+	// close, matching platform.EnableVirtualTerminal's restore. The wait
+	// is outside it on purpose: every caller must observe the goroutine
+	// gone, not just the first one.
+	var once sync.Once
 	return func() {
-		close(done)
+		once.Do(func() { close(done) })
+		<-stopped
 	}
 }
