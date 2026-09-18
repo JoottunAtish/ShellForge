@@ -385,7 +385,10 @@ func runSandboxShell(ctx context.Context, resolve resolveFunc, wantFlag string) 
 	defer func() { _ = sandboxPTY.Close() }()
 
 	mux := pty.New(sandboxPTY, os.Stdin, os.Stdout)
-	if runErr := mux.Run(ctx); runErr != nil {
+
+	runErr := mux.Run(ctx)
+
+	if runErr != nil {
 		if errors.Is(runErr, pty.ErrSignalled) {
 			return nil
 		}
@@ -397,6 +400,6 @@ func runSandboxShell(ctx context.Context, resolve resolveFunc, wantFlag string) 
 		)
 	}
 
-	fmt.Fprintln(os.Stdout, "Shell exited.")
+	fmt.Fprint(hostWriter(os.Stdout), "Shell exited.\n")
 	return nil
 }

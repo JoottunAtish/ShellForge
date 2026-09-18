@@ -85,7 +85,26 @@ const (
 	// back must not be able to stop the learner from getting their prompt
 	// back. One orphaned process in a disposable container is the smaller
 	// problem.
-	controlDrainTimeout = 5 * time.Second
+	//
+	// It should be LONGER than the sandbox-side reap that runs inside that
+	// goroutine, and it was not. The WSL backend bounds its own kill at 5s,
+	// this wait was 5s too, and the kill is nested inside the thing being
+	// waited for: a reap that used its whole budget therefore spent this
+	// whole budget, and the wait expired on a teardown where nothing had
+	// gone wrong. That is the warning a learner sees on the way out of a
+	// perfectly ordinary level. The margin is for getting back out of the
+	// call once the reap returns, not for the reap itself.
+	//
+	// That reasoning closes the WSL case and not the Docker one.
+	// dockerSession.killSandboxProcess runs on context.Background() with no
+	// timeout at all, so no value here can be guaranteed to outlast it and
+	// a wedged daemon can still produce this warning. Bounding that kill is
+	// the fix for that half, and it belongs in the backend rather than in a
+	// larger number here.
+	//
+	// TODO(v0.2): give the docker backend's kill a timeout, then state the
+	// invariant as a rule both backends keep rather than one.
+	controlDrainTimeout = 8 * time.Second
 
 	// checkSlack is added to the engine's level budget to bound one `check`.
 	//
@@ -681,11 +700,14 @@ func play(ctx context.Context, opts runOptions, sess runtime.Session, lvl playab
 	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 		defer cancel()
+		// Through hostWriter because this defer is the first thing to print
+		// after the learner's shell ends, on a terminal that has just hosted
+		// a session and no longer returns the carriage on a bare "\n".
 		if err := lvl.Teardown(cleanupCtx); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not remove the level world at %s: %v\n", lvl.Root(), err)
+			fmt.Fprintf(hostWriter(os.Stderr), "warning: could not remove the level world at %s: %v\n", lvl.Root(), err)
 			return
 		}
-		fmt.Fprintf(os.Stdout, "Removed the level world at %s.\n", lvl.Root())
+		fmt.Fprintf(hostWriter(os.Stdout), "Removed the level world at %s.\n", lvl.Root())
 	}()
 
 	if err := lvl.Setup(ctx); err != nil {
@@ -719,11 +741,15 @@ func play(ctx context.Context, opts runOptions, sess runtime.Session, lvl playab
 		)
 	}
 
-	// The briefing prints before the prompt appears, and before the host
-	// terminal goes into raw mode, so a plain newline is still a newline
-	// here. Anything written after Run starts needs a carriage return too,
-	// which is what crlf in render_check.go is for.
-	lvl.PrintBriefing(os.Stdout, color)
+	// The briefing prints before the prompt appears and before the host
+	// terminal goes into raw mode. That is not enough on its own to make a
+	// plain newline a newline: under `play` this is the second or fifth
+	// level in one process, and a terminal that has hosted a session
+	// already does not return the carriage by itself. hostWriter adds it
+	// back when os.Stdout is a terminal, and leaves redirected output
+	// alone. Anything written after Run starts needs the same, which is
+	// what crlf in render_check.go is for.
+	lvl.PrintBriefing(hostWriter(os.Stdout), color)
 
 	// The learner starts in their home directory, not in the level root.
 	//
@@ -793,8 +819,8 @@ func play(ctx context.Context, opts runOptions, sess runtime.Session, lvl playab
 	cancel()
 
 	if !waitForControlLoop(served, controlDrainTimeout) {
-		fmt.Fprintln(os.Stderr, "warning: the control channel did not stop cleanly, so a process may be left running inside the sandbox container. "+
-			"It is harmless, and `docker rm -f shellforge-sandbox` clears it if you would rather not leave it there.")
+		fmt.Fprint(hostWriter(os.Stderr), "warning: the control channel did not stop cleanly, so a process may be left running inside the sandbox. "+
+			"It is harmless, and `shellforge sandbox rebuild` clears it if you would rather not leave it there.\n")
 	}
 
 	// liveStopped closes once both of startLiveChecking's own goroutines
@@ -814,13 +840,13 @@ func play(ctx context.Context, opts runOptions, sess runtime.Session, lvl playab
 		close(liveStopped)
 	}()
 	if !waitForControlLoop(liveStopped, controlDrainTimeout) {
-		fmt.Fprintln(os.Stderr, "warning: live verification did not stop cleanly, so a background check may still be reading the sandbox. "+
-			"It is harmless, and `docker rm -f shellforge-sandbox` clears it if you would rather not leave it there.")
+		fmt.Fprint(hostWriter(os.Stderr), "warning: live verification did not stop cleanly, so a background check may still be reading the sandbox. "+
+			"It is harmless, and `shellforge sandbox rebuild` clears it if you would rather not leave it there.\n")
 	}
 
 	if runErr != nil {
 		if errors.Is(runErr, pty.ErrSignalled) {
-			fmt.Fprintln(os.Stdout, "Interrupted.")
+			fmt.Fprint(hostWriter(os.Stdout), "Interrupted.\n")
 			return nil
 		}
 		return ux.Fail(
@@ -831,7 +857,7 @@ func play(ctx context.Context, opts runOptions, sess runtime.Session, lvl playab
 		)
 	}
 
-	fmt.Fprintln(os.Stdout, "Shell exited.")
+	fmt.Fprint(hostWriter(os.Stdout), "Shell exited.\n")
 	return nil
 }
 

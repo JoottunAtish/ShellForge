@@ -20,11 +20,19 @@ import (
 // supposed to feel like a story, so it gets rendered rather than dumped.
 //
 // The important difference from render_check.go: this runs BEFORE the shell is
-// attached, so the host terminal is not in raw mode yet and a plain "\n" is
-// still a newline. Nothing here goes through crlf. A check reply does, because by
-// then internal/pty has taken the terminal. Getting those two the wrong way
-// round is the easiest mistake available in this pair of files, which is why both
-// say so.
+// attached, so nothing here builds its own CRLF the way a check reply does.
+// A check reply goes through crlf because by then internal/pty has taken the
+// terminal. Getting those two the wrong way round is the easiest mistake
+// available in this pair of files, which is why both say so.
+//
+// That used to be the whole story, on the grounds that a terminal with no
+// shell attached to it yet still treats a plain "\n" as a newline. It does,
+// once. `play` walks a campaign in one process, so every briefing after the
+// first is printed into a terminal that has already hosted a session, and
+// that terminal no longer returns the carriage on its own. hostWriter is
+// where that is put right, and it is applied at the call site rather than
+// here so that this renderer stays something a golden test can compare
+// against ordinary Go string literals.
 
 const (
 	// Briefing width bounds. Narrower than 40 columns makes prose unreadable
@@ -232,8 +240,14 @@ func clampBriefWidth(width int) int {
 // A non-terminal writer, which is what a test, a pipe and a CI log all are, gets
 // the default rather than an error: the briefing still has to be readable in a
 // transcript.
+// The interface rather than a *os.File assertion, so that a briefing going
+// through hostWriter's CRLF translation is still measured against the real
+// terminal. Asserting the concrete type made the wrapper fall back to 80
+// columns, which is a visible change to every briefing on a wider window.
+// Anything else exposing an Fd is harmless here: term.GetSize fails on a
+// descriptor that is not a terminal and the fallback below catches it.
 func terminalWidth(w io.Writer) int {
-	f, ok := w.(*os.File)
+	f, ok := w.(interface{ Fd() uintptr })
 	if !ok {
 		return defaultBriefWidth
 	}
@@ -243,3 +257,59 @@ func terminalWidth(w io.Writer) int {
 	}
 	return width
 }
+
+// hostWriter wraps w so that every line ending reaches the host terminal
+// with a carriage return, and returns w untouched when it is not a terminal.
+//
+// A terminal that has hosted one level session stops returning the carriage
+// on a bare "\n", and stays that way for the rest of the process: measured
+// on Windows, where the staircase starts at the first thing printed after
+// the shell ends and runs through the next level's briefing. internal/pty
+// restores the raw mode it set, and cmd_run.go restores the console mode on
+// top of that, and neither brings it back, so the carriage return has to be
+// in the bytes.
+//
+// Only when w is a terminal. Redirected output is somebody's file or pipe
+// and a stray "\r" in it is corruption: `shellforge play > log` should read
+// the same on every platform, and the golden tests write to a buffer, which
+// is not a terminal and so is left exactly as it was.
+func hostWriter(w io.Writer) io.Writer {
+	f, ok := w.(*os.File)
+	if !ok || !term.IsTerminal(int(f.Fd())) {
+		return w
+	}
+	return &crlfWriter{w: f, fd: f.Fd()}
+}
+
+// crlfWriter is hostWriter's translation, streaming rather than whole
+// string, because it wraps a writer that is handed a line at a time.
+//
+// last carries the final byte across calls so that a "\r" ending one Write
+// and a "\n" opening the next is left alone rather than doubled, which is
+// the same idempotence crlf has within one string.
+type crlfWriter struct {
+	w    io.Writer
+	fd   uintptr
+	last byte
+}
+
+func (c *crlfWriter) Write(p []byte) (int, error) {
+	out := make([]byte, 0, len(p)+len(p)/8)
+	for _, ch := range p {
+		if ch == '\n' && c.last != '\r' {
+			out = append(out, '\r')
+		}
+		out = append(out, ch)
+		c.last = ch
+	}
+	if _, err := c.w.Write(out); err != nil {
+		return 0, err
+	}
+	// The count is of p, not of what went out: io.Writer's contract is how
+	// much of the caller's input was consumed, and never more than len(p).
+	return len(p), nil
+}
+
+// Fd reports the underlying terminal's descriptor, so that terminalWidth
+// measures the real window through the wrapper.
+func (c *crlfWriter) Fd() uintptr { return c.fd }

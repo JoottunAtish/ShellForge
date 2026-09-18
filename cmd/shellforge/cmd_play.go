@@ -170,6 +170,12 @@ func parsePlayArgs(args []string) (playOptions, error) {
 // campaign is a DAG, so what comes next is a question to be asked again, not
 // an index to increment.
 func runPlay(ctx context.Context, out io.Writer, opts playOptions) error {
+	// Everything this function prints between levels lands on a terminal
+	// that has already hosted a session, which no longer returns the
+	// carriage on a bare "\n". See hostWriter. A caller passing a buffer,
+	// which is every test here, gets its buffer back unchanged.
+	out = hostWriter(out)
+
 	pack, err := content.Embedded()
 	if err != nil {
 		return err // Embedded already wraps its own failure as a *ux.Error
