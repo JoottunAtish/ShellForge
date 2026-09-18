@@ -314,14 +314,27 @@ shellforge sandbox rebuild
 **You'll see:** `shellforge init` on Linux stops with `could not find
 images/Containerfile: no go.mod between ... and the filesystem root`.
 
-**What it means:** v0.1.0 builds the sandbox image from this repository's own
-`images/Containerfile`, and it looks for that file by walking up from the
-directory you are standing in. If you installed with `install.sh` and have no
-clone, there is nothing to find. This is a known bug rather than anything you
-did, and it is tracked as
-[issue #172](https://github.com/JoottunAtish/ShellForge/issues/172).
+**What it means:** `init` has three ways to get a sandbox image and none of them
+worked. It uses the image if you already have one; otherwise it builds from this
+repository's own `images/Containerfile`, found by walking up from the directory
+you are standing in; otherwise it imports the `rootfs.tar.gz` the installer
+downloads into `~/.cache/shellforge/rootfs`. You are seeing this because there is
+no image, no clone above you, and nothing in the cache.
 
-**Fix:** Run `init` once from inside a clone:
+The usual cause is an install that did not finish, or one run with
+`SHELLFORGE_SKIP_ROOTFS=1`. On arm64 it is expected: the published image is
+amd64, so the installer skips it deliberately and `init` has to build.
+
+**Fix:** Run the installer again. On amd64 it fetches and verifies the image, and
+`init` then imports it:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/JoottunAtish/ShellForge/main/scripts/install.sh | sh
+shellforge init
+```
+
+On arm64, or if you would rather build it yourself, run `init` once from inside a
+clone:
 
 ```bash
 git clone https://github.com/JoottunAtish/ShellForge.git
@@ -378,29 +391,38 @@ open an issue with the output of `shellforge doctor --json`.
 **You'll see:** `init` reports that it cannot find the Linux system image to import.
 
 **What it means:** The Windows sandbox is built from a rootfs tarball. Shellforge
-looks for one you built yourself first, then for one it downloaded earlier. Neither
-was there.
+looks for one you built yourself first, then for the one the installer downloads
+into `%LOCALAPPDATA%\shellforge\cache\rootfs`. Neither was there.
 
-**If you installed with `install.ps1`, this is a known bug and not something you
-did.** v0.1.0's installer places the binary and nothing else, so the tarball it
-then looks for was never fetched. It is tracked as
-[issue #172](https://github.com/JoottunAtish/ShellForge/issues/172).
+The usual cause is an install that did not finish, or one run with `-SkipRootfs`.
+The download is tens of megabytes, so it is the step most likely to have been
+interrupted.
 
-**Fix:** Build the tarball from a clone of the repository. This needs Git, Go and
-a working Docker, and takes a few minutes:
+**Fix:** Run the installer again. It fetches the image, checks its checksum, and
+puts it where `init` looks:
 
-```bash
-git clone https://github.com/JoottunAtish/ShellForge.git
-cd ShellForge
-make rootfs
+```powershell
+Invoke-WebRequest -Uri https://raw.githubusercontent.com/JoottunAtish/ShellForge/main/scripts/install.ps1 -OutFile install.ps1
+powershell -ExecutionPolicy Bypass -Scope Process -File install.ps1
+shellforge init
 ```
 
-That writes `images/out/rootfs.tar.gz`. Run `shellforge init` from inside that
-same directory and it finds it. Once the distribution is imported you never need
-the clone again.
+If you would rather build the tarball yourself, that needs Git, Go and a working
+Docker, and takes a few minutes:
 
-**Still stuck?** If `make rootfs` fails rather than `init`, the problem is the
-image build rather than this. Read what it printed and check
+```powershell
+git clone https://github.com/JoottunAtish/ShellForge.git
+cd ShellForge
+.\make.ps1 rootfs
+shellforge init
+```
+
+That writes `images\out\rootfs.tar.gz`, which `init` finds when run from that
+same directory. Once the distribution is imported you never need the clone again.
+
+**Still stuck?** If the download itself keeps failing, check your network and any
+proxy. If `.\make.ps1 rootfs` fails rather than `init`, the problem is the image
+build rather than this: read what it printed and check
 [docker-daemon-down](#docker-daemon-down) first.
 
 ---

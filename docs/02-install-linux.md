@@ -8,8 +8,9 @@ page is deliberately short.
 - **Docker.** Not Podman: see the note at the end of this page.
 - About 2 GB of disk.
 - x86-64 or arm64.
-- A clone of this repository, for now. See ["Provisioning the sandbox"](#provisioning-the-sandbox)
-  below, which is the one step of this page that v0.1.0 does not do for you.
+- On arm64 only, a clone of this repository. The published sandbox image is
+  amd64, so `init` builds its own there. See
+  ["Provisioning the sandbox"](#provisioning-the-sandbox) below.
 
 ## 1. Install Docker
 
@@ -76,6 +77,12 @@ first. What it does:
 - Extracts the `shellforge` binary into `$HOME/.local/bin` (override with
   `SHELLFORGE_BIN_DIR`), refusing to overwrite an existing file there unless
   you pass `--force`.
+- On amd64, downloads the sandbox image, `rootfs.tar.gz`, checks its checksum
+  the same way, and puts it in `$HOME/.cache/shellforge/rootfs` (or under
+  `XDG_CACHE_HOME` if you set it). `init` imports that instead of building.
+  It is tens of megabytes, so it is the slow part. Set
+  `SHELLFORGE_SKIP_ROOTFS=1` to skip it. On arm64 it is skipped for you,
+  because the published image is amd64.
 - Prints the `export PATH=...` line to add if that directory is not already on
   your `PATH`, then runs `shellforge doctor` so you know immediately whether
   anything else needs attention. A `doctor` warning does not mean the install
@@ -115,13 +122,15 @@ Then:
 shellforge init
 ```
 
-**This step needs a clone of this repository in v0.1.0, and that is a known
-bug.** `init` builds the sandbox image from `images/Containerfile`, and it looks
-for that file by walking up from wherever you are standing to the nearest
-`go.mod`. Run it anywhere else and it stops with `could not find
-images/Containerfile`. It is tracked as
-[issue #172](https://github.com/JoottunAtish/ShellForge/issues/172), and until it
-is fixed:
+On amd64 this imports the `rootfs.tar.gz` the installer already downloaded and
+checksummed, so it needs no network and no clone.
+
+**On arm64 it needs a clone of this repository.** The release publishes one
+sandbox image and it is built on an amd64 runner, so `init` builds its own from
+`images/Containerfile` instead, against `debian:bookworm-slim`, which Debian
+publishes for arm64 too. `init` finds the Containerfile by walking up from
+wherever you are standing to the nearest `go.mod`, so run it from inside the
+clone:
 
 ```bash
 git clone https://github.com/JoottunAtish/ShellForge.git

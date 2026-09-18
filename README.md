@@ -74,11 +74,6 @@ shellforge init      # sets up the sandbox (one time, a few minutes)
 shellforge play      # start
 ```
 
-**One known rough edge in v0.1.0:** `shellforge init` needs a clone of this
-repository, because the installers place the binary and not the sandbox image.
-It is tracked as [issue #172](https://github.com/JoottunAtish/ShellForge/issues/172)
-and both install guides give the workaround.
-
 If you have never opened a terminal, start with the
 [Windows install guide](docs/01-install-windows.md), which assumes nothing and
 explains what WSL is before asking you to install it. On Linux the

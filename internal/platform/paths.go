@@ -124,6 +124,28 @@ func DatabasePath() (string, error) {
 	return filepath.Join(base, "progress.db"), nil
 }
 
+// RootfsCachePath returns the full path to the cached sandbox rootfs
+// tarball.
+//
+// One path, resolved in one place, because three separate things have to
+// agree on it or the artifact is invisible to whoever looks next: the
+// installers download and verify it to here, internal/runtime/wsl imports
+// the distribution from here, and internal/runtime/docker imports the same
+// bytes into an image from here. Each holding its own literal is exactly
+// how a verified download ends up somewhere the next run does not look.
+//
+// It sits under CacheDir rather than DataDir on purpose. It is a
+// re-downloadable artifact, so clearing the cache should be allowed to
+// remove it, and CacheDir is nested below DataDir precisely so that a
+// cache clear cannot reach the progress database or the .vhdx.
+func RootfsCachePath() (string, error) {
+	base, err := CacheDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, "rootfs", "rootfs.tar.gz"), nil
+}
+
 // EnsureDir creates dir and its parents if they do not exist.
 //
 // Mode 0o700 is deliberate: the progress database records every command the

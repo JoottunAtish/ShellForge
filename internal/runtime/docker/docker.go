@@ -202,15 +202,66 @@ func (rt *dockerRuntime) ensureImage(ctx context.Context, image string) error {
 		return nil
 	}
 
-	containerfile, err := repoRootRelative(containerfilePath)
-	if err != nil {
-		return err
-	}
-	buildContext, err := repoRootRelative(containerfileContext)
-	if err != nil {
-		return err
+	if containerfile, buildContext, ok := repoContainerfile(); ok {
+		return rt.buildImage(ctx, image, containerfile, buildContext)
 	}
 
+	tarball, cached, cacheErr := cachedRootfs()
+	if cacheErr != nil {
+		return cacheErr
+	}
+	if cached {
+		return rt.importRootfs(ctx, image, tarball)
+	}
+
+	return ux.Fail(
+		"find a source for the sandbox image",
+		fmt.Errorf("no %s above the working directory, and no rootfs tarball at %s", containerfilePath, tarball),
+		fmt.Sprintf("Run the installer again: on amd64 it downloads and verifies the sandbox rootfs to %s, which `shellforge init` then imports. On any architecture, running `shellforge init` from inside a clone of this repository builds the image from %s instead.", tarball, containerfilePath),
+		"containerfile-not-found",
+	)
+}
+
+// repoContainerfile reports the Containerfile and build context to build
+// from, and whether there is actually one to build from.
+//
+// It stats the resolved path rather than trusting repoRootRelative, which
+// answers "where would it be, relative to the nearest go.mod above me" and
+// not "is it there". Running `shellforge init` from inside some unrelated
+// Go project would otherwise resolve that project's own go.mod, hand
+// `docker build` a path with no Containerfile at it, and fail with docker's
+// message instead of falling through to the cached rootfs that would have
+// worked.
+func repoContainerfile() (containerfile, buildContext string, ok bool) {
+	containerfile, err := repoRootRelative(containerfilePath)
+	if err != nil {
+		return "", "", false
+	}
+	if _, err := os.Stat(containerfile); err != nil {
+		return "", "", false
+	}
+	buildContext, err = repoRootRelative(containerfileContext)
+	if err != nil {
+		return "", "", false
+	}
+	return containerfile, buildContext, true
+}
+
+// cachedRootfs reports the cached rootfs tarball's path and whether a file
+// is there. The path is returned either way, so a refusal can name the
+// place the reader's installer was supposed to fill.
+func cachedRootfs() (path string, ok bool, err error) {
+	path, err = platform.RootfsCachePath()
+	if err != nil {
+		return "", false, err
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		return path, false, nil
+	}
+	return path, true, nil
+}
+
+func (rt *dockerRuntime) buildImage(ctx context.Context, image, containerfile, buildContext string) error {
 	stdout, stderr, code, runErr := rt.run.run(ctx, []string{"docker", "build", "-f", containerfile, "-t", image, "--", buildContext}, nil)
 	if runErr != nil {
 		return rt.classifyFailure(ctx, "build the sandbox image", runErr, stderr)
@@ -219,6 +270,69 @@ func (rt *dockerRuntime) ensureImage(ctx context.Context, image string) error {
 		return rt.classifyFailure(ctx, "build the sandbox image", fmt.Errorf("docker build exited %d: %s", code, summarizeFailure(stdout, stderr)), stderr)
 	}
 	return nil
+}
+
+// importRootfs turns the cached rootfs tarball into the sandbox image.
+//
+// This is what makes a release install work at all. Before it, the only
+// route to an image was a `docker build` against this repository's own
+// Containerfile, resolved by walking up to the nearest go.mod, and a
+// machine holding only ~/.local/bin/shellforge has no go.mod above
+// anything. `shellforge init` therefore failed on every machine without a
+// clone, which is issue #172.
+//
+// It imports the same tarball the WSL backend imports, which keeps the
+// property the Containerfile header insists on: one build, two artifacts,
+// and both platforms running the bytes `make rootfs` produced rather than
+// one building and the other importing something built elsewhere.
+//
+// The --change flags are not optional. `docker export` discards image
+// configuration, so `docker import` produces an image with no ENV at all,
+// and the Containerfile's ENV block is what makes a level's output the same
+// on every machine. Its own header says why: "a level that depends on
+// locale collation or the local timezone is a level that fails in CI at
+// midnight". CMD needs no --change, because createContainer passes
+// sandboxCommand() on the `docker run` argv and never relies on the image's
+// own.
+func (rt *dockerRuntime) importRootfs(ctx context.Context, image, tarball string) error {
+	argv := []string{"docker", "import"}
+	for _, kv := range sandboxImageEnv() {
+		argv = append(argv, "--change", "ENV "+kv)
+	}
+	argv = append(argv, "--", tarball, image)
+
+	stdout, stderr, code, runErr := rt.run.run(ctx, argv, nil)
+	if runErr != nil {
+		return rt.classifyFailure(ctx, "import the sandbox image", runErr, stderr)
+	}
+	if code != 0 {
+		return rt.classifyFailure(ctx, "import the sandbox image", fmt.Errorf("docker import exited %d: %s", code, summarizeFailure(stdout, stderr)), stderr)
+	}
+	return nil
+}
+
+// sandboxImageEnv is the environment the sandbox image carries, mirroring
+// the ENV block in images/Containerfile.
+//
+// A function rather than a package variable for the same reason
+// sandboxCommand is one: no caller can mutate the slice.
+//
+// TestSandboxImageEnvMatchesTheContainerfile pins it against
+// images/Containerfile byte for byte, in the same style as the WSL
+// backend's wsl.conf constant, so the two cannot drift apart unnoticed.
+//
+// TODO(v0.2): the WSL backend has the same gap by a different route.
+// `wsl --import` reads a plain filesystem export too, so a WSL sandbox has
+// never carried this ENV either, and nothing there can pass --change. It
+// wants /etc/environment written into the image instead, which would let
+// both backends stop compensating.
+func sandboxImageEnv() []string {
+	return []string{
+		"LANG=C.UTF-8",
+		"LC_ALL=C.UTF-8",
+		"TZ=UTC",
+		"DEBIAN_FRONTEND=noninteractive",
+	}
 }
 
 func (rt *dockerRuntime) ensureContainerRunning(ctx context.Context, image string) error {
