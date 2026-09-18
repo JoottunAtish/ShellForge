@@ -241,6 +241,12 @@ switch ($Target.ToLowerInvariant()) {
         # stale sidecar in the wrong shape sitting next to the new one is
         # confusing rather than harmless.
         Remove-Item -Path 'images/out/rootfs.tar', 'images/out/rootfs.tar.sha256' -ErrorAction SilentlyContinue
+        # The Containerfile copies images/out/bin/sf-ptyhost, so it has to
+        # exist before the build reads the context. This target builds the
+        # image itself rather than calling the 'image' target, so it needs
+        # the same prerequisite spelled out.
+        & $PSCommandPath 'ptyhost'
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         Invoke-Step "image ($engine)" { & $engine build -f images/Containerfile -t "${Image}:${Tag}" images/ }
         & $engine rm -f "$Image-export" 2>$null | Out-Null
         Invoke-Step 'create' { & $engine create --name "$Image-export" "${Image}:${Tag}" /bin/true }

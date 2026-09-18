@@ -213,6 +213,22 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Build the in-sandbox pseudo terminal host
+        # images/Containerfile copies images/out/bin/sf-ptyhost, and the
+        # docker contract suite and the control channel test both provision a
+        # real image on a runner that has a Linux docker daemon. Without this
+        # they fail with `"/out/bin/sf-ptyhost": not found` from docker build,
+        # which reads as a broken Containerfile rather than a missing step.
+        #
+        # Built here rather than through `make ptyhost` because this job also
+        # runs on windows-latest, where make is not installed. GOOS is linux
+        # either way: the binary runs inside the sandbox, never on the host.
+        run: go build -trimpath -ldflags "-s -w" -o images/out/bin/sf-ptyhost ./cmd/sf-ptyhost
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: amd64
+
       - name: Layer dependency rule
         # internal/game must never import a Docker or WSL type. This is what
         # keeps "drop WSL support" a one-day decision.

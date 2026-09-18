@@ -85,11 +85,15 @@ dist:
 	@ls -l $(DIST_DIR)
 
 ## test: Run unit tests.
-test:
+# Depends on ptyhost because `go test ./...` provisions a real sandbox image
+# wherever a docker daemon exists, and images/Containerfile copies the binary
+# that target builds. Without it the docker contract suite fails with a docker
+# build error about a missing file, which reads as a broken Containerfile.
+test: ptyhost
 	go test ./...
 
 ## race: Run tests under the race detector.
-race:
+race: ptyhost
 	go test -race ./...
 
 ## fuzz: Fuzz the OSC parser for 60s.
