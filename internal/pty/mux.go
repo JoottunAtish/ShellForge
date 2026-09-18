@@ -319,13 +319,42 @@ func runRecovered(fn func() error) <-chan outcome {
 //
 // Run must be called at most once per Mux.
 func (m *Mux) Run(ctx context.Context) error {
+	// abandon unwinds the two early returns below, which happen after the
+	// caller has already started the sandbox shell but before Run has set
+	// anything else up, and so skip every cleanup further down.
+	//
+	// Closing the PTY is the hangup cmd/sf-ptyhost watches for. Without it
+	// the host goes away while the pty host and the learner's bash carry on
+	// inside the sandbox, which matters most on a backend whose sandbox
+	// outlives the session: a container is discarded at teardown and takes
+	// any stray process with it, but a WSL distribution is not, so every
+	// attempt that got this far left another sf-ptyhost and another bash
+	// running in it.
+	//
+	// Closing events is what Events' own documentation promises, that the
+	// channel is closed once Run returns, so a `for range` over it ends.
+	// These paths returned without closing it, leaving that range blocked
+	// forever on a session that never started.
+	//
+	// Both are safe here and nowhere near the close further down: no
+	// goroutine has been started yet on either path, so nothing else can be
+	// writing to either one, and neither close can run twice because Run
+	// returns immediately after this.
+	abandon := func() {
+		_ = m.pty.Close()
+		m.screen.close()
+		close(m.events)
+	}
+
 	if m.fdErr != nil {
+		abandon()
 		return fmt.Errorf("pty: resolve host terminal: %w", m.fdErr)
 	}
 	fd := m.fd
 
 	oldState, err := m.makeRaw(fd)
 	if err != nil {
+		abandon()
 		return fmt.Errorf("pty: put host terminal into raw mode: %w", err)
 	}
 

@@ -1097,3 +1097,70 @@ func TestRunReportsNoErrorWhenTheMasterReturnsEIO(t *testing.T) {
 		t.Errorf("Run reported %v for a shell that simply exited", err)
 	}
 }
+
+// --- Run's early returns hang the sandbox shell up ------------------------
+
+// Run takes ownership of the PTY the moment it is called, including on the
+// two paths that give up before the drain further down would close it: an
+// unresolvable host terminal, and a host terminal that cannot be put into
+// raw mode. The caller has already started the sandbox shell by then, so
+// returning without closing leaves it running with nobody attached.
+//
+// It is measurable damage rather than untidiness on a backend whose sandbox
+// outlives the session. A container is discarded at teardown and takes any
+// stray process with it; a WSL distribution is not, so a learner whose
+// terminal cannot do raw mode left another sf-ptyhost and another bash
+// inside it on every attempt.
+func TestRunClosesThePTYOnItsEarlyReturns(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		disable func(*Mux)
+	}{
+		{
+			name:    "the host terminal cannot be resolved",
+			disable: func(m *Mux) { m.fdErr = errors.New("no file descriptor") },
+		},
+		{
+			name: "the host terminal cannot be put into raw mode",
+			disable: func(m *Mux) {
+				m.makeRaw = func(int) (*term.State, error) {
+					return nil, errors.New("the handle is invalid")
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			p, mux, _, _ := newTestMux(t)
+			tc.disable(mux)
+
+			if err := mux.Run(context.Background()); err == nil {
+				t.Fatal("Run returned nil, want the early return to report why it gave up")
+			}
+
+			p.mu.Lock()
+			closed := p.closed
+			p.mu.Unlock()
+			if !closed {
+				t.Error("Run left the PTY open on an early return, so the sandbox shell is still attached to nobody")
+			}
+
+			// Events documents itself as closed once Run returns. These
+			// paths left it open, so a caller ranging over it blocked
+			// forever on a session that never started.
+			select {
+			case _, ok := <-mux.Events():
+				if ok {
+					t.Error("Events() delivered a value on an early return, want the channel closed and empty")
+				}
+			default:
+				t.Error("Events() is still open after an early return, so a range over it would block forever")
+			}
+		})
+	}
+}
