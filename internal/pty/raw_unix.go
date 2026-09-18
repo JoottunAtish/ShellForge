@@ -65,3 +65,11 @@ func startResizeWatcher(m *Mux) (stop func()) {
 		<-stopped
 	}
 }
+
+// brokenPipe reports a platform specific "the other end of the pipe is
+// gone" that errors.Is against syscall.EPIPE does not already catch.
+//
+// Nothing to add here: EPIPE is the whole of it on unix, and sessionOver
+// tests for that directly. The function exists so that sessionOver stays
+// one cross platform expression rather than growing a build tag of its own.
+func brokenPipe(error) bool { return false }

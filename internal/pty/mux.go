@@ -652,14 +652,27 @@ func (m *Mux) watchTerminatingSignals() (stop func()) {
 // os.ErrClosed is included for the same reason at one remove: drain closes
 // the sandbox PTY handle to unblock the read side, and a read that loses
 // that race reports the closure rather than EIO.
+//
+// EPIPE, and its Windows spelling behind brokenPipe, are the same story
+// again for the shape the host side has now. EIO is what a pty MASTER
+// reports when the last slave goes, and the host held one of those until
+// the pseudo terminal moved inside the sandbox. It now holds an os.Pipe to
+// sf-ptyhost, and a pipe whose reader has gone reports a broken pipe
+// instead. So a learner typing ahead in the window between the sandboxed
+// process exiting and drain closing this side, which is exactly what
+// typing `exit` and then pressing anything does, wrote into a pipe with
+// nobody on the other end and got "the sandbox shell ended unexpectedly"
+// for an ordinary exit.
 func sessionOver(err error) bool {
 	switch {
 	case err == nil,
 		errors.Is(err, io.EOF),
 		errors.Is(err, syscall.EIO),
+		errors.Is(err, syscall.EPIPE),
+		errors.Is(err, io.ErrClosedPipe),
 		errors.Is(err, os.ErrClosed),
 		errors.Is(err, fs.ErrClosed):
 		return true
 	}
-	return false
+	return brokenPipe(err)
 }

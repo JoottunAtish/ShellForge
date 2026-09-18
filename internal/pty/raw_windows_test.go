@@ -3,7 +3,9 @@
 package pty
 
 import (
+	"os"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -76,5 +78,33 @@ func TestStartResizeWatcher_StopEndsTheGoroutine(t *testing.T) {
 	time.Sleep(20 * pollInterval)
 	if got := len(p.resizesSnapshot()); got != after {
 		t.Errorf("resize count grew from %d to %d after stop, want the watcher goroutine to have exited", after, got)
+	}
+}
+
+// brokenPipe is the Windows half of sessionOver's "the shell is gone" set.
+// Windows never reports EPIPE, so without this a learner typing ahead of
+// their own `exit` saw the level fail.
+func TestBrokenPipeRecognisesTheWindowsHangup(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"ERROR_BROKEN_PIPE, the far end already gone", syscall.ERROR_BROKEN_PIPE, true},
+		{"wrapped by os.PathError, what a real write returns", &os.PathError{Op: "write", Path: "|1", Err: syscall.ERROR_BROKEN_PIPE}, true},
+		{"ERROR_NO_DATA, the far end closing mid read", errNoData, true},
+		{"nil is not this function's business", nil, false},
+		{"ERROR_ACCESS_DENIED is a genuine fault", syscall.ERROR_ACCESS_DENIED, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := brokenPipe(tc.err); got != tc.want {
+				t.Errorf("brokenPipe(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }

@@ -3,7 +3,9 @@
 package pty
 
 import (
+	"errors"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -98,4 +100,22 @@ func startResizeWatcher(m *Mux) (stop func()) {
 		once.Do(func() { close(done) })
 		<-stopped
 	}
+}
+
+// brokenPipe reports a platform specific "the other end of the pipe is
+// gone" that errors.Is against syscall.EPIPE does not already catch.
+//
+// Windows does not report EPIPE. A pipe whose far end has gone fails with
+// ERROR_BROKEN_PIPE, which does not map onto a POSIX errno on the way out
+// of the syscall package, so testing for EPIPE alone misses every Windows
+// session. It means the session is over, which is what sessionOver asks.
+//
+// errNoData is the other half of the same condition and syscall does not
+// export it, so it is spelled out. Windows raises it on a pipe the far end
+// closed while a read was in flight, as against ERROR_BROKEN_PIPE for one
+// that was already gone.
+const errNoData = syscall.Errno(232)
+
+func brokenPipe(err error) bool {
+	return errors.Is(err, syscall.ERROR_BROKEN_PIPE) || errors.Is(err, errNoData)
 }

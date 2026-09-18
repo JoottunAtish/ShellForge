@@ -1063,6 +1063,13 @@ func TestSessionOver(t *testing.T) {
 		{"EIO wrapped by os.PathError, what a real read returns", &os.PathError{Op: "read", Path: "/dev/ptmx", Err: syscall.EIO}, true},
 		{"os.ErrClosed, what drain's own Close races into", os.ErrClosed, true},
 		{"a wrapped ErrClosed", fmt.Errorf("read: %w", os.ErrClosed), true},
+		// The host holds an os.Pipe to sf-ptyhost now, not a pty master,
+		// so a hangup arrives as a broken pipe rather than as EIO. Type
+		// ahead between the sandboxed process exiting and drain closing
+		// this side lands exactly here.
+		{"EPIPE, what exit looks like on a pipe", syscall.EPIPE, true},
+		{"EPIPE wrapped by os.PathError, what a real write returns", &os.PathError{Op: "write", Path: "|1", Err: syscall.EPIPE}, true},
+		{"io.ErrClosedPipe", io.ErrClosedPipe, true},
 		{"a genuine fault", errors.New("disk on fire"), false},
 		{"EACCES is not a clean exit", syscall.EACCES, false},
 	}
