@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"os"
 	"os/exec"
 	"path"
 	"regexp"
@@ -16,10 +15,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/creack/pty"
-
 	"github.com/JoottunAtish/ShellForge/internal/platform"
+	"github.com/JoottunAtish/ShellForge/internal/platform/ux"
 	"github.com/JoottunAtish/ShellForge/internal/runtime"
+	"github.com/JoottunAtish/ShellForge/internal/sandboxpty"
 )
 
 // sandboxRoot is the prefix every in-sandbox path this package touches must
@@ -270,7 +269,22 @@ func (s *dockerSession) Attach(ctx context.Context, opts runtime.AttachOpts) (ru
 		command = defaultAttachCommand()
 	}
 
-	argv := []string{"docker", "exec", "-it"}
+	if !s.rt.Capabilities().InteractiveShell {
+		return nil, sandboxpty.ErrNoInteractiveShell("docker")
+	}
+	if err := s.ensurePtyHost(ctx); err != nil {
+		return nil, err
+	}
+
+	// `-i`, not `-it`. The pseudo terminal is allocated inside the
+	// sandbox by cmd/sf-ptyhost now, so asking docker for one here would
+	// be a second terminal in the path. It would also fail outright: with
+	// `-t` the docker CLI demands that its own stdin be a TTY and refuses
+	// with "the input device is not a TTY", and this process hands it a
+	// pipe. Without `-t` the CLI demultiplexes the stream for us, so the
+	// sandbox's stdout arrives on stdout and the pty host's diagnostics
+	// arrive separately on stderr.
+	argv := []string{"docker", "exec", "-i"}
 	if user != "" {
 		argv = append(argv, "-u", user)
 	}
@@ -279,7 +293,7 @@ func (s *dockerSession) Attach(ctx context.Context, opts runtime.AttachOpts) (ru
 	}
 	argv = append(argv, sortedEnvArgs(opts.Env)...)
 	argv = append(argv, "--", s.rt.name)
-	argv = append(argv, command...)
+	argv = append(argv, sandboxpty.PtyHostCommand(opts.Env["SF_STATE"], command)...)
 
 	real, ok := s.rt.run.(execRunner)
 	if !ok {
@@ -291,12 +305,40 @@ func (s *dockerSession) Attach(ctx context.Context, opts runtime.AttachOpts) (ru
 	// method builds above from allowlist-validated fields (user, workdir,
 	// name) and the caller's own Command, never a shell string.
 	cmd := exec.CommandContext(ctx, real.bin, argv[1:]...)
-	f, err := pty.Start(cmd)
+	p, err := sandboxpty.StartPipePTY(cmd, s.resizeFunc(opts.Env["SF_STATE"]))
 	if err != nil {
-		return nil, fmt.Errorf("docker exec -it: %w", err)
+		return nil, attachStartError(err)
 	}
-	return &dockerPTY{file: f, cmd: cmd}, nil
+	return p, nil
 }
+
+// resizeFunc returns how a window size reaches the pseudo terminal inside
+// the sandbox.
+//
+// It writes one line to a FIFO with `tee`, which is the same argv-only
+// mechanism cmd_run.go's serveControlRequests already uses to answer
+// `check` from the host: no shell anywhere in the path, and it works
+// identically on both backends and both host operating systems. Pipes carry
+// no SIGWINCH, so a side channel is the only way a resize can arrive at all.
+//
+// One `docker exec` per resize is not free. Mux only calls this when the
+// size actually changed, so a learner dragging a window edge costs a
+// process per observed step rather than per pixel, and the existing
+// TODO(v0.2) on serveControlRequests already owns the cost of this pattern.
+func (s *dockerSession) resizeFunc(stateDir string) func(rows, cols uint16) error {
+	fifo := sandboxpty.WinsizeFIFOPath(stateDir)
+	return func(rows, cols uint16) error {
+		ctx, cancel := context.WithTimeout(context.Background(), resizeTimeout)
+		defer cancel()
+		_, err := s.Exec(ctx, []string{"tee", "--", fifo}, runtime.ExecOpts{Stdin: sandboxpty.WinsizeLine(rows, cols)})
+		return err
+	}
+}
+
+// resizeTimeout bounds one resize. A window size that cannot be delivered
+// promptly is not worth waiting for: the next one supersedes it, and
+// internal/pty.Mux treats a failed resize as never fatal.
+const resizeTimeout = 5 * time.Second
 
 // stripCR removes the carriage return from every CRLF pair, leaving a lone
 // CR (no matching LF) untouched. See runtimetest's TODO(v0.2) on lone CR and
@@ -513,21 +555,39 @@ func (s *dockerSession) PullFile(ctx context.Context, p string) ([]byte, error) 
 // this more than once is trivially safe.
 func (s *dockerSession) Close() error { return nil }
 
-// dockerPTY wraps the master side of the pseudo terminal creack/pty
-// allocated around a `docker exec -it` child.
-type dockerPTY struct {
-	file *os.File
-	cmd  *exec.Cmd
+// attachStartError turns a failure to start `docker exec` into what the
+// caller should see.
+//
+// It used to be a bare fmt.Errorf, which non-negotiable rule 6 forbids: a
+// learner reaching a level got a raw Go error with no remediation and no doc
+// anchor. Its WSL sibling already did this properly; this matches it.
+func attachStartError(err error) error {
+	return ux.Fail(
+		"open the sandbox shell",
+		err,
+		"Check that the sandbox is running with `shellforge sandbox status`. If it is not, `shellforge init` provisions it again.",
+		"sandbox-unhealthy",
+	)
 }
 
-var _ runtime.PTY = (*dockerPTY)(nil)
-
-func (p *dockerPTY) Read(b []byte) (int, error)  { return p.file.Read(b) }
-func (p *dockerPTY) Write(b []byte) (int, error) { return p.file.Write(b) }
-func (p *dockerPTY) Close() error                { return p.file.Close() }
-
-func (p *dockerPTY) Resize(rows, cols uint16) error {
-	return pty.Setsize(p.file, &pty.Winsize{Rows: rows, Cols: cols})
+// ensurePtyHost refuses early when the sandbox was built before the pseudo
+// terminal moved inside it.
+//
+// One `docker exec` per attach, and an attach happens once per level, so the
+// cost is not worth optimizing away. What it buys is the difference between
+// a remediation the reader can follow and `docker exec` reporting that an
+// executable was not found, which reads as a broken install.
+//
+// Only a clean non-zero exit is treated as "missing". A failure to run the
+// probe at all is something else going wrong and is reported as itself,
+// rather than being flattened into a rebuild instruction that would not help.
+func (s *dockerSession) ensurePtyHost(ctx context.Context) error {
+	res, err := s.Exec(ctx, []string{"test", "-x", sandboxpty.PtyHostPath}, runtime.ExecOpts{})
+	if err != nil {
+		return err
+	}
+	if res.ExitCode != 0 {
+		return sandboxpty.ErrPtyHostMissing()
+	}
+	return nil
 }
-
-func (p *dockerPTY) Wait() error { return p.cmd.Wait() }

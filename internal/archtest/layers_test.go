@@ -48,6 +48,12 @@ var layers = map[string]int{
 	"internal/runtime": 1,
 	"internal/sandbox": 1,
 
+	// The in-sandbox pseudo terminal driver (issue #138). L1, beside the
+	// backends. Deliberately NOT under internal/runtime/: that prefix is
+	// confined by runtimeImplAllowed below to cmd/shellforge,
+	// internal/runtime and internal/sandbox, and both backends need this.
+	"internal/sandboxpty": 1,
+
 	// Runtime backends. Registered ahead of Day 1 so adding them does not trip
 	// the "no layer assigned" check. Rule B below is what actually confines
 	// them: nothing above L1 may import these.

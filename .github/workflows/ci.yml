@@ -949,6 +949,20 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Set up Go
+        # Needed only for the pty host below. This job had no Go step before
+        # issue #138, because everything else here is docker.
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Build the in-sandbox pseudo terminal host
+        # images/Containerfile copies images/out/bin/sf-ptyhost, so it has to
+        # exist before docker reads the build context. This job builds the
+        # image directly rather than through `make image`, so the dependency
+        # the Makefile expresses has to be spelled out here as well.
+        run: make ptyhost
+
       - name: Build the sandbox image
         run: docker build -f images/Containerfile -t shellforge-sandbox:ci images/
 
@@ -981,6 +995,15 @@ jobs:
             # This shell is already the learner: the image declares USER
             # learner and learner has no password, so su would only ever
             # produce an authentication failure here.
+            # The in-sandbox pseudo terminal host. Every interactive shell on
+            # both backends now execs this, so an image without it is one
+            # where no level can be played at all. It must be root owned and
+            # not writable by the learner: a permissions level that chmods
+            # its way around /home/learner must not be able to replace the
+            # thing hosting its own shell.
+            test -x /opt/shellforge/bin/sf-ptyhost || { echo "MISSING: /opt/shellforge/bin/sf-ptyhost"; exit 1; }
+            test ! -w /opt/shellforge/bin/sf-ptyhost || { echo "WRITABLE: the learner can overwrite sf-ptyhost"; exit 1; }
+            /opt/shellforge/bin/sf-ptyhost 2>&1 | grep -q "no command given" || { echo "BROKEN: sf-ptyhost does not run in this image"; exit 1; }
             test -d /home/learner/.shellforge || { echo "MISSING: /home/learner/.shellforge"; exit 1; }
             test -O /home/learner/.shellforge || { echo "WRONG OWNER: /home/learner/.shellforge is not owned by the sandbox user"; exit 1; }
             touch /home/learner/.shellforge/probe && rm /home/learner/.shellforge/probe || { echo "NOT WRITABLE: /home/learner/.shellforge"; exit 1; }

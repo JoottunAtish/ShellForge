@@ -617,8 +617,9 @@ func (rt *dockerRuntime) StartSession(ctx context.Context, spec runtime.SessionS
 // or privileged mode.
 func (rt *dockerRuntime) Capabilities() runtime.Caps {
 	return runtime.Caps{
-		Networking: true,
-		MultiUser:  true,
+		Networking:       true,
+		MultiUser:        true,
+		InteractiveShell: true,
 	}
 }
 

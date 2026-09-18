@@ -219,10 +219,6 @@ func runPlay(ctx context.Context, out io.Writer, opts playOptions) error {
 			return nil
 		}
 
-		if err := checkInteractiveShellSupported(choice.ID); err != nil {
-			return err
-		}
-
 		// Two reasons not to carry on, and they are one condition rather
 		// than two because they mean the same thing here. `play <level-id>`
 		// names one level and stops after it, so nothing offers to carry on

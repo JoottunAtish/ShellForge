@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	goruntime "runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -172,40 +171,6 @@ func TestCmdRunRefusesAnUnknownLevel(t *testing.T) {
 		if strings.Contains(uxErr.Remediation, "demo") {
 			t.Errorf("the remediation offers an id that is not in the pack: %q", uxErr.Remediation)
 		}
-	}
-}
-
-// TestCheckInteractiveShellSupported pins the host guard on both sides of the
-// platform split, because the failure it prevents is a multi-minute image build
-// followed by an error the user cannot act on.
-//
-// creack/pty's Windows StartWithSize returns ErrUnsupported unconditionally, so
-// Attach cannot work on a Windows host at all. The runtime contract suite has
-// no Attach assertion, which is why it passes on Windows and does not catch
-// this.
-func TestCheckInteractiveShellSupported(t *testing.T) {
-	err := checkInteractiveShellSupported("nav-01")
-
-	if goruntime.GOOS == "windows" {
-		if err == nil {
-			t.Fatal("the Windows guard let `run` through, so it would fail at Attach after building the image")
-		}
-		assertUserFacing(t, err)
-
-		var uxErr *ux.Error
-		if errors.As(err, &uxErr) {
-			if uxErr.DocAnchor != "windows-needs-wsl" {
-				t.Errorf("DocAnchor = %q, want %q", uxErr.DocAnchor, "windows-needs-wsl")
-			}
-			if !strings.Contains(uxErr.Remediation, "WSL") {
-				t.Errorf("the remediation does not tell the user to use WSL: %q", uxErr.Remediation)
-			}
-		}
-		return
-	}
-
-	if err != nil {
-		t.Fatalf("the guard refused on %s, where a host pseudo terminal works: %v", goruntime.GOOS, err)
 	}
 }
 

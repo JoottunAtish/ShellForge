@@ -8,7 +8,6 @@ import (
 	"io/fs"
 	"os"
 	"path"
-	goruntime "runtime"
 	"strings"
 	"time"
 
@@ -235,9 +234,6 @@ func cmdRun(ctx context.Context, args []string) error {
 		return unknownLevel(opts.levelID, order)
 	}
 
-	if err := checkInteractiveShellSupported(opts.levelID); err != nil {
-		return err
-	}
 	// `run` plays the one level it was named and stops, so how it ended
 	// changes nothing here. `play` is the verb that carries on.
 	_, err = runLevel(ctx, opts, pack, level)
@@ -291,44 +287,6 @@ func unknownLevel(id string, order []string) error {
 		fmt.Sprintf("There is no level called %q. This pack has %s, in campaign order: %s. Run `shellforge run %s` to start at the beginning.",
 			id, plural(len(order), "level"), strings.Join(order, ", "), order[0]),
 		docAnchorLevelNotFound,
-	)
-}
-
-// checkInteractiveShellSupported refuses, up front, on a host that cannot give
-// the learner an interactive shell at all.
-//
-// Attaching allocates a pseudo terminal on the HOST with creack/pty, and that
-// package's Windows implementation returns ErrUnsupported unconditionally:
-// there is no ConPTY path in it. This is true of the Docker backend, and it is
-// also true of the WSL backend's own interactive attach, even though the WSL
-// backend can already run one-shot commands and push files into the sandbox
-// by shelling out to wsl.exe directly (see internal/runtime/wsl/session.go's
-// Attach and resize_windows.go's Resize, both of which return the same
-// ErrUnsupported). So `run` on a Windows host, on either backend, gets all
-// the way through provisioning and a level setup and then fails at the last
-// step with an error that reads like a backend problem and is not one.
-//
-// The runtime contract suite does not catch this, because it has no Attach
-// assertion at all, which is why it passes on Windows.
-//
-// Refusing here rather than at Attach saves several minutes of provisioning
-// before an error the user cannot act on. Until Windows console support
-// (ConPTY) is built, which is issue #138 rather than this ticket, running
-// from inside WSL is the way: WSL is a real Linux host, and Docker Desktop's
-// WSL integration shares one daemon between the two sides.
-//
-// TODO(v0.2): this tests goruntime.GOOS rather than asking
-// Runtime.Capabilities(), which is issue #77. The refusal is correct today and
-// the fix touches runtime.Caps, a code-owner path.
-func checkInteractiveShellSupported(levelID string) error {
-	if goruntime.GOOS != "windows" {
-		return nil
-	}
-	return ux.Fail(
-		"open an interactive sandbox shell on Windows",
-		nil,
-		fmt.Sprintf("Open your WSL distribution, change to this repository, then build and run there: `go build -o bin/shellforge ./cmd/shellforge && ./bin/shellforge run %s`. Neither backend can open an interactive shell from PowerShell or the command prompt yet; Docker Desktop's WSL integration shares one daemon, so the sandbox image is not rebuilt.", levelID),
-		"windows-needs-wsl",
 	)
 }
 

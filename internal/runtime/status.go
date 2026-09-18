@@ -21,6 +21,22 @@ type Caps struct {
 	// v0.1 caller uses it: reset wipes the scratch directory instead.
 	Snapshotting bool
 
+	// InteractiveShell reports that this backend can give the learner a
+	// real interactive shell.
+	//
+	// It exists because the CLI used to answer this question with
+	// `goruntime.GOOS != "windows"`, which is issue #77: the OS was
+	// standing in for the backend, and it was standing in badly. The
+	// answer was no on Windows for both backends, because both allocated
+	// the pseudo terminal on the host with creack/pty, which has no
+	// Windows implementation. It is yes on both now: the pseudo terminal
+	// is allocated inside the sandbox by cmd/sf-ptyhost and the host only
+	// moves bytes over pipes.
+	//
+	// A backend that cannot do it says so here rather than having the CLI
+	// guess from the operating system.
+	InteractiveShell bool
+
 	// Privileged reports that the sandbox runs with elevated privileges.
 	// Shellforge never asks for that. The field exists so a backend can
 	// report it and the game can refuse to run.

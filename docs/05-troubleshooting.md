@@ -249,36 +249,56 @@ for that one command whatever the environment says.
 
 ## windows-needs-wsl
 
-**You'll see:** An error opening an interactive sandbox shell, when you run
-`shellforge run` or `shellforge sandbox shell` from PowerShell or the Windows
-command prompt.
+**This no longer happens, and the anchor is kept only so older links still
+land somewhere useful.**
 
-**What it means:** Opening an interactive sandbox shell allocates a pseudo
-terminal on the host, and the library Shellforge uses for that has no Windows
-implementation at all. This is true of the Docker backend, and it is also true
-of the WSL backend's own interactive attach, even though the WSL backend can
-already run one-shot commands and push files into the sandbox by shelling out
-to `wsl.exe` directly. Attaching an interactive shell is the one thing that
-does not yet work natively on Windows. Until Windows console support is built,
-the game runs from inside WSL, which is a real Linux host.
+Shellforge used to refuse `shellforge run`, `shellforge play` and
+`shellforge sandbox shell` from PowerShell or the Windows command prompt. The
+reason was real: opening a shell allocated a pseudo terminal on the **host**,
+and the library used for that has no Windows implementation, on either backend.
+
+That is fixed. The pseudo terminal is allocated inside the sandbox now, and the
+host exchanges plain bytes with it over pipes, which is how an SSH client has
+always worked on Windows. `shellforge play` works from PowerShell and from
+Windows Terminal, and so does everything else.
+
+You do not need WSL as a place to run Shellforge from any more. You still need
+WSL2 itself, because that is what the sandbox runs in; see
+[the Windows install guide](01-install-windows.md).
+
+If a shell does fail to open now, it is one of these instead:
+
+- [sandbox-needs-rebuild](#sandbox-needs-rebuild), if your sandbox predates this
+  change.
+- [sandbox-missing](#sandbox-missing) or [sandbox-unhealthy](#sandbox-unhealthy),
+  if it is not there or not answering.
+
+---
+
+## sandbox-needs-rebuild
+
+**You'll see:** `shellforge play` or `shellforge sandbox shell` stops saying the
+sandbox was built before the interactive shell moved inside it.
+
+**What it means:** Your sandbox image or WSL distribution was provisioned by an
+older Shellforge, before the pseudo terminal moved from the host into the
+sandbox. Upgrading the binary does not replace an image that is already there,
+so the sandbox is missing the piece the new shell needs. Nothing is broken and
+nothing of yours is at risk: your progress lives outside the sandbox.
 
 **Fix:**
 
-1. Open your WSL distribution.
-2. Change to the repository directory.
-3. Build and run there:
-
-```bash
-go build -o bin/shellforge ./cmd/shellforge
-./bin/shellforge run nav-01
+```
+shellforge sandbox rebuild
 ```
 
-Docker Desktop's WSL integration shares one daemon between Windows and WSL, so
-the sandbox image is not rebuilt and nothing is downloaded twice.
+That replaces the sandbox from the current image and takes a minute or two. Your
+progress, XP and achievements are untouched: they live in the progress database
+on your own machine, not inside the sandbox.
 
-**Still stuck?** Check that `docker version` works inside WSL. If it does not,
-turn on WSL integration for your distribution in Docker Desktop, under Settings,
-Resources, WSL integration.
+**Still stuck?** If `rebuild` itself fails, read what it printed. On Linux it is
+usually [docker-daemon-down](#docker-daemon-down); on Windows,
+[wsl-import-blocked](#wsl-import-blocked).
 
 ---
 

@@ -6,7 +6,6 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
-	goruntime "runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -375,13 +374,11 @@ func TestSudoIsRefusedByNoNewPrivileges(t *testing.T) {
 // what the markers mean, and this is what proves the producer and the consumer
 // agree.
 func TestInstrumentationEmitsMarkersForARealSession(t *testing.T) {
-	// Attach allocates a pseudo terminal on the HOST with creack/pty, whose
-	// Windows implementation returns ErrUnsupported unconditionally. This is
-	// not a sandbox limitation and not something this test can work around;
-	// Windows gets there through WSL. Skipping is honest, failing is not.
-	if goruntime.GOOS == "windows" {
-		t.Skip("Attach needs a host pseudo terminal, and creack/pty has no Windows implementation; see the windows-needs-wsl doc anchor")
-	}
+	// This used to skip on Windows, because Attach allocated a pseudo
+	// terminal on the HOST with creack/pty and that package has no Windows
+	// implementation. The pseudo terminal is allocated inside the sandbox
+	// now (issue #138), so there is nothing platform specific left in the
+	// path and this runs wherever a golden sandbox is available.
 	requireGoldenSandbox(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), goldenTimeout)

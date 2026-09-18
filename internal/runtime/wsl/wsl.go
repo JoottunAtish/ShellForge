@@ -130,8 +130,9 @@ func New(name string) (runtime.Runtime, error) {
 // asks for elevated privileges (Privileged false).
 func (rt *wslRuntime) Capabilities() runtime.Caps {
 	return runtime.Caps{
-		Networking: true,
-		MultiUser:  true,
+		Networking:       true,
+		MultiUser:        true,
+		InteractiveShell: true,
 	}
 }
 

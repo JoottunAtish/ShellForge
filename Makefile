@@ -26,9 +26,13 @@ LDFLAGS     := -s -w \
 # Detect the container engine. Docker first, Podman as a local convenience.
 CONTAINER_ENGINE := $(shell command -v docker 2>/dev/null || command -v podman 2>/dev/null || echo docker)
 
+# The architecture cmd/sf-ptyhost is built for. It runs inside the sandbox,
+# so this follows the image, not the host. v0.1's published rootfs is amd64.
+PTYHOST_ARCH ?= amd64
+
 .DEFAULT_GOAL := help
 .PHONY: help build install test race fuzz cover lint fmt vet punct allowlist links arch \
-        cli labels sec vuln gosec image rootfs run golden golden-image golden-go validate \
+        cli labels sec vuln gosec ptyhost image rootfs run golden golden-image golden-go validate \
         demo dist clean tools ci
 
 ## help: Show this help.
@@ -163,7 +167,25 @@ sec: vuln gosec
 # machine that was three weeks old and predated the logistics group perm-02
 # needs, which is the same trap golden-image exists to close for `author
 # test`.
-image:
+## ptyhost: Build the in-sandbox pseudo terminal host into the image context.
+#
+# cmd/sf-ptyhost runs INSIDE the sandbox, so it is built for linux and for
+# the image's architecture, never for whatever the developer is sitting at.
+# v0.1's image is amd64 (docs/design/DAY-3-TICKETS.md records the
+# multi-architecture rootfs as a deliberate cut), and PTYHOST_ARCH is here so
+# that decision has one place to change rather than several.
+#
+# It lands in images/out/, which .gitignore already covers, rather than in
+# the tracked images/bin/ that the Containerfile's `COPY bin/` would sweep
+# up: CLAUDE.md forbids committing a binary, and a build artifact sitting in
+# a tracked directory is one stray `git add -A` away from being committed.
+ptyhost:
+	@mkdir -p images/out/bin
+	CGO_ENABLED=0 GOOS=linux GOARCH=$(PTYHOST_ARCH) go build -trimpath -ldflags "-s -w" \
+	    -o images/out/bin/sf-ptyhost ./cmd/sf-ptyhost
+	@echo "built images/out/bin/sf-ptyhost (linux/$(PTYHOST_ARCH))"
+
+image: ptyhost
 	$(CONTAINER_ENGINE) build -f images/Containerfile -t $(IMAGE_NAME):$(IMAGE_TAG) images/
 	$(CONTAINER_ENGINE) tag $(IMAGE_NAME):$(IMAGE_TAG) $(IMAGE_NAME):latest
 

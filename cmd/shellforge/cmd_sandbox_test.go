@@ -332,29 +332,14 @@ func TestSandboxRebuildRequiresTheSameConfirmationAsDestroy(t *testing.T) {
 // TestSandboxShellChecksTheHostBeforeItResolvesOrProvisions matches
 // TestCheckInteractiveShellSupported in cmd_run_test.go: the same host
 // guard, exercised through `sandbox shell` instead of `run`.
-func TestSandboxShellChecksTheHostBeforeItResolvesOrProvisions(t *testing.T) {
+func TestSandboxShellResolvesABackendOnEveryHost(t *testing.T) {
 	fake := &fakeResolver{err: errors.New("no backend available in this fake")}
 
-	err := runSandboxShell(context.Background(), fake.resolve, "auto")
-
-	if goruntime.GOOS == "windows" {
-		if err == nil {
-			t.Fatal("runSandboxShell() error = nil, want a Windows refusal")
-		}
-		var uxErr *ux.Error
-		if !errors.As(err, &uxErr) {
-			t.Fatalf("error = %v (%T), want *ux.Error", err, err)
-		}
-		if uxErr.DocAnchor != anchorWindowsNeedsWSL {
-			t.Errorf("DocAnchor = %q, want %q", uxErr.DocAnchor, anchorWindowsNeedsWSL)
-		}
-		if strings.Contains(uxErr.Remediation, "Docker") {
-			t.Errorf("remediation reads as Docker-specific: %q", uxErr.Remediation)
-		}
-		if fake.calls != 0 {
-			t.Errorf("resolve was called %d times, want 0: nothing should be provisioned on Windows", fake.calls)
-		}
-		return
+	// The fake resolver always fails, so the error is expected and says
+	// nothing. What this pins is that resolve was reached at all: there is
+	// no host guard in front of it any more on any platform.
+	if err := runSandboxShell(context.Background(), fake.resolve, "auto"); err == nil {
+		t.Fatal("runSandboxShell() error = nil, want the fake resolver's failure")
 	}
 
 	if fake.calls != 1 {
@@ -407,16 +392,14 @@ func sandboxVerbCases() []sandboxVerbCase {
 // every verb: each one passed sandbox.Auto regardless of what its own flag
 // said, because there was no flag at all.
 //
-// shell is skipped on Windows: checkSandboxShellSupported refuses before
-// --runtime is ever parsed there, for an unrelated, already-tested reason,
-// so resolve is never called and fake.lastWant would still be its zero
-// value.
+// shell used to be skipped on Windows here, because the old
+// checkSandboxShellSupported refused before --runtime was ever parsed. That
+// refusal is gone with issue #138: both backends open an interactive shell
+// on every host now, so every verb reaches resolve on every platform and
+// this table no longer has a hole in it.
 func TestSandboxVerbsThreadRuntimeDockerThroughToResolve(t *testing.T) {
 	for _, tc := range sandboxVerbCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.name == "shell" && goruntime.GOOS == "windows" {
-				t.Skip("shell refuses before resolve on Windows")
-			}
 			fake := &fakeResolver{err: errors.New("stop right after resolve")}
 			_ = tc.run(fake, "docker")
 			if fake.calls != 1 {
