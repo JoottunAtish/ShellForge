@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	path2 "path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -348,4 +349,48 @@ func lastContainerfileInstruction(t *testing.T, content, keyword string) string 
 		t.Fatalf("images/Containerfile declares no %s instruction", keyword)
 	}
 	return found
+}
+
+// ptyhostArtifactPath has to name the same file the Containerfile copies,
+// or checkPtyhostArtifact either passes a build that then fails inside
+// docker or refuses one that would have worked.
+//
+// The Containerfile's COPY is relative to the build context, this constant
+// is relative to the repository root, and the two are joined here the same
+// way docker joins them.
+func TestPtyhostArtifactMatchesTheContainerfile(t *testing.T) {
+	path, err := repoRootRelative(containerfilePath)
+	if err != nil {
+		t.Skipf("skipping: %s is not resolvable from here: %v", containerfilePath, err)
+	}
+	content, err := os.ReadFile(path) // #nosec G304 -- a test reading this repository's own Containerfile
+	if err != nil {
+		t.Skipf("skipping: cannot read %s: %v", path, err)
+	}
+
+	var copied string
+	for _, line := range strings.Split(string(content), "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) < 2 || fields[0] != "COPY" {
+			continue
+		}
+		// Skip the flags COPY takes before its operands, --chmod and friends.
+		operands := fields[1:]
+		for len(operands) > 0 && strings.HasPrefix(operands[0], "--") {
+			operands = operands[1:]
+		}
+		if len(operands) < 2 || !strings.HasSuffix(operands[0], "sf-ptyhost") {
+			continue
+		}
+		copied = operands[0]
+	}
+	if copied == "" {
+		t.Fatal("images/Containerfile no longer COPYs sf-ptyhost; checkPtyhostArtifact is now guarding nothing")
+	}
+
+	want := path2.Join(strings.TrimSuffix(containerfileContext, "/"), copied)
+	if ptyhostArtifactPath != want {
+		t.Errorf("ptyhostArtifactPath = %q, but images/Containerfile copies %q from %q, which is %q",
+			ptyhostArtifactPath, copied, containerfileContext, want)
+	}
 }

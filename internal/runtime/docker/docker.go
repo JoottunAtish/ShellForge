@@ -80,6 +80,15 @@ const (
 	containerfileContext = "images/"
 )
 
+// ptyhostArtifactPath is the one thing in the build context that is not in
+// the repository: cmd/sf-ptyhost, built for the image's own architecture by
+// `make ptyhost` into a directory .gitignore covers.
+//
+// Relative to the repository root, and it has to agree with the Containerfile's
+// `COPY out/bin/sf-ptyhost`, which resolves against containerfileContext.
+// TestPtyhostArtifactMatchesTheContainerfile pins the two together.
+const ptyhostArtifactPath = "images/out/bin/sf-ptyhost"
+
 // repoRootRelative resolves rel against the repository root rather than the
 // process's current working directory. `go test` runs a package's tests
 // with the working directory set to that package's own directory, not the
@@ -203,6 +212,9 @@ func (rt *dockerRuntime) ensureImage(ctx context.Context, image string) error {
 	}
 
 	if containerfile, buildContext, ok := repoContainerfile(); ok {
+		if err := checkPtyhostArtifact(); err != nil {
+			return err
+		}
 		return rt.buildImage(ctx, image, containerfile, buildContext)
 	}
 
@@ -710,4 +722,45 @@ func summarizeFailure(stdout, stderr []byte) string {
 	default:
 		return out
 	}
+}
+
+// checkPtyhostArtifact refuses a repository build whose context is missing
+// cmd/sf-ptyhost, and says how to produce it.
+//
+// Everything else the Containerfile copies is tracked, so a clone is enough
+// to build the image. sf-ptyhost is not: it runs INSIDE the sandbox, so it
+// is cross compiled for the image's architecture by `make ptyhost` into
+// images/out/, which .gitignore covers because CLAUDE.md forbids committing
+// a binary. A fresh clone therefore has a Containerfile that cannot build.
+//
+// ensureImage prefers a repository build over the cached rootfs whenever a
+// Containerfile is above the working directory, so this is what a
+// contributor's first `shellforge init` hits, and what it used to hit was
+// docker's own
+//
+//	failed to compute cache key: "/out/bin/sf-ptyhost": not found
+//
+// which names neither the target that produces it nor the reason it is
+// absent. Falling through to the cached rootfs instead would be worse than
+// this error rather than better: it would quietly build nothing and run a
+// downloaded image, so a contributor editing the Containerfile would watch
+// their changes have no effect.
+func checkPtyhostArtifact() error {
+	artifact, err := repoRootRelative(ptyhostArtifactPath)
+	if err != nil {
+		// The Containerfile resolved a moment ago, so the repository root
+		// is findable and this cannot normally fail. Nothing useful to add
+		// if it does: let the build report whatever it finds.
+		return nil
+	}
+	if _, err := os.Stat(artifact); err == nil {
+		return nil
+	}
+
+	return ux.Fail(
+		"build the sandbox image from this repository",
+		fmt.Errorf("%s does not exist, and %s copies it into the image", ptyhostArtifactPath, containerfilePath),
+		"Run `make ptyhost`, or `make.ps1 ptyhost` on Windows, then run `shellforge init` again. `make image` and `make rootfs` already do this for you; a bare `shellforge init` from a clone does not.",
+		"ptyhost-not-built",
+	)
 }

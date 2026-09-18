@@ -372,6 +372,36 @@ this is not your problem: read what Docker printed and check
 
 ---
 
+## ptyhost-not-built
+
+**You'll see:** `shellforge init`, run from inside a clone of this repository,
+stops with `images/out/bin/sf-ptyhost does not exist`.
+
+**What it means:** You are building the image from source, and one piece of it is
+not in the repository. `cmd/sf-ptyhost` is the small program that gives your
+shell a real Linux terminal from inside the sandbox. It runs in there rather than
+on your machine, so it is compiled for the sandbox's own architecture rather than
+yours, and the result is a binary, which this repository does not carry.
+
+`make image` and `make rootfs` build it for you. A bare `shellforge init` does
+not, and it prefers building from a clone over the image the installer
+downloads, so running it from the repository is what finds this.
+
+**Fix:**
+
+```bash
+make ptyhost
+shellforge init
+```
+
+On Windows, `.\make.ps1 ptyhost` instead of the first line.
+
+If you only wanted to play rather than to build, run `shellforge init` from
+anywhere outside the clone. It will import the image the installer downloaded
+and never touch the Containerfile.
+
+---
+
 ## no-runtime-available
 
 **You'll see:** `shellforge init` or `shellforge sandbox shell` reports that

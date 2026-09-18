@@ -165,6 +165,7 @@ make race            # go test -race ./...
 make fuzz            # fuzz the OSC parser for 60s
 make lint            # gofmt + vet + punctuation + allowlist + links + layer test
 make sec             # govulncheck + gosec
+make ptyhost         # build cmd/sf-ptyhost into the image build context
 make image           # build the sandbox image
 make rootfs          # export the WSL rootfs tarball
 make run LEVEL=nav-01
@@ -174,6 +175,14 @@ make ci              # everything
 
 On Windows use `.\make.ps1 <target>`. `make` is not installed on a default Windows
 box, which is why both exist.
+
+`ptyhost` is the one target you may have to remember. `cmd/sf-ptyhost` runs inside
+the sandbox, so it is cross compiled for the image's architecture into
+`images/out/bin/`, which is gitignored because a binary must never be committed.
+`image`, `rootfs` and `test` all depend on it, so you rarely call it directly. A
+bare `shellforge init` run from inside a clone does not, and it prefers building
+from the clone over the downloaded image, so that is the one path that asks for it
+by name.
 
 `make fuzz` is deliberately not part of `make ci`: CI already runs a 30 second fuzz
 tripwire on every pull request, and a full 60 second local run on top of that would
