@@ -287,18 +287,22 @@ func (rt *dockerRuntime) buildImage(ctx context.Context, image, containerfile, b
 // one building and the other importing something built elsewhere.
 //
 // The --change flags are not optional. `docker export` discards image
-// configuration, so `docker import` produces an image with no ENV at all,
-// and the Containerfile's ENV block is what makes a level's output the same
-// on every machine. Its own header says why: "a level that depends on
-// locale collation or the local timezone is a level that fails in CI at
-// midnight". CMD needs no --change, because createContainer passes
-// sandboxCommand() on the `docker run` argv and never relies on the image's
-// own.
+// configuration, so `docker import` produces an image with no ENV, no USER
+// and no WORKDIR at all. The Containerfile's ENV block is what makes a
+// level's output the same on every machine; its own header says why: "a
+// level that depends on locale collation or the local timezone is a level
+// that fails in CI at midnight". USER and WORKDIR are what keep an
+// unprivileged session unprivileged, and sandboxImageUser's comment has the
+// detail on what runs as root without them. CMD needs no --change, because
+// createContainer passes sandboxCommand() on the `docker run` argv and
+// never relies on the image's own.
 func (rt *dockerRuntime) importRootfs(ctx context.Context, image, tarball string) error {
 	argv := []string{"docker", "import"}
 	for _, kv := range sandboxImageEnv() {
 		argv = append(argv, "--change", "ENV "+kv)
 	}
+	argv = append(argv, "--change", "USER "+sandboxImageUser)
+	argv = append(argv, "--change", "WORKDIR "+sandboxImageWorkdir)
 	argv = append(argv, "--", tarball, image)
 
 	stdout, stderr, code, runErr := rt.run.run(ctx, argv, nil)
@@ -334,6 +338,36 @@ func sandboxImageEnv() []string {
 		"DEBIAN_FRONTEND=noninteractive",
 	}
 }
+
+// sandboxImageUser and sandboxImageWorkdir mirror the USER and WORKDIR
+// instructions at the end of images/Containerfile, and importRootfs restores
+// them for the same reason it restores the ENV block: `docker export` writes
+// a plain filesystem tarball and discards image configuration, so an
+// imported image carries none of the three.
+//
+// Nothing in this repository depends on them today, and that is the whole
+// reason to restore them rather than a reason not to. dockerSession.execArgv
+// passes `-u` only when a user is set, but effectiveUser falls back to
+// SessionSpec.User before it gets there, and every caller in cmd/shellforge
+// sets that to sandboxUser. So the image's own USER is currently never
+// consulted, and an imported image having none changes no behaviour that
+// exists.
+//
+// What it changes is the safety of the next caller. A session built without
+// SessionSpec.User, which the field's own optionality invites, runs as
+// whatever the image says, and that is "learner" on a built image and root
+// on an imported one. The same divergence is what the Containerfile header
+// forbids in the general case: one build, two artifacts, and a level that
+// behaves differently depending on which one the learner installed is the
+// defect that header exists to prevent. Restoring the two instructions
+// costs two flags and removes the difference.
+//
+// TestSandboxImageUserAndWorkdirMatchTheContainerfile pins both against
+// images/Containerfile, in the same style as the ENV pin above.
+const (
+	sandboxImageUser    = "learner"
+	sandboxImageWorkdir = "/home/learner"
+)
 
 func (rt *dockerRuntime) ensureContainerRunning(ctx context.Context, image string) error {
 	st, err := rt.inspectContainer(ctx)

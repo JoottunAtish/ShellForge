@@ -238,3 +238,114 @@ func parseContainerfileEnv(t *testing.T, content string) []string {
 	}
 	return out
 }
+
+// importRootfs has to hand `docker import` every piece of image
+// configuration that `docker export` threw away. ENV was already pinned
+// above; USER and WORKDIR were the two that were missing, and their absence
+// is not visible from a clone because a locally built image supplies them.
+//
+// Asserted on the argv rather than against a daemon, because what went
+// wrong was a flag that was never passed, not a flag docker rejected.
+func TestImportRootfsRestoresUserAndWorkdir(t *testing.T) {
+	fake := &fakeRunner{results: []fakeResult{{code: 0}}}
+	rt := &dockerRuntime{name: "shellforge-sandbox", run: fake}
+
+	if err := rt.importRootfs(context.Background(), "shellforge-sandbox:latest", "rootfs.tar.gz"); err != nil {
+		t.Fatalf("importRootfs: %v", err)
+	}
+	if len(fake.calls) != 1 {
+		t.Fatalf("importRootfs made %d calls, want 1", len(fake.calls))
+	}
+	argv := fake.calls[0]
+
+	// Paired, because --change takes its value as the following element and
+	// a test matching only the value would pass on an argv that had lost
+	// the flag.
+	wantPairs := [][2]string{
+		{"--change", "USER " + sandboxImageUser},
+		{"--change", "WORKDIR " + sandboxImageWorkdir},
+	}
+	for _, want := range wantPairs {
+		if !hasArgvPair(argv, want[0], want[1]) {
+			t.Errorf("importRootfs argv is missing %q %q\ngot: %v", want[0], want[1], argv)
+		}
+	}
+
+	// The ENV block must survive the addition rather than be replaced by it.
+	for _, kv := range sandboxImageEnv() {
+		if !hasArgvPair(argv, "--change", "ENV "+kv) {
+			t.Errorf("importRootfs argv is missing --change %q\ngot: %v", "ENV "+kv, argv)
+		}
+	}
+
+	// Every --change has to precede the terminating "--", or docker reads it
+	// as an operand instead of a flag.
+	sep := -1
+	for i, a := range argv {
+		if a == "--" {
+			sep = i
+			break
+		}
+	}
+	if sep < 0 {
+		t.Fatalf("importRootfs argv has no -- separator: %v", argv)
+	}
+	for i, a := range argv {
+		if a == "--change" && i > sep {
+			t.Errorf("importRootfs put a --change after the -- separator, where docker reads it as an operand: %v", argv)
+		}
+	}
+}
+
+func hasArgvPair(argv []string, flag, value string) bool {
+	for i := 0; i+1 < len(argv); i++ {
+		if argv[i] == flag && argv[i+1] == value {
+			return true
+		}
+	}
+	return false
+}
+
+// The USER and WORKDIR importRootfs restores have to be the ones the image
+// actually declares, or a release install quietly diverges from a build.
+func TestSandboxImageUserAndWorkdirMatchTheContainerfile(t *testing.T) {
+	path, err := repoRootRelative(containerfilePath)
+	if err != nil {
+		t.Skipf("skipping: %s is not resolvable from here: %v", containerfilePath, err)
+	}
+	content, err := os.ReadFile(path) // #nosec G304 -- a test reading this repository's own Containerfile
+	if err != nil {
+		t.Skipf("skipping: cannot read %s: %v", path, err)
+	}
+
+	wantUser := lastContainerfileInstruction(t, string(content), "USER")
+	if wantUser != sandboxImageUser {
+		t.Errorf("sandboxImageUser = %q, want %q from images/Containerfile", sandboxImageUser, wantUser)
+	}
+	wantWorkdir := lastContainerfileInstruction(t, string(content), "WORKDIR")
+	if wantWorkdir != sandboxImageWorkdir {
+		t.Errorf("sandboxImageWorkdir = %q, want %q from images/Containerfile", sandboxImageWorkdir, wantWorkdir)
+	}
+}
+
+// lastContainerfileInstruction returns the operand of the LAST instruction
+// with the given keyword, which is the one in effect for the built image:
+// unlike ENV, repeating USER or WORKDIR is ordinary and each one supersedes
+// the last, so refusing a second the way parseContainerfileEnv does would
+// be wrong here.
+func lastContainerfileInstruction(t *testing.T, content, keyword string) string {
+	t.Helper()
+
+	found := ""
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, keyword+" ") {
+			continue
+		}
+		found = strings.TrimSpace(strings.TrimPrefix(line, keyword+" "))
+	}
+	if found == "" {
+		t.Fatalf("images/Containerfile declares no %s instruction", keyword)
+	}
+	return found
+}
