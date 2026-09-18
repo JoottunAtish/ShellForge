@@ -44,9 +44,10 @@ release is rather than what changed in it.
   game plays natively from PowerShell or Windows Terminal. The pseudo terminal
   is allocated inside the sandbox rather than on the host, so Windows needs no
   ConPTY and there is one attach path rather than two.
-- **No host access.** No bind mounts except a read-only `/opt/shellforge`, no
-  network unless a level asks for it, never `--privileged`, and a non-root user.
-  On Windows, automount and interop are off, so there is no `/mnt/c`.
+- **No host access.** No bind mounts except a read-only `/opt/shellforge`, never
+  `--privileged`, and a non-root user. On Windows, automount and interop are off,
+  so there is no `/mnt/c`. On Docker there is also no network unless a level asks
+  for it; on WSL there is, and the known issue below says why and what it costs.
 - `rm -rf /` inside the sandbox destroys the sandbox and nothing else.
 
 ### Getting it running
@@ -56,6 +57,9 @@ release is rather than what changed in it.
   it and links to a heading in the troubleshooting guide.
 - **`install.sh` and `install.ps1`**, both verifying the release checksum before
   anything is placed on disk, and neither editing a shell profile or elevating.
+  On amd64 they fetch the sandbox image as well as the binary, so
+  `shellforge init` works from a release install with no clone of this
+  repository.
 - **`shellforge bug-report`**, which bundles diagnostics into a zip on your own
   machine and uploads nothing. Your commands are excluded by default, and
   `--journal` includes them redacted.
@@ -73,19 +77,26 @@ release is rather than what changed in it.
 
 ### Known issues
 
-- **`shellforge init` needs a clone of this repository.** The installers place
-  the binary and nothing else, so neither backend can find a sandbox image on a
-  machine that has only the release. Both install guides give the workaround.
-  [#172](https://github.com/JoottunAtish/ShellForge/issues/172)
-- **On Windows, play from inside WSL, not from PowerShell.** `play`, `run` and
-  `sandbox shell` are the three verbs that open an interactive shell, and
-  opening one allocates a pseudo terminal on the host, which the library
-  Shellforge uses for that does not implement on Windows at all. Both backends
-  are affected, so switching from Docker to WSL does not help. They refuse up
-  front with the fix rather than failing after provisioning. Every other verb,
-  `doctor` and `init` included, works natively. WSL2 is a real Linux host and
-  Docker Desktop shares one daemon with it, so the sandbox is not built twice.
-  [#138](https://github.com/JoottunAtish/ShellForge/issues/138)
+- **On arm64 Linux, `shellforge init` needs a clone of this repository.** The
+  published sandbox image is amd64, so the installer deliberately does not place
+  it on another architecture rather than hand you one whose every command fails
+  with `exec format error`. It says so at the time. `init` then builds the image
+  itself, which needs the repository and Docker, and
+  [the Linux install guide](docs/02-install-linux.md) has the steps. amd64, which
+  is almost everyone, needs none of this.
+- **On Windows, the sandbox can still reach the network.** Every level is set up
+  and verified offline, and no level needs a connection, but a learner who types
+  `curl` inside one on the WSL backend will find it works. The Docker backend
+  runs with `--network none` and does not. WSL2 has no per-distribution network
+  switch to turn off: every distribution shares one virtual adapter, and that
+  adapter can also see your own machine. Nothing reaches your files from in
+  there, because no directory of yours is mounted and automount is off, but it
+  is weaker isolation than the Docker backend gives.
+
+  There is no way to ask for Docker instead for a level in v0.1. `shellforge
+  play` and `shellforge run` always pick a backend themselves, and on Windows
+  they pick WSL whenever WSL2 is present. Only `init` and the `sandbox`
+  subcommands take `--runtime`.
 - **`shellforge author scaffold` and `shellforge author record` are not built.**
   They are hidden from `shellforge help`, so nothing offers them, and they stay
   registered, so typing one answers with a refusal naming where it went rather

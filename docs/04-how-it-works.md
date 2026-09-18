@@ -211,10 +211,22 @@ only from `check` itself.
 
 ## Why "you cannot break it" is a real promise and not marketing
 
-Three independent things have to hold, and all three are checked in CI:
+Three independent things have to hold. CI checks all three against the Docker
+backend on every pull request. The WSL backend's own contract suite needs a
+Windows machine with WSL2, which no runner this project can reach has, so there
+it is checked by hand instead: see the exception under isolation below, which is
+what checking it by hand found.
 
-1. **Isolation.** No host mounts except one read-only directory, no network by
-   default, never `--privileged`, and a non-root user.
+1. **Isolation.** No host mounts except one read-only directory, never
+   `--privileged`, and a non-root user. On Docker, no network by default either.
+
+   Not on WSL, and this is the one place the promise is thinner than the
+   sentence above. WSL2 gives every distribution the same virtual adapter and
+   offers no switch to take it away, so a sandbox there can reach the network
+   and can see your machine on it. What keeps your files safe on Windows is the
+   mount side rather than the network side: automount and interop are off, so
+   there is no `/mnt/c` and no way to launch a Windows program. `CHANGELOG.md`
+   carries this as a known issue for v0.1.
 2. **Reset.** Every level's world lives under one directory, and reset is a delete
    and a rebuild. No snapshot restore that might half-work. The deletion runs
    inside the sandbox, as the learner, through one validated helper that refuses
