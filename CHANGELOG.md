@@ -40,7 +40,10 @@ release is rather than what changed in it.
 
 ### The sandbox
 
-- **Docker on Linux, WSL2 on Windows**, behind one runtime interface.
+- **Docker on Linux, WSL2 on Windows**, behind one runtime interface, and the
+  game plays natively from PowerShell or Windows Terminal. The pseudo terminal
+  is allocated inside the sandbox rather than on the host, so Windows needs no
+  ConPTY and there is one attach path rather than two.
 - **No host access.** No bind mounts except a read-only `/opt/shellforge`, no
   network unless a level asks for it, never `--privileged`, and a non-root user.
   On Windows, automount and interop are off, so there is no `/mnt/c`.
