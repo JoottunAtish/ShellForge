@@ -127,13 +127,22 @@ func exitCode(err error) int {
 // which would end the watcher after the first resize. Holding a writer open
 // here does away with both.
 func startResizeWatcher(ptmx *os.File, fifoPath string) (stop func(), err error) {
-	if err := unix.Mkfifo(fifoPath, 0o600); err != nil && !errors.Is(err, os.ErrExist) {
-		return nil, fmt.Errorf("create %s: %w", fifoPath, err)
+	early, err := makeWinsizeFIFO(fifoPath)
+	if err != nil {
+		return nil, err
 	}
 
 	fifo, err := os.OpenFile(fifoPath, os.O_RDWR, 0o600) // #nosec G304 -- a fixed path under the level's own state directory, built by the runtime
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", fifoPath, err)
+	}
+
+	// A size the host wrote before the FIFO existed, recovered by
+	// makeWinsizeFIFO. Applied here rather than thrown away, so that
+	// losing the race costs nothing at all rather than costing the
+	// starting window size for the whole session.
+	if rows, cols, ok := parseWinsize(early); ok {
+		_ = pty.Setsize(ptmx, &pty.Winsize{Rows: rows, Cols: cols})
 	}
 
 	done := make(chan struct{})
@@ -180,4 +189,60 @@ func parseWinsize(line string) (rows, cols uint16, ok bool) {
 		return 0, 0, false
 	}
 	return uint16(r), uint16(c), true
+}
+
+// makeWinsizeFIFO creates the window size FIFO, and returns whatever a
+// racing host had already written to that path if it got there first.
+//
+// The host writes each resize with one `tee -- <path>`, and internal/pty's
+// Mux issues its first resize the instant Attach returns, which is before
+// this process has necessarily run at all. tee opens with O_CREAT, so when
+// it wins that race the path is already taken by an ORDINARY FILE by the
+// time this runs.
+//
+// Tolerating EEXIST without looking at what exists is what made that
+// silent. mkfifo failed, the open below succeeded against the regular
+// file, the scanner read the one line in it and hit EOF, and the watcher
+// goroutine returned: every resize for the rest of the session was written
+// to a file nobody was reading, and the learner's `vim` was the wrong
+// shape until they quit the level. A stale file left by a killed session
+// made it deterministic rather than a race, because nothing removes one.
+//
+// So: if something is already there and it is not a FIFO, read it, take it
+// away, and make the FIFO properly. What it held is returned rather than
+// discarded, because it is the starting window size.
+func makeWinsizeFIFO(fifoPath string) (early string, err error) {
+	if err := unix.Mkfifo(fifoPath, 0o600); err == nil {
+		return "", nil
+	} else if !errors.Is(err, os.ErrExist) {
+		return "", fmt.Errorf("create %s: %w", fifoPath, err)
+	}
+
+	info, err := os.Lstat(fifoPath)
+	if err != nil {
+		return "", fmt.Errorf("inspect %s: %w", fifoPath, err)
+	}
+	if info.Mode()&os.ModeNamedPipe != 0 {
+		// Already the right kind of thing, left by an earlier session.
+		// Opening it read write below is harmless and loses nothing.
+		return "", nil
+	}
+
+	// Deliberately not os.ReadFile on anything: a symlink or a device at
+	// this path is not something to open and read, and the level's own
+	// state directory is writable by the learner, who is welcome to try.
+	// Only a regular file is recovered; anything else is replaced unread.
+	if info.Mode().IsRegular() {
+		if b, readErr := os.ReadFile(fifoPath); readErr == nil { // #nosec G304 -- a fixed path under the level's own state directory
+			early = string(b)
+		}
+	}
+
+	if err := os.Remove(fifoPath); err != nil {
+		return "", fmt.Errorf("replace %s: %w", fifoPath, err)
+	}
+	if err := unix.Mkfifo(fifoPath, 0o600); err != nil {
+		return "", fmt.Errorf("create %s: %w", fifoPath, err)
+	}
+	return early, nil
 }
