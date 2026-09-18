@@ -868,3 +868,48 @@ func TestStuckNudgeOffersTheHintAndItsPrice(t *testing.T) {
 		}
 	})
 }
+
+// passingChecker reports a pass without needing a sandbox, so the reply
+// assembly around it can be driven on its own.
+type passingChecker struct{}
+
+func (passingChecker) Check(context.Context) (verify.LevelResult, error) {
+	return verify.LevelResult{Passed: true}, nil
+}
+
+// A learner who passed must never be offered a hint, including on the
+// degraded path where passBanner declines.
+//
+// passBanner returns not-ok when it has no store to read the XP line from,
+// or when that read fails. The plain reply is the right fallback there: the
+// learner still passed and is still told so. What was wrong is that the
+// fallback was shared with the did-not-pass branch, so it also appended
+// stuckNudge, and somebody who had just finished the level was told "Stuck?"
+// and quoted the price of a hint.
+func TestCheckDoesNotOfferAHintToALearnerWhoPassed(t *testing.T) {
+	level := &content.Level{ID: "nav-01", Title: "First Contact"}
+
+	r := &gameResponder{
+		level:   level,
+		checker: passingChecker{},
+		// nil, so passBanner declines and the degraded path is the one
+		// under test.
+		pass: nil,
+		hints: &fakeHinter{
+			tiers: []game.Tier{{Index: 1, Total: 3, Cost: 20}},
+		},
+	}
+
+	got := r.check(context.Background())
+
+	// The nudge's own distinctive words, not the whole string, so this does
+	// not break every time its wording is tuned.
+	for _, unwanted := range []string{"Stuck?", "`hint`", "XP"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("a passing check offered a hint: reply contains %q\ngot: %q", unwanted, got)
+		}
+	}
+	if strings.TrimSpace(got) == "" {
+		t.Error("a passing check whose banner declined said nothing at all, want the plain reply")
+	}
+}
