@@ -122,6 +122,7 @@ function Show-Help {
         'vuln'     = 'govulncheck against dependencies and toolchain'
         'gosec'    = 'Static security analysis'
         'sec'      = 'All security checks'
+        'ptyhost'  = 'Build the in-sandbox pseudo terminal host into the image context'
         'image'    = 'Build the sandbox container image'
         'rootfs'   = 'Export the WSL rootfs tarball'
         'run'      = 'Play one level (-Level <id>)'
@@ -193,8 +194,35 @@ switch ($Target.ToLowerInvariant()) {
     # Tags :latest as well as :dev. `shellforge run` provisions the untagged
     # $Image, which docker resolves to :latest, so an image built only as :dev
     # left the game running whatever :latest happened to hold.
+    # cmd/sf-ptyhost runs INSIDE the sandbox, so it is built for linux and for
+    # the image's architecture, never for the developer's own. v0.1's image is
+    # amd64: docs/design/DAY-3-TICKETS.md records the multi-architecture
+    # rootfs as a deliberate cut.
+    #
+    # It lands in images/out/, which .gitignore already covers, rather than in
+    # the tracked images/bin/ that the Containerfile's `COPY bin/` sweeps up.
+    # CLAUDE.md forbids committing a binary.
+    'ptyhost' {
+        New-Item -ItemType Directory -Force -Path 'images/out/bin' | Out-Null
+        Invoke-Step 'ptyhost' {
+            $env:CGO_ENABLED = '0'
+            $env:GOOS = 'linux'
+            $env:GOARCH = 'amd64'
+            try {
+                go build -trimpath -ldflags '-s -w' -o images/out/bin/sf-ptyhost ./cmd/sf-ptyhost
+            }
+            finally {
+                Remove-Item Env:CGO_ENABLED, Env:GOOS, Env:GOARCH -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
     'image' {
         $engine = Get-ContainerEngine
+        # The Containerfile copies images/out/bin/sf-ptyhost, so it has to
+        # exist before the build reads the context.
+        & $PSCommandPath 'ptyhost'
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         Invoke-Step "image ($engine)" { & $engine build -f images/Containerfile -t "${Image}:${Tag}" images/ }
         Invoke-Step 'tag' { & $engine tag "${Image}:${Tag}" "${Image}:latest" }
     }
@@ -213,6 +241,12 @@ switch ($Target.ToLowerInvariant()) {
         # stale sidecar in the wrong shape sitting next to the new one is
         # confusing rather than harmless.
         Remove-Item -Path 'images/out/rootfs.tar', 'images/out/rootfs.tar.sha256' -ErrorAction SilentlyContinue
+        # The Containerfile copies images/out/bin/sf-ptyhost, so it has to
+        # exist before the build reads the context. This target builds the
+        # image itself rather than calling the 'image' target, so it needs
+        # the same prerequisite spelled out.
+        & $PSCommandPath 'ptyhost'
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         Invoke-Step "image ($engine)" { & $engine build -f images/Containerfile -t "${Image}:${Tag}" images/ }
         & $engine rm -f "$Image-export" 2>$null | Out-Null
         Invoke-Step 'create' { & $engine create --name "$Image-export" "${Image}:${Tag}" /bin/true }

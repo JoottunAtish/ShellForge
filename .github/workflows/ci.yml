@@ -213,6 +213,22 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Build the in-sandbox pseudo terminal host
+        # images/Containerfile copies images/out/bin/sf-ptyhost, and the
+        # docker contract suite and the control channel test both provision a
+        # real image on a runner that has a Linux docker daemon. Without this
+        # they fail with `"/out/bin/sf-ptyhost": not found` from docker build,
+        # which reads as a broken Containerfile rather than a missing step.
+        #
+        # Built here rather than through `make ptyhost` because this job also
+        # runs on windows-latest, where make is not installed. GOOS is linux
+        # either way: the binary runs inside the sandbox, never on the host.
+        run: go build -trimpath -ldflags "-s -w" -o images/out/bin/sf-ptyhost ./cmd/sf-ptyhost
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: amd64
+
       - name: Layer dependency rule
         # internal/game must never import a Docker or WSL type. This is what
         # keeps "drop WSL support" a one-day decision.
@@ -274,7 +290,13 @@ jobs:
         # out: the postcondition the Unix suite's _snapshot_home enforces on
         # every one of its own cases, that nothing changed outside the target
         # -BinDir, checked here against the fixture directory and against the
-        # user profile's own top level entries. It prints one line per case
+        # user profile's own top level entries. Two more arrived with issue
+        # #172, which made the installer fetch the sandbox rootfs as well as
+        # the binary: one that the rootfs lands where internal/runtime/wsl
+        # looks for it, and one that a bad rootfs digest refuses and leaves
+        # nothing behind. Those two are the only cases that do not pass
+        # -SkipRootfs, and they redirect LOCALAPPDATA so nothing lands in the
+        # runner's real profile. It prints one line per case
         # and exits non-zero if any case did not behave as expected, and it
         # restores whatever the user PATH was before this step ran, so the
         # runner is left as it was found.
@@ -400,7 +422,18 @@ jobs:
 
           $digest = (Get-FileHash -Algorithm SHA256 -LiteralPath $zipPath).Hash.ToLowerInvariant()
           $assetName = 'shellforge_v0.1.0-test_windows_amd64.zip'
-          Set-Content -LiteralPath (Join-Path $versionDir 'SHA256SUMS') -Value "$digest  $assetName" -NoNewline -Encoding ascii
+
+          # The release also publishes rootfs.tar.gz, and as of issue #172 the
+          # installer fetches it. Its bytes do not need to be a real image:
+          # install.ps1 verifies a digest and places a file, and never looks
+          # inside. What matters is that it is listed in SHA256SUMS, because
+          # an asset missing from there is a refusal, not a skip.
+          $rootfsPath = Join-Path $versionDir 'rootfs.tar.gz'
+          Set-Content -LiteralPath $rootfsPath -Value 'fixture rootfs placeholder, not a real image' -NoNewline -Encoding ascii
+          $rootfsDigest = (Get-FileHash -Algorithm SHA256 -LiteralPath $rootfsPath).Hash.ToLowerInvariant()
+
+          $sumsLines = @("$digest  $assetName", "$rootfsDigest  rootfs.tar.gz")
+          Set-Content -LiteralPath (Join-Path $versionDir 'SHA256SUMS') -Value ($sumsLines -join "`n") -NoNewline -Encoding ascii
 
           # The mismatch fixture is a SECOND release root, built here, rather
           # than the good SHA256SUMS being swapped out and back in place around
@@ -418,10 +451,26 @@ jobs:
           Copy-Item -LiteralPath $zipPath -Destination (Join-Path $mismatchVersionDir $assetName) -Force
           Set-Content -LiteralPath (Join-Path $mismatchVersionDir 'SHA256SUMS') -Value "$wrongDigest  $assetName" -NoNewline -Encoding ascii
 
+          # A third root for case 14: the binary's digest is correct so the run
+          # gets past Install-Binary, and only the rootfs digest is wrong. The
+          # mismatch root above cannot serve that, because there the binary
+          # fails first and the rootfs is never fetched.
+          $rootfsFlipped = if ($rootfsDigest[-1] -ne '0') { '0' } else { '1' }
+          $wrongRootfsDigest = $rootfsDigest.Substring(0, $rootfsDigest.Length - 1) + $rootfsFlipped
+          $badRootfsRoot = Join-Path $fixtureDir 'release-bad-rootfs\download'
+          $badRootfsVersionDir = Join-Path $badRootfsRoot 'v0.1.0-test'
+          New-Item -ItemType Directory -Path $badRootfsVersionDir -Force | Out-Null
+          Copy-Item -LiteralPath $zipPath -Destination (Join-Path $badRootfsVersionDir $assetName) -Force
+          Copy-Item -LiteralPath $rootfsPath -Destination (Join-Path $badRootfsVersionDir 'rootfs.tar.gz') -Force
+          $badRootfsSums = @("$digest  $assetName", "$wrongRootfsDigest  rootfs.tar.gz")
+          Set-Content -LiteralPath (Join-Path $badRootfsVersionDir 'SHA256SUMS') -Value ($badRootfsSums -join "`n") -NoNewline -Encoding ascii
+
           $fixtureBaseUrl = ([System.Uri]$downloadRoot).AbsoluteUri
           $mismatchBaseUrl = ([System.Uri]$mismatchRoot).AbsoluteUri
+          $badRootfsBaseUrl = ([System.Uri]$badRootfsRoot).AbsoluteUri
           Write-Host "fixture base URL: $fixtureBaseUrl"
           Write-Host "mismatch base URL: $mismatchBaseUrl"
+          Write-Host "bad rootfs base URL: $badRootfsBaseUrl"
 
           $initialUserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 
@@ -460,7 +509,7 @@ jobs:
             $bin1 = Join-Path $fixtureDir 'bin-happy'
             $ok1 = $true
             try {
-              & $installScript -Version 'v0.1.0-test' -BinDir $bin1 -BaseUrl $fixtureBaseUrl
+              & $installScript -Version 'v0.1.0-test' -BinDir $bin1 -BaseUrl $fixtureBaseUrl -SkipRootfs
             }
             catch {
               $ok1 = $false
@@ -484,7 +533,7 @@ jobs:
             $bin2 = Join-Path $fixtureDir 'bin-mismatch'
             $threw2 = $false
             try {
-              & $installScript -Version 'v0.1.0-test' -BinDir $bin2 -BaseUrl $mismatchBaseUrl
+              & $installScript -Version 'v0.1.0-test' -BinDir $bin2 -BaseUrl $mismatchBaseUrl -SkipRootfs
             }
             catch {
               $threw2 = $true
@@ -503,7 +552,7 @@ jobs:
 
             $threw3 = $false
             try {
-              & $installScript -Version 'v0.1.0-test' -BinDir $bin3 -BaseUrl $fixtureBaseUrl
+              & $installScript -Version 'v0.1.0-test' -BinDir $bin3 -BaseUrl $fixtureBaseUrl -SkipRootfs
             }
             catch {
               $threw3 = $true
@@ -515,7 +564,7 @@ jobs:
             # ---- Case 4: -Force overwrite ----
             $ok4 = $true
             try {
-              & $installScript -Version 'v0.1.0-test' -BinDir $bin3 -BaseUrl $fixtureBaseUrl -Force
+              & $installScript -Version 'v0.1.0-test' -BinDir $bin3 -BaseUrl $fixtureBaseUrl -Force -SkipRootfs
             }
             catch {
               $ok4 = $false
@@ -531,7 +580,7 @@ jobs:
             $bin5 = Join-Path $fixtureDir 'bin-nopathchange'
             $ok5 = $true
             try {
-              & $installScript -Version 'v0.1.0-test' -BinDir $bin5 -BaseUrl $fixtureBaseUrl -NoPathChange
+              & $installScript -Version 'v0.1.0-test' -BinDir $bin5 -BaseUrl $fixtureBaseUrl -NoPathChange -SkipRootfs
             }
             catch {
               $ok5 = $false
@@ -546,7 +595,7 @@ jobs:
             $bin6 = Join-Path $fixtureDir 'CON'
             $threw6 = $false
             try {
-              & $installScript -Version 'v0.1.0-test' -BinDir $bin6 -BaseUrl $fixtureBaseUrl
+              & $installScript -Version 'v0.1.0-test' -BinDir $bin6 -BaseUrl $fixtureBaseUrl -SkipRootfs
             }
             catch {
               $threw6 = $true
@@ -558,7 +607,7 @@ jobs:
             $bin7 = "$fixtureDir\ads-target:hidden"
             $threw7 = $false
             try {
-              & $installScript -Version 'v0.1.0-test' -BinDir $bin7 -BaseUrl $fixtureBaseUrl
+              & $installScript -Version 'v0.1.0-test' -BinDir $bin7 -BaseUrl $fixtureBaseUrl -SkipRootfs
             }
             catch {
               $threw7 = $true
@@ -673,7 +722,7 @@ jobs:
               $bin10 = Join-Path $fixtureDir 'bin-regexpand'
               $ok10 = $true
               try {
-                & $installScript -Version 'v0.1.0-test' -BinDir $bin10 -BaseUrl $fixtureBaseUrl
+                & $installScript -Version 'v0.1.0-test' -BinDir $bin10 -BaseUrl $fixtureBaseUrl -SkipRootfs
               }
               catch {
                 $ok10 = $false
@@ -710,6 +759,9 @@ jobs:
           # the allow list below is by top level directory name, not "no
           # change at all".
           $fixtureAfter = Get-FixtureSnapshot -Root $fixtureDir
+          # Cases 13 and 14 run after this snapshot, so their own directories
+          # (bin-rootfs, bin-bad-rootfs, localappdata, localappdata-bad) are not
+          # in scope here and do not belong in this list.
           $allowedBinDirs = @('bin-happy', 'bin-mismatch', 'bin-existing', 'bin-nopathchange', 'bin-regexpand')
           $fixtureKeys = @($fixtureBefore.Keys) + @($fixtureAfter.Keys) | Select-Object -Unique
           $unexpectedFixtureChanges = @()
@@ -735,11 +787,73 @@ jobs:
           }
           Report 'case 12: nothing new appeared directly under USERPROFILE' $ok12
 
+          # ---- Case 13: the sandbox rootfs lands where the runtime looks ----
+          # Issue #172: install.ps1 placed the binary and nothing else, so
+          # `shellforge init`, the very next command the install guide gives,
+          # failed on any machine without a clone. Every case above passes
+          # -SkipRootfs to stay hermetic; this one and case 14 are the two
+          # that exercise the fetch, with LOCALAPPDATA redirected so nothing
+          # lands in the runner's real profile.
+          $savedLocalAppData = $env:LOCALAPPDATA
+          try {
+            $fakeLocalAppData = Join-Path $fixtureDir 'localappdata'
+            New-Item -ItemType Directory -Path $fakeLocalAppData -Force | Out-Null
+            $env:LOCALAPPDATA = $fakeLocalAppData
+
+            $bin13 = Join-Path $fixtureDir 'bin-rootfs'
+            $ok13 = $false
+            try {
+              & $installScript -Version 'v0.1.0-test' -BinDir $bin13 -BaseUrl $fixtureBaseUrl -NoPathChange
+              $placed = Join-Path $fakeLocalAppData 'shellforge\cache\rootfs\rootfs.tar.gz'
+              if (Test-Path -LiteralPath $placed) {
+                $placedDigest = (Get-FileHash -Algorithm SHA256 -LiteralPath $placed).Hash.ToLowerInvariant()
+                $ok13 = ($placedDigest -eq $rootfsDigest)
+                if (-not $ok13) {
+                  Write-Host "  rootfs digest at $placed was $placedDigest, want $rootfsDigest"
+                }
+              }
+              else {
+                Write-Host "  no rootfs at $placed"
+              }
+            }
+            catch {
+              Write-Host "  installer threw: $_"
+            }
+            Report 'case 13: the rootfs is placed at LOCALAPPDATA\shellforge\cache\rootfs' $ok13
+
+            # ---- Case 14: a bad rootfs digest refuses and places nothing ----
+            # Verification before placement, for the rootfs specifically.
+            # defaultRootfs checks this exact path, so a file left there by a
+            # failed run is one `shellforge init` would hand to `wsl --import`.
+            $bin14 = Join-Path $fixtureDir 'bin-bad-rootfs'
+            $badLocalAppData = Join-Path $fixtureDir 'localappdata-bad'
+            New-Item -ItemType Directory -Path $badLocalAppData -Force | Out-Null
+            $env:LOCALAPPDATA = $badLocalAppData
+
+            $ok14 = $false
+            try {
+              & $installScript -Version 'v0.1.0-test' -BinDir $bin14 -BaseUrl $badRootfsBaseUrl -NoPathChange
+              Write-Host '  installer exited 0 despite a bad rootfs digest'
+            }
+            catch {
+              $badPlaced = Join-Path $badLocalAppData 'shellforge\cache\rootfs\rootfs.tar.gz'
+              $badPartial = Join-Path $badLocalAppData 'shellforge\cache\rootfs\.rootfs.tar.gz.partial'
+              $ok14 = (-not (Test-Path -LiteralPath $badPlaced)) -and (-not (Test-Path -LiteralPath $badPartial))
+              if (-not $ok14) {
+                Write-Host "  a file survived a bad digest at $badPlaced or $badPartial"
+              }
+            }
+            Report 'case 14: a bad rootfs digest refuses and leaves nothing behind' $ok14
+          }
+          finally {
+            $env:LOCALAPPDATA = $savedLocalAppData
+          }
+
           if ($failures -gt 0) {
             Write-Host "FAIL: $failures case(s) failed" -ForegroundColor Red
             exit 1
           }
-          Write-Host 'OK: all twelve install.ps1 cases passed'
+          Write-Host 'OK: all fourteen install.ps1 cases passed'
       - name: Fuzz the OSC parser
         # The parser consumes an adversarial byte stream by construction: the
         # learner can type any bytes at the prompt, including a forged OSC 133.
@@ -851,6 +965,20 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Set up Go
+        # Needed only for the pty host below. This job had no Go step before
+        # issue #138, because everything else here is docker.
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Build the in-sandbox pseudo terminal host
+        # images/Containerfile copies images/out/bin/sf-ptyhost, so it has to
+        # exist before docker reads the build context. This job builds the
+        # image directly rather than through `make image`, so the dependency
+        # the Makefile expresses has to be spelled out here as well.
+        run: make ptyhost
+
       - name: Build the sandbox image
         run: docker build -f images/Containerfile -t shellforge-sandbox:ci images/
 
@@ -883,6 +1011,15 @@ jobs:
             # This shell is already the learner: the image declares USER
             # learner and learner has no password, so su would only ever
             # produce an authentication failure here.
+            # The in-sandbox pseudo terminal host. Every interactive shell on
+            # both backends now execs this, so an image without it is one
+            # where no level can be played at all. It must be root owned and
+            # not writable by the learner: a permissions level that chmods
+            # its way around /home/learner must not be able to replace the
+            # thing hosting its own shell.
+            test -x /opt/shellforge/bin/sf-ptyhost || { echo "MISSING: /opt/shellforge/bin/sf-ptyhost"; exit 1; }
+            test ! -w /opt/shellforge/bin/sf-ptyhost || { echo "WRITABLE: the learner can overwrite sf-ptyhost"; exit 1; }
+            /opt/shellforge/bin/sf-ptyhost 2>&1 | grep -q "no command given" || { echo "BROKEN: sf-ptyhost does not run in this image"; exit 1; }
             test -d /home/learner/.shellforge || { echo "MISSING: /home/learner/.shellforge"; exit 1; }
             test -O /home/learner/.shellforge || { echo "WRONG OWNER: /home/learner/.shellforge is not owned by the sandbox user"; exit 1; }
             touch /home/learner/.shellforge/probe && rm /home/learner/.shellforge/probe || { echo "NOT WRITABLE: /home/learner/.shellforge"; exit 1; }

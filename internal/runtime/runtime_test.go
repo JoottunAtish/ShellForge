@@ -172,7 +172,12 @@ func TestValueTypeFieldSets(t *testing.T) {
 				"Systemd":      reflect.TypeOf(false),
 				"MultiUser":    reflect.TypeOf(false),
 				"Snapshotting": reflect.TypeOf(false),
-				"Privileged":   reflect.TypeOf(false),
+				// Issue #77. The CLI used to answer "can this open an
+				// interactive shell" with a goruntime.GOOS test, which
+				// asked the operating system a question only the backend
+				// can answer.
+				"InteractiveShell": reflect.TypeOf(false),
+				"Privileged":       reflect.TypeOf(false),
 			},
 		},
 		{

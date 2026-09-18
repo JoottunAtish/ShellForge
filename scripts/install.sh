@@ -13,15 +13,24 @@
 #
 # The release published by .github/workflows/release.yml carries three
 # archives: shellforge_VERSION_linux_amd64.tar.gz, shellforge_VERSION_linux_arm64.tar.gz,
-# and shellforge_VERSION_windows_amd64.zip. This script only ever fetches one
-# of the first two, chosen by detect_platform; the Windows archive belongs to
-# scripts/install.ps1.
+# and shellforge_VERSION_windows_amd64.zip, plus rootfs.tar.gz. This script
+# fetches one of the first two, chosen by detect_platform, and rootfs.tar.gz;
+# the Windows archive belongs to scripts/install.ps1.
+#
+# The rootfs is not optional extra weight. It is the sandbox itself: without
+# it in the cache, `shellforge init` has no image to provision from on a
+# machine with no clone of the repository, which is issue #172. Both
+# verification and placement below apply to it exactly as they do to the
+# binary.
 #
 # Environment overrides, all optional:
 #   SHELLFORGE_VERSION    a tag such as v0.1.0. Default: the latest release.
 #   SHELLFORGE_BIN_DIR    where the binary goes. Default: $HOME/.local/bin.
 #   SHELLFORGE_BASE_URL   where to fetch from. Default:
 #                         https://github.com/JoottunAtish/ShellForge/releases/download
+#   SHELLFORGE_SKIP_ROOTFS  set to 1 to install the binary only. `shellforge
+#                         init` then needs a clone and `make rootfs`. For a
+#                         developer who has one, and for CI.
 #
 # Flags:
 #   --force               overwrite an existing file at the target path.
@@ -169,6 +178,55 @@ verify() {
     die "checksum mismatch for $asset: expected $expected, got $actual" \
         "Nothing was installed. The download may be corrupted or tampered with. Run the installer again, and if this repeats, report it."
   fi
+}
+
+rootfs_cache_path() {
+  # Mirrors platform.RootfsCachePath on Linux and macOS:
+  # $XDG_CACHE_HOME/shellforge/rootfs/rootfs.tar.gz, falling back to
+  # $HOME/.cache/shellforge/rootfs/rootfs.tar.gz, which is what Go's
+  # os.UserCacheDir resolves. internal/runtime/wsl's defaultRootfs and
+  # internal/runtime/docker's ensureImage both look here and nowhere else,
+  # so a change to either side without the other makes a verified download
+  # invisible. TestInstallShRootfsPathMatchesPlatform pins the two together.
+  if [ -n "${XDG_CACHE_HOME:-}" ]; then
+    printf '%s\n' "$XDG_CACHE_HOME/shellforge/rootfs/rootfs.tar.gz"
+  else
+    printf '%s\n' "$HOME/.cache/shellforge/rootfs/rootfs.tar.gz"
+  fi
+}
+
+place_rootfs() {
+  # $1 verified tarball inside WORKDIR, $2 destination path. Only ever
+  # called after verify() has returned, exactly as place() is.
+  #
+  # The copy lands on a .partial name in the destination directory and is
+  # renamed from there, rather than being moved straight in. A rename
+  # within one directory is atomic, so the destination either holds a
+  # fully verified artifact or holds nothing at all. That matters more
+  # here than for the binary: defaultRootfs and ensureImage both check
+  # this exact path first, so a truncated file left at it is one that
+  # `shellforge init` would try to import.
+  src="$1"
+  dest="$2"
+  destdir="$(dirname "$dest")"
+  partial="$destdir/.rootfs.tar.gz.partial"
+
+  mkdir -p "$destdir" || \
+    die "could not create $destdir" \
+        "Check that you can write to it, then run the installer again."
+
+  rm -f "$partial"
+  if ! cp "$src" "$partial"; then
+    rm -f "$partial"
+    die "could not write the sandbox image to $destdir" \
+        "Check the free space and permissions there, then run the installer again."
+  fi
+  if ! mv -f "$partial" "$dest"; then
+    rm -f "$partial"
+    die "could not place the sandbox image at $dest" \
+        "Check the permissions on $destdir, then run the installer again."
+  fi
+  chmod 0644 "$dest" 2>/dev/null || true
 }
 
 validate_bin_dir() {
@@ -347,6 +405,32 @@ main() {
   fetch "$SHELLFORGE_BASE_URL/$VERSION/SHA256SUMS" "$sums"
   verify "$archive" "$sums" "$asset"
   place "$archive" "$SHELLFORGE_BIN_DIR"
+
+  if [ "${SHELLFORGE_SKIP_ROOTFS:-0}" = "1" ]; then
+    echo "Skipping the sandbox image: SHELLFORGE_SKIP_ROOTFS is set."
+    echo "\`shellforge init\` will need a clone of the repository and \`make rootfs\`."
+  elif [ "$ARCH" != "amd64" ]; then
+    # The release publishes one rootfs.tar.gz and it is built on an amd64
+    # runner, so importing it here would produce a sandbox whose every
+    # binary is the wrong architecture: `exec format error` on the first
+    # command, from a file whose checksum verified perfectly. v0.1 is amd64
+    # for the image, which docs/design/DAY-3-TICKETS.md records as a
+    # deliberate cut, so this says so rather than placing something broken.
+    #
+    # `shellforge init` still works from a clone on this architecture,
+    # because the docker backend builds images/Containerfile against
+    # debian:bookworm-slim, which Debian publishes for arm64 too.
+    echo "Not downloading the sandbox image: the published one is amd64 and this machine is $ARCH."
+    echo "\`shellforge init\` builds the image itself from a clone of the repository. See docs/02-install-linux.md."
+  else
+    rootfs_archive="$WORKDIR/rootfs.tar.gz"
+    rootfs_dest="$(rootfs_cache_path)"
+    echo "Downloading the sandbox image. It is tens of megabytes, so this can take a minute."
+    fetch "$SHELLFORGE_BASE_URL/$VERSION/rootfs.tar.gz" "$rootfs_archive"
+    verify "$rootfs_archive" "$sums" "rootfs.tar.gz"
+    place_rootfs "$rootfs_archive" "$rootfs_dest"
+    echo "Sandbox image: $rootfs_dest"
+  fi
 
   path_advice "$SHELLFORGE_BIN_DIR"
   run_doctor "$SHELLFORGE_BIN_DIR"

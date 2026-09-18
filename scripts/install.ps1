@@ -13,9 +13,14 @@
     The release published by .github/workflows/release.yml carries three
     archives: shellforge_VERSION_linux_amd64.tar.gz,
     shellforge_VERSION_linux_arm64.tar.gz, and
-    shellforge_VERSION_windows_amd64.zip, plus one SHA256SUMS listing all of
-    them. This script only ever fetches the Windows one; the Linux archives
-    belong to scripts/install.sh.
+    shellforge_VERSION_windows_amd64.zip, plus rootfs.tar.gz and one
+    SHA256SUMS listing all of them. This script fetches the Windows archive
+    and rootfs.tar.gz; the Linux archives belong to scripts/install.sh.
+
+    The rootfs is not optional extra weight. It is the sandbox itself:
+    `wsl --import` builds the distribution from it, and without it in the
+    cache `shellforge init` has nothing to import on a machine with no clone
+    of the repository, which is issue #172.
 
     -Scope Process is all this script needs. It never changes the machine or
     user execution policy, and it never elevates: no Start-Process -Verb
@@ -36,6 +41,11 @@
 
 .PARAMETER Force
     Overwrite an existing file at the target path.
+
+.PARAMETER SkipRootfs
+    Install the binary only, and do not download the sandbox rootfs.
+    `shellforge init` then needs a clone of the repository and
+    `.\make.ps1 rootfs`. For a developer who has one, and for CI.
 #>
 
 [CmdletBinding()]
@@ -43,6 +53,7 @@ param(
     [string]$Version,
     [string]$BinDir,
     [string]$BaseUrl,
+    [switch]$SkipRootfs,
     [switch]$NoPathChange,
     [switch]$Force
 )
@@ -187,6 +198,57 @@ function Test-Checksum {
     if ($actual -ne $expected) {
         Write-Failure "checksum mismatch for $AssetName`: expected $expected, got $actual" `
             "Nothing was installed. The download may be corrupted or tampered with. Run the installer again, and if this repeats, report it."
+    }
+}
+
+function Get-RootfsCachePath {
+    # Mirrors platform.RootfsCachePath on Windows:
+    # %LocalAppData%\shellforge\cache\rootfs\rootfs.tar.gz.
+    #
+    # internal/runtime/wsl's defaultRootfs looks here and nowhere else, so a
+    # change to either side without the other makes a verified download
+    # invisible to `shellforge init`. The cache element is what keeps this
+    # below DataDir rather than beside it: clearing the cache must not be
+    # able to reach the progress database or the .vhdx.
+    return Join-Path $env:LOCALAPPDATA 'shellforge\cache\rootfs\rootfs.tar.gz'
+}
+
+function Install-Rootfs {
+    # Only ever called after Test-Checksum has returned, exactly as
+    # Install-Binary is.
+    #
+    # The copy lands on a .partial name in the destination directory and is
+    # renamed from there, rather than being moved straight in. A rename
+    # within one directory is atomic, so the destination either holds a
+    # fully verified artifact or holds nothing at all. That matters more
+    # here than for the binary: defaultRootfs checks this exact path, so a
+    # truncated file left at it is one `shellforge init` would hand to
+    # `wsl --import`.
+    param(
+        [Parameter(Mandatory = $true)][string]$ArchivePath,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+
+    $destDir = Split-Path -Parent $Destination
+    $partial = Join-Path $destDir '.rootfs.tar.gz.partial'
+
+    try {
+        New-Item -ItemType Directory -Path $destDir -Force | Out-Null
+    }
+    catch {
+        Write-Failure "could not create $destDir" `
+            "Check that you can write to it, then run the installer again."
+    }
+
+    try {
+        Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue
+        Copy-Item -LiteralPath $ArchivePath -Destination $partial -Force
+        Move-Item -LiteralPath $partial -Destination $Destination -Force
+    }
+    catch {
+        Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue
+        Write-Failure "could not place the sandbox image at $Destination" `
+            "Check the free space and permissions under $destDir, then run the installer again."
     }
 }
 
@@ -428,6 +490,20 @@ function Invoke-Main {
         Get-Asset -Url "$BaseUrl/$resolvedVersion/SHA256SUMS" -Destination $sumsPath
         Test-Checksum -ArchivePath $archivePath -SumsPath $sumsPath -AssetName $asset
         Install-Binary -ArchivePath $archivePath -TargetBinDir $BinDir
+
+        if ($SkipRootfs) {
+            Write-Host 'Skipping the sandbox image: -SkipRootfs was passed.'
+            Write-Host '`shellforge init` will need a clone of the repository and `.\make.ps1 rootfs`.'
+        }
+        else {
+            $rootfsArchive = Join-Path $script:WorkDir 'rootfs.tar.gz'
+            $rootfsDest = Get-RootfsCachePath
+            Write-Host 'Downloading the sandbox image. It is tens of megabytes, so this can take a minute.'
+            Get-Asset -Url "$BaseUrl/$resolvedVersion/rootfs.tar.gz" -Destination $rootfsArchive
+            Test-Checksum -ArchivePath $rootfsArchive -SumsPath $sumsPath -AssetName 'rootfs.tar.gz'
+            Install-Rootfs -ArchivePath $rootfsArchive -Destination $rootfsDest
+            Write-Host "Sandbox image: $rootfsDest"
+        }
 
         Update-UserPath -TargetBinDir $BinDir
         Invoke-Doctor -TargetBinDir $BinDir

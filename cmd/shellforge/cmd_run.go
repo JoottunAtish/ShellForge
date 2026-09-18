@@ -8,7 +8,6 @@ import (
 	"io/fs"
 	"os"
 	"path"
-	goruntime "runtime"
 	"strings"
 	"time"
 
@@ -86,7 +85,26 @@ const (
 	// back must not be able to stop the learner from getting their prompt
 	// back. One orphaned process in a disposable container is the smaller
 	// problem.
-	controlDrainTimeout = 5 * time.Second
+	//
+	// It should be LONGER than the sandbox-side reap that runs inside that
+	// goroutine, and it was not. The WSL backend bounds its own kill at 5s,
+	// this wait was 5s too, and the kill is nested inside the thing being
+	// waited for: a reap that used its whole budget therefore spent this
+	// whole budget, and the wait expired on a teardown where nothing had
+	// gone wrong. That is the warning a learner sees on the way out of a
+	// perfectly ordinary level. The margin is for getting back out of the
+	// call once the reap returns, not for the reap itself.
+	//
+	// That reasoning closes the WSL case and not the Docker one.
+	// dockerSession.killSandboxProcess runs on context.Background() with no
+	// timeout at all, so no value here can be guaranteed to outlast it and
+	// a wedged daemon can still produce this warning. Bounding that kill is
+	// the fix for that half, and it belongs in the backend rather than in a
+	// larger number here.
+	//
+	// TODO(v0.2): give the docker backend's kill a timeout, then state the
+	// invariant as a rule both backends keep rather than one.
+	controlDrainTimeout = 8 * time.Second
 
 	// checkSlack is added to the engine's level budget to bound one `check`.
 	//
@@ -235,9 +253,6 @@ func cmdRun(ctx context.Context, args []string) error {
 		return unknownLevel(opts.levelID, order)
 	}
 
-	if err := checkInteractiveShellSupported(opts.levelID); err != nil {
-		return err
-	}
 	// `run` plays the one level it was named and stops, so how it ended
 	// changes nothing here. `play` is the verb that carries on.
 	_, err = runLevel(ctx, opts, pack, level)
@@ -291,44 +306,6 @@ func unknownLevel(id string, order []string) error {
 		fmt.Sprintf("There is no level called %q. This pack has %s, in campaign order: %s. Run `shellforge run %s` to start at the beginning.",
 			id, plural(len(order), "level"), strings.Join(order, ", "), order[0]),
 		docAnchorLevelNotFound,
-	)
-}
-
-// checkInteractiveShellSupported refuses, up front, on a host that cannot give
-// the learner an interactive shell at all.
-//
-// Attaching allocates a pseudo terminal on the HOST with creack/pty, and that
-// package's Windows implementation returns ErrUnsupported unconditionally:
-// there is no ConPTY path in it. This is true of the Docker backend, and it is
-// also true of the WSL backend's own interactive attach, even though the WSL
-// backend can already run one-shot commands and push files into the sandbox
-// by shelling out to wsl.exe directly (see internal/runtime/wsl/session.go's
-// Attach and resize_windows.go's Resize, both of which return the same
-// ErrUnsupported). So `run` on a Windows host, on either backend, gets all
-// the way through provisioning and a level setup and then fails at the last
-// step with an error that reads like a backend problem and is not one.
-//
-// The runtime contract suite does not catch this, because it has no Attach
-// assertion at all, which is why it passes on Windows.
-//
-// Refusing here rather than at Attach saves several minutes of provisioning
-// before an error the user cannot act on. Until Windows console support
-// (ConPTY) is built, which is issue #138 rather than this ticket, running
-// from inside WSL is the way: WSL is a real Linux host, and Docker Desktop's
-// WSL integration shares one daemon between the two sides.
-//
-// TODO(v0.2): this tests goruntime.GOOS rather than asking
-// Runtime.Capabilities(), which is issue #77. The refusal is correct today and
-// the fix touches runtime.Caps, a code-owner path.
-func checkInteractiveShellSupported(levelID string) error {
-	if goruntime.GOOS != "windows" {
-		return nil
-	}
-	return ux.Fail(
-		"open an interactive sandbox shell on Windows",
-		nil,
-		fmt.Sprintf("Open your WSL distribution, change to this repository, then build and run there: `go build -o bin/shellforge ./cmd/shellforge && ./bin/shellforge run %s`. Neither backend can open an interactive shell from PowerShell or the command prompt yet; Docker Desktop's WSL integration shares one daemon, so the sandbox image is not rebuilt.", levelID),
-		"windows-needs-wsl",
 	)
 }
 
@@ -723,11 +700,14 @@ func play(ctx context.Context, opts runOptions, sess runtime.Session, lvl playab
 	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 		defer cancel()
+		// Through hostWriter because this defer is the first thing to print
+		// after the learner's shell ends, on a terminal that has just hosted
+		// a session and no longer returns the carriage on a bare "\n".
 		if err := lvl.Teardown(cleanupCtx); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not remove the level world at %s: %v\n", lvl.Root(), err)
+			fmt.Fprintf(hostWriter(os.Stderr), "warning: could not remove the level world at %s: %v\n", lvl.Root(), err)
 			return
 		}
-		fmt.Fprintf(os.Stdout, "Removed the level world at %s.\n", lvl.Root())
+		fmt.Fprintf(hostWriter(os.Stdout), "Removed the level world at %s.\n", lvl.Root())
 	}()
 
 	if err := lvl.Setup(ctx); err != nil {
@@ -761,11 +741,15 @@ func play(ctx context.Context, opts runOptions, sess runtime.Session, lvl playab
 		)
 	}
 
-	// The briefing prints before the prompt appears, and before the host
-	// terminal goes into raw mode, so a plain newline is still a newline
-	// here. Anything written after Run starts needs a carriage return too,
-	// which is what crlf in render_check.go is for.
-	lvl.PrintBriefing(os.Stdout, color)
+	// The briefing prints before the prompt appears and before the host
+	// terminal goes into raw mode. That is not enough on its own to make a
+	// plain newline a newline: under `play` this is the second or fifth
+	// level in one process, and a terminal that has hosted a session
+	// already does not return the carriage by itself. hostWriter adds it
+	// back when os.Stdout is a terminal, and leaves redirected output
+	// alone. Anything written after Run starts needs the same, which is
+	// what crlf in render_check.go is for.
+	lvl.PrintBriefing(hostWriter(os.Stdout), color)
 
 	// The learner starts in their home directory, not in the level root.
 	//
@@ -835,8 +819,8 @@ func play(ctx context.Context, opts runOptions, sess runtime.Session, lvl playab
 	cancel()
 
 	if !waitForControlLoop(served, controlDrainTimeout) {
-		fmt.Fprintln(os.Stderr, "warning: the control channel did not stop cleanly, so a process may be left running inside the sandbox container. "+
-			"It is harmless, and `docker rm -f shellforge-sandbox` clears it if you would rather not leave it there.")
+		fmt.Fprint(hostWriter(os.Stderr), "warning: the control channel did not stop cleanly, so a process may be left running inside the sandbox. "+
+			"It is harmless, and `shellforge sandbox rebuild` clears it if you would rather not leave it there.\n")
 	}
 
 	// liveStopped closes once both of startLiveChecking's own goroutines
@@ -856,13 +840,13 @@ func play(ctx context.Context, opts runOptions, sess runtime.Session, lvl playab
 		close(liveStopped)
 	}()
 	if !waitForControlLoop(liveStopped, controlDrainTimeout) {
-		fmt.Fprintln(os.Stderr, "warning: live verification did not stop cleanly, so a background check may still be reading the sandbox. "+
-			"It is harmless, and `docker rm -f shellforge-sandbox` clears it if you would rather not leave it there.")
+		fmt.Fprint(hostWriter(os.Stderr), "warning: live verification did not stop cleanly, so a background check may still be reading the sandbox. "+
+			"It is harmless, and `shellforge sandbox rebuild` clears it if you would rather not leave it there.\n")
 	}
 
 	if runErr != nil {
 		if errors.Is(runErr, pty.ErrSignalled) {
-			fmt.Fprintln(os.Stdout, "Interrupted.")
+			fmt.Fprint(hostWriter(os.Stdout), "Interrupted.\n")
 			return nil
 		}
 		return ux.Fail(
@@ -873,7 +857,7 @@ func play(ctx context.Context, opts runOptions, sess runtime.Session, lvl playab
 		)
 	}
 
-	fmt.Fprintln(os.Stdout, "Shell exited.")
+	fmt.Fprint(hostWriter(os.Stdout), "Shell exited.\n")
 	return nil
 }
 

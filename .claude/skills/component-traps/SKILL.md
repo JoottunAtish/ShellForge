@@ -92,6 +92,22 @@ already-diagnosed trap.
   and restore the original console mode on exit.**
 - **ConPTY can garble on resize during a full-screen application** on older builds.
   Check `WT_SESSION` and warn when not in Windows Terminal.
+- **Do not reach for ConPTY to give Windows an interactive shell.** Issue #138
+  looked like a ConPTY ticket and was not. ConPTY is a second, full VT emulator
+  with no passthrough mode: it front-loads OSC sequences and does not preserve
+  their order relative to surrounding text
+  ([microsoft/terminal#11220](https://github.com/microsoft/terminal/issues/11220),
+  [#17313](https://github.com/microsoft/terminal/issues/17313)). The journal is
+  built by parsing OSC 133 out of that stream, and verification, scoring and par
+  are computed from the journal, so a host ConPTY corrupts all three silently.
+  It also cannot be driven from `os/exec`
+  ([golang/go#62708](https://github.com/golang/go/issues/62708)), it emits
+  `?9001h` as its first bytes and puts the host terminal into win32-input-mode,
+  which breaks Escape and the arrow keys, and `ClosePseudoConsole` has documented
+  hangs fixed only in Windows 11 24H2. The answer was to put the pseudo terminal
+  where the shell is, inside the sandbox, and let the host move bytes over pipes.
+  That is what an SSH client does on Windows and it needs no ConPTY at all. See
+  `cmd/sf-ptyhost` and `internal/sandboxpty`.
 - **Paths via `os.UserConfigDir` and `os.UserCacheDir`.** Never hardcoded.
 
 ## internal/verify

@@ -121,11 +121,24 @@ Where something fails, file it rather than fixing it in place. A release with a
 known, filed, documented defect is honest. A release quietly patched after the
 tag is not reproducible.
 
-**Known to fail today.** `shellforge init` from a release install is
-[#172](https://github.com/JoottunAtish/ShellForge/issues/172) on both platforms.
-Until that lands, the Linux and Windows steps above pass only with the
-clone-based workaround both install guides document, and the acceptance test
-should be run that way and recorded as such rather than reported as green.
+**Run this before the tag, not after it.** Every box above is now expected to
+pass as written. #172 and #138 both landed: a release install provisions a
+sandbox with no clone, and `shellforge play` opens a level from a native
+Windows console. Nothing in this list is known to fail.
+
+Nothing in it has been confirmed on real Windows hardware either. No runner this
+project can reach has WSL2 or Linux containers, so the Windows column is proven
+by construction and by a Linux CI leg exercising the same bytes, which is not
+the same as proven. Cut a pre-release (a tag with a hyphen in it, such as
+`v0.1.0-rc.1`, which release.yml publishes as a pre-release so it never becomes
+`/releases/latest`), install from it on a clean Windows 11 machine, and work
+this list. Three things are worth naming because only a human can see them:
+
+- `vim` renders correctly inside the shell.
+- Resizing the window mid-session does not corrupt the display.
+- After `exit`, the host console still behaves, arrow keys included.
+
+Where something fails, file it rather than fixing it in place.
 
 ---
 

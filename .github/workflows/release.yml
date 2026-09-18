@@ -66,6 +66,28 @@ jobs:
           echo "TAG=$TAG" >> "$GITHUB_ENV"
           echo "resolved TAG=$TAG"
 
+          # A semver pre-release carries a hyphen after the version:
+          # v0.1.0-rc.1 is one, v0.1.0 is not. This decides whether the
+          # release GitHub publishes is marked as a pre-release, and that
+          # is load bearing rather than cosmetic: GitHub excludes
+          # pre-releases from /releases/latest, and that is the endpoint
+          # both installers resolve when the caller names no version:
+          # scripts/install.ps1 without -Version, and scripts/install.sh
+          # without SHELLFORGE_VERSION. Without this, tagging a release
+          # candidate would publish it as the latest release and every
+          # plain installer run by anyone else would start serving it.
+          #
+          # `git describe` on a workflow_dispatch run produces names like
+          # v0.1.0-3-gabc1234, which land here as pre-releases too. That is
+          # the right answer: they are not a clean tag. It is also moot,
+          # because the publish step below runs on tag pushes only.
+          case "${TAG#v}" in
+            *-*) PRERELEASE=true ;;
+            *)   PRERELEASE=false ;;
+          esac
+          echo "PRERELEASE=$PRERELEASE" >> "$GITHUB_ENV"
+          echo "resolved PRERELEASE=$PRERELEASE"
+
       - name: Build the three binaries and archive them
         # No darwin target. Nothing in this repository has ever run on
         # darwin and internal/doctor has no darwin probes, so an untested
@@ -171,5 +193,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          create_flags=(--generate-notes)
+          if [ "$PRERELEASE" = "true" ]; then
+            create_flags+=(--prerelease)
+          fi
           gh release upload "$TAG" dist/* --clobber \
-            || gh release create "$TAG" dist/* --generate-notes
+            || gh release create "$TAG" dist/* "${create_flags[@]}"
+          # Also set it on the upload path, which reaches a release that
+          # already existed and may have been created by hand as a full
+          # one. A pre-release tag must never end up as /releases/latest,
+          # and the cost of getting that wrong is borne by every other
+          # user, not by whoever cut the tag. Harmless no-op when the
+          # create path above already passed the flag.
+          if [ "$PRERELEASE" = "true" ]; then
+            gh release edit "$TAG" --prerelease
+          fi

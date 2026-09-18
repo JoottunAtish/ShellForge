@@ -59,25 +59,18 @@ type resolvedRootfs struct {
 	downloaded bool
 }
 
-// cachedRootfsPath is the one path both a download and the default lookup
-// use for a cached rootfs tarball, under the resolved cache directory.
-// downloadDest and defaultRootfs both call this rather than each holding
-// their own literal, because a rootfs this package downloaded and
-// digest-verified must be exactly where the next Provision with an empty
-// ImageSpec.Reference looks for it: two independently maintained literals
-// drifting apart is what made a verified download invisible to the next
-// run before this was factored out.
-func cachedRootfsPath(cacheDir string) string {
-	return filepath.Join(cacheDir, "rootfs", "rootfs.tar.gz")
-}
-
 // downloadDest is where an https Reference is downloaded to.
+//
+// The literal it used to hold moved to platform.RootfsCachePath, because
+// the docker backend now imports the same artifact from the same place and
+// scripts/install.ps1 and scripts/install.sh now write it there. Four
+// things agreeing on one path is worth resolving in one place: a rootfs
+// this package downloaded and digest-verified must be exactly where the
+// next Provision with an empty ImageSpec.Reference looks for it, and
+// independently maintained literals drifting apart is what made a verified
+// download invisible to the next run before it was factored out at all.
 func downloadDest() (string, error) {
-	cacheDir, err := platform.CacheDir()
-	if err != nil {
-		return "", err
-	}
-	return cachedRootfsPath(cacheDir), nil
+	return platform.RootfsCachePath()
 }
 
 // defaultRootfs finds the backend's own default rootfs when
@@ -96,11 +89,10 @@ func defaultRootfs() (resolvedRootfs, error) {
 		}
 	}
 
-	cacheDir, err := platform.CacheDir()
+	cachedPath, err := platform.RootfsCachePath()
 	if err != nil {
 		return resolvedRootfs{}, err
 	}
-	cachedPath := cachedRootfsPath(cacheDir)
 	if _, err := os.Stat(cachedPath); err == nil {
 		return resolvedRootfs{path: cachedPath}, nil
 	}
@@ -108,7 +100,7 @@ func defaultRootfs() (resolvedRootfs, error) {
 	return resolvedRootfs{}, ux.Fail(
 		"find the sandbox rootfs",
 		fmt.Errorf("no rootfs tarball at %s or %s", defaultRootfsRel, cachedPath),
-		"run `make rootfs` to build one, then run `shellforge init` again",
+		"Run install.ps1 again: it downloads and verifies the sandbox rootfs into the cache directory. In a clone of this repository, run `make rootfs` instead. Then run `shellforge init` again.",
 		"rootfs-not-found",
 	)
 }

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	goruntime "runtime"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -24,7 +23,6 @@ import (
 const (
 	anchorSandboxMissing   = "sandbox-missing"
 	anchorSandboxUnhealthy = "sandbox-unhealthy"
-	anchorWindowsNeedsWSL  = "windows-needs-wsl"
 	anchorTerminalNoVT     = "terminal-no-vt"
 )
 
@@ -319,26 +317,6 @@ func verifyRemoved(ctx context.Context, out io.Writer, rt runtime.Runtime, plan 
 	return nil
 }
 
-// checkSandboxShellSupported refuses `sandbox shell` up front on a host
-// that cannot open an interactive shell at all: see checkInteractiveShellSupported
-// in cmd_run.go for the full reason, which applies here unchanged. Refusing
-// here, before resolve or Provision ever runs, saves a multi-minute
-// provision that would only fail at the last step anyway. Issue #138 owns
-// the Windows console work that would let this stop refusing.
-func checkSandboxShellSupported() error {
-	if goruntime.GOOS != "windows" {
-		return nil
-	}
-	return ux.Fail(
-		"open an interactive sandbox shell on Windows",
-		nil,
-		"Open your WSL distribution, change to this repository, then build and run there: "+
-			"`go build -o bin/shellforge ./cmd/shellforge && ./bin/shellforge sandbox shell`. "+
-			"Neither backend can open an interactive shell from PowerShell or the command prompt yet.",
-		anchorWindowsNeedsWSL,
-	)
-}
-
 // runSandboxShell attaches an interactive shell inside the sandbox.
 //
 // It wires no journal, no control channel, and no level state: SF_STATE
@@ -349,10 +327,6 @@ func checkSandboxShellSupported() error {
 // wantFlag is validated before resolve is ever called, same as
 // runSandboxStatus.
 func runSandboxShell(ctx context.Context, resolve resolveFunc, wantFlag string) error {
-	if err := checkSandboxShellSupported(); err != nil {
-		return err
-	}
-
 	want, err := sandbox.ParseBackend(wantFlag)
 	if err != nil {
 		return err
@@ -411,7 +385,10 @@ func runSandboxShell(ctx context.Context, resolve resolveFunc, wantFlag string) 
 	defer func() { _ = sandboxPTY.Close() }()
 
 	mux := pty.New(sandboxPTY, os.Stdin, os.Stdout)
-	if runErr := mux.Run(ctx); runErr != nil {
+
+	runErr := mux.Run(ctx)
+
+	if runErr != nil {
 		if errors.Is(runErr, pty.ErrSignalled) {
 			return nil
 		}
@@ -423,6 +400,6 @@ func runSandboxShell(ctx context.Context, resolve resolveFunc, wantFlag string) 
 		)
 	}
 
-	fmt.Fprintln(os.Stdout, "Shell exited.")
+	fmt.Fprint(hostWriter(os.Stdout), "Shell exited.\n")
 	return nil
 }

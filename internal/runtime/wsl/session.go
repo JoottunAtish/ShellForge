@@ -14,11 +14,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/creack/pty"
-
 	"github.com/JoottunAtish/ShellForge/internal/platform"
 	"github.com/JoottunAtish/ShellForge/internal/platform/ux"
 	"github.com/JoottunAtish/ShellForge/internal/runtime"
+	"github.com/JoottunAtish/ShellForge/internal/sandboxpty"
 )
 
 // sandboxRoot is the prefix every in-sandbox path this package touches must
@@ -287,7 +286,20 @@ func (s *wslSession) Attach(ctx context.Context, opts runtime.AttachOpts) (runti
 		command = defaultAttachCommand()
 	}
 
-	argv := attachArgv(s.rt.distro, user, workdir, opts.Env, command)
+	if !s.rt.Capabilities().InteractiveShell {
+		return nil, sandboxpty.ErrNoInteractiveShell("wsl")
+	}
+	if err := s.ensurePtyHost(ctx); err != nil {
+		return nil, err
+	}
+
+	// The pseudo terminal is allocated inside the distribution by
+	// cmd/sf-ptyhost, not here. `wsl.exe --exec` with piped stdio gives
+	// the Linux process plain pipes, so without this the learner's shell
+	// would have no terminal at all: no job control, no vim, no tab
+	// completion. With it, the shell gets a real Linux pty and this side
+	// only moves bytes.
+	argv := attachArgv(s.rt.distro, user, workdir, opts.Env, sandboxpty.PtyHostCommand(opts.Env["SF_STATE"], command))
 
 	real, ok := s.rt.run.(execRunner)
 	if !ok {
@@ -299,40 +311,51 @@ func (s *wslSession) Attach(ctx context.Context, opts runtime.AttachOpts) (runti
 	// method builds above from allowlist-validated fields (user, workdir,
 	// distro) and the caller's own Command, never a shell string.
 	cmd := exec.CommandContext(ctx, real.bin, argv[1:]...)
-	f, err := pty.Start(cmd)
+	p, err := sandboxpty.StartPipePTY(cmd, s.resizeFunc(opts.Env["SF_STATE"]))
 	if err != nil {
 		return nil, attachStartError(err)
 	}
-	return &wslPTY{file: f, cmd: cmd}, nil
+	return p, nil
 }
 
-// attachStartError turns a pty.Start failure into what the caller should
-// see. creack/pty returns ErrUnsupported unconditionally on every Windows
-// build, and Windows is the only host this backend runs on at all, so
-// without this a learner reaching a level on the WSL backend would see the
-// bare Go error "wsl.exe --exec: unsupported": no remediation, no doc
-// anchor, which non-negotiable rule 6 forbids. Split into its own function
-// so the mapping is testable without a real pty.Start call, which only
-// fails this way on a Windows host in the first place.
+// resizeFunc returns how a window size reaches the pseudo terminal inside
+// the distribution.
 //
-// The remediation does not point at Docker Desktop: creack/pty's
-// ErrUnsupported comes back on every backend on a Windows console, not just
-// this one (see cmd_run.go's checkInteractiveShellSupported and
-// cmd_sandbox.go's checkSandboxShellSupported, which refuse for the same
-// reason before either backend is even resolved), so Docker Desktop cannot
-// attach from a Windows console either. Running from inside WSL is the
-// real fix until Windows console support (ConPTY) lands, which is issue
-// #138.
-func attachStartError(err error) error {
-	if errors.Is(err, pty.ErrUnsupported) {
-		return ux.Fail(
-			"open the sandbox shell",
-			err,
-			"Windows console support for an interactive attach is not built yet (issue #138), on either backend. Open your WSL distribution, change to this repository, and build and run Shellforge from inside it instead.",
-			"windows-needs-wsl",
-		)
+// One line written to a FIFO with `tee`, which is the same argv-only
+// mechanism cmd_run.go's serveControlRequests already uses to answer
+// `check`: no shell anywhere in the path. Pipes carry no SIGWINCH, so a
+// side channel is the only way a resize can arrive at all.
+func (s *wslSession) resizeFunc(stateDir string) func(rows, cols uint16) error {
+	fifo := sandboxpty.WinsizeFIFOPath(stateDir)
+	return func(rows, cols uint16) error {
+		ctx, cancel := context.WithTimeout(context.Background(), resizeTimeout)
+		defer cancel()
+		_, err := s.Exec(ctx, []string{"tee", "--", fifo}, runtime.ExecOpts{Stdin: sandboxpty.WinsizeLine(rows, cols)})
+		return err
 	}
-	return fmt.Errorf("wsl.exe --exec: %w", err)
+}
+
+// resizeTimeout bounds one resize. A window size that cannot be delivered
+// promptly is not worth waiting for: the next one supersedes it, and
+// internal/pty.Mux treats a failed resize as never fatal.
+const resizeTimeout = 5 * time.Second
+
+// attachStartError turns a failure to start `wsl.exe --exec` into what the
+// caller should see, because non-negotiable rule 6 forbids a bare Go error
+// reaching the terminal.
+//
+// It used to map creack/pty's ErrUnsupported, which came back
+// unconditionally on every Windows build and was the whole of issue #138.
+// There is no pseudo terminal on this side to fail to allocate any more, so
+// what is left is an ordinary process start failure: the distribution is
+// not running, or wsl.exe cannot reach it.
+func attachStartError(err error) error {
+	return ux.Fail(
+		"open the sandbox shell",
+		err,
+		"Check that the sandbox is running with `shellforge sandbox status`. If it is not, `shellforge init` provisions it again.",
+		"sandbox-unhealthy",
+	)
 }
 
 // stripCR removes the carriage return from every CRLF pair, leaving a lone
@@ -507,16 +530,16 @@ func (s *wslSession) PullFile(ctx context.Context, p string) ([]byte, error) {
 // time any method returns, so there is nothing to release.
 func (s *wslSession) Close() error { return nil }
 
-// wslPTY wraps the master side of the pseudo terminal creack/pty allocated
-// around a `wsl.exe --exec` child.
-type wslPTY struct {
-	file *os.File
-	cmd  *exec.Cmd
+// ensurePtyHost refuses early when the distribution was imported from a
+// rootfs built before the pseudo terminal moved inside it. See the docker
+// sibling for why this is worth one extra invocation per attach.
+func (s *wslSession) ensurePtyHost(ctx context.Context) error {
+	res, err := s.Exec(ctx, []string{"test", "-x", sandboxpty.PtyHostPath}, runtime.ExecOpts{})
+	if err != nil {
+		return err
+	}
+	if res.ExitCode != 0 {
+		return sandboxpty.ErrPtyHostMissing()
+	}
+	return nil
 }
-
-var _ runtime.PTY = (*wslPTY)(nil)
-
-func (p *wslPTY) Read(b []byte) (int, error)  { return p.file.Read(b) }
-func (p *wslPTY) Write(b []byte) (int, error) { return p.file.Write(b) }
-func (p *wslPTY) Close() error                { return p.file.Close() }
-func (p *wslPTY) Wait() error                 { return p.cmd.Wait() }

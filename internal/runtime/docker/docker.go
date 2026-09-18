@@ -80,6 +80,15 @@ const (
 	containerfileContext = "images/"
 )
 
+// ptyhostArtifactPath is the one thing in the build context that is not in
+// the repository: cmd/sf-ptyhost, built for the image's own architecture by
+// `make ptyhost` into a directory .gitignore covers.
+//
+// Relative to the repository root, and it has to agree with the Containerfile's
+// `COPY out/bin/sf-ptyhost`, which resolves against containerfileContext.
+// TestPtyhostArtifactMatchesTheContainerfile pins the two together.
+const ptyhostArtifactPath = "images/out/bin/sf-ptyhost"
+
 // repoRootRelative resolves rel against the repository root rather than the
 // process's current working directory. `go test` runs a package's tests
 // with the working directory set to that package's own directory, not the
@@ -202,15 +211,69 @@ func (rt *dockerRuntime) ensureImage(ctx context.Context, image string) error {
 		return nil
 	}
 
-	containerfile, err := repoRootRelative(containerfilePath)
-	if err != nil {
-		return err
-	}
-	buildContext, err := repoRootRelative(containerfileContext)
-	if err != nil {
-		return err
+	if containerfile, buildContext, ok := repoContainerfile(); ok {
+		if err := checkPtyhostArtifact(); err != nil {
+			return err
+		}
+		return rt.buildImage(ctx, image, containerfile, buildContext)
 	}
 
+	tarball, cached, cacheErr := cachedRootfs()
+	if cacheErr != nil {
+		return cacheErr
+	}
+	if cached {
+		return rt.importRootfs(ctx, image, tarball)
+	}
+
+	return ux.Fail(
+		"find a source for the sandbox image",
+		fmt.Errorf("no %s above the working directory, and no rootfs tarball at %s", containerfilePath, tarball),
+		fmt.Sprintf("Run the installer again: on amd64 it downloads and verifies the sandbox rootfs to %s, which `shellforge init` then imports. On any architecture, running `shellforge init` from inside a clone of this repository builds the image from %s instead.", tarball, containerfilePath),
+		"containerfile-not-found",
+	)
+}
+
+// repoContainerfile reports the Containerfile and build context to build
+// from, and whether there is actually one to build from.
+//
+// It stats the resolved path rather than trusting repoRootRelative, which
+// answers "where would it be, relative to the nearest go.mod above me" and
+// not "is it there". Running `shellforge init` from inside some unrelated
+// Go project would otherwise resolve that project's own go.mod, hand
+// `docker build` a path with no Containerfile at it, and fail with docker's
+// message instead of falling through to the cached rootfs that would have
+// worked.
+func repoContainerfile() (containerfile, buildContext string, ok bool) {
+	containerfile, err := repoRootRelative(containerfilePath)
+	if err != nil {
+		return "", "", false
+	}
+	if _, err := os.Stat(containerfile); err != nil {
+		return "", "", false
+	}
+	buildContext, err = repoRootRelative(containerfileContext)
+	if err != nil {
+		return "", "", false
+	}
+	return containerfile, buildContext, true
+}
+
+// cachedRootfs reports the cached rootfs tarball's path and whether a file
+// is there. The path is returned either way, so a refusal can name the
+// place the reader's installer was supposed to fill.
+func cachedRootfs() (path string, ok bool, err error) {
+	path, err = platform.RootfsCachePath()
+	if err != nil {
+		return "", false, err
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		return path, false, nil
+	}
+	return path, true, nil
+}
+
+func (rt *dockerRuntime) buildImage(ctx context.Context, image, containerfile, buildContext string) error {
 	stdout, stderr, code, runErr := rt.run.run(ctx, []string{"docker", "build", "-f", containerfile, "-t", image, "--", buildContext}, nil)
 	if runErr != nil {
 		return rt.classifyFailure(ctx, "build the sandbox image", runErr, stderr)
@@ -220,6 +283,103 @@ func (rt *dockerRuntime) ensureImage(ctx context.Context, image string) error {
 	}
 	return nil
 }
+
+// importRootfs turns the cached rootfs tarball into the sandbox image.
+//
+// This is what makes a release install work at all. Before it, the only
+// route to an image was a `docker build` against this repository's own
+// Containerfile, resolved by walking up to the nearest go.mod, and a
+// machine holding only ~/.local/bin/shellforge has no go.mod above
+// anything. `shellforge init` therefore failed on every machine without a
+// clone, which is issue #172.
+//
+// It imports the same tarball the WSL backend imports, which keeps the
+// property the Containerfile header insists on: one build, two artifacts,
+// and both platforms running the bytes `make rootfs` produced rather than
+// one building and the other importing something built elsewhere.
+//
+// The --change flags are not optional. `docker export` discards image
+// configuration, so `docker import` produces an image with no ENV, no USER
+// and no WORKDIR at all. The Containerfile's ENV block is what makes a
+// level's output the same on every machine; its own header says why: "a
+// level that depends on locale collation or the local timezone is a level
+// that fails in CI at midnight". USER and WORKDIR are what keep an
+// unprivileged session unprivileged, and sandboxImageUser's comment has the
+// detail on what runs as root without them. CMD needs no --change, because
+// createContainer passes sandboxCommand() on the `docker run` argv and
+// never relies on the image's own.
+func (rt *dockerRuntime) importRootfs(ctx context.Context, image, tarball string) error {
+	argv := []string{"docker", "import"}
+	for _, kv := range sandboxImageEnv() {
+		argv = append(argv, "--change", "ENV "+kv)
+	}
+	argv = append(argv, "--change", "USER "+sandboxImageUser)
+	argv = append(argv, "--change", "WORKDIR "+sandboxImageWorkdir)
+	argv = append(argv, "--", tarball, image)
+
+	stdout, stderr, code, runErr := rt.run.run(ctx, argv, nil)
+	if runErr != nil {
+		return rt.classifyFailure(ctx, "import the sandbox image", runErr, stderr)
+	}
+	if code != 0 {
+		return rt.classifyFailure(ctx, "import the sandbox image", fmt.Errorf("docker import exited %d: %s", code, summarizeFailure(stdout, stderr)), stderr)
+	}
+	return nil
+}
+
+// sandboxImageEnv is the environment the sandbox image carries, mirroring
+// the ENV block in images/Containerfile.
+//
+// A function rather than a package variable for the same reason
+// sandboxCommand is one: no caller can mutate the slice.
+//
+// TestSandboxImageEnvMatchesTheContainerfile pins it against
+// images/Containerfile byte for byte, in the same style as the WSL
+// backend's wsl.conf constant, so the two cannot drift apart unnoticed.
+//
+// TODO(v0.2): the WSL backend has the same gap by a different route.
+// `wsl --import` reads a plain filesystem export too, so a WSL sandbox has
+// never carried this ENV either, and nothing there can pass --change. It
+// wants /etc/environment written into the image instead, which would let
+// both backends stop compensating.
+func sandboxImageEnv() []string {
+	return []string{
+		"LANG=C.UTF-8",
+		"LC_ALL=C.UTF-8",
+		"TZ=UTC",
+		"DEBIAN_FRONTEND=noninteractive",
+	}
+}
+
+// sandboxImageUser and sandboxImageWorkdir mirror the USER and WORKDIR
+// instructions at the end of images/Containerfile, and importRootfs restores
+// them for the same reason it restores the ENV block: `docker export` writes
+// a plain filesystem tarball and discards image configuration, so an
+// imported image carries none of the three.
+//
+// Nothing in this repository depends on them today, and that is the whole
+// reason to restore them rather than a reason not to. dockerSession.execArgv
+// passes `-u` only when a user is set, but effectiveUser falls back to
+// SessionSpec.User before it gets there, and every caller in cmd/shellforge
+// sets that to sandboxUser. So the image's own USER is currently never
+// consulted, and an imported image having none changes no behaviour that
+// exists.
+//
+// What it changes is the safety of the next caller. A session built without
+// SessionSpec.User, which the field's own optionality invites, runs as
+// whatever the image says, and that is "learner" on a built image and root
+// on an imported one. The same divergence is what the Containerfile header
+// forbids in the general case: one build, two artifacts, and a level that
+// behaves differently depending on which one the learner installed is the
+// defect that header exists to prevent. Restoring the two instructions
+// costs two flags and removes the difference.
+//
+// TestSandboxImageUserAndWorkdirMatchTheContainerfile pins both against
+// images/Containerfile, in the same style as the ENV pin above.
+const (
+	sandboxImageUser    = "learner"
+	sandboxImageWorkdir = "/home/learner"
+)
 
 func (rt *dockerRuntime) ensureContainerRunning(ctx context.Context, image string) error {
 	st, err := rt.inspectContainer(ctx)
@@ -503,8 +663,9 @@ func (rt *dockerRuntime) StartSession(ctx context.Context, spec runtime.SessionS
 // or privileged mode.
 func (rt *dockerRuntime) Capabilities() runtime.Caps {
 	return runtime.Caps{
-		Networking: true,
-		MultiUser:  true,
+		Networking:       true,
+		MultiUser:        true,
+		InteractiveShell: true,
 	}
 }
 
@@ -561,4 +722,45 @@ func summarizeFailure(stdout, stderr []byte) string {
 	default:
 		return out
 	}
+}
+
+// checkPtyhostArtifact refuses a repository build whose context is missing
+// cmd/sf-ptyhost, and says how to produce it.
+//
+// Everything else the Containerfile copies is tracked, so a clone is enough
+// to build the image. sf-ptyhost is not: it runs INSIDE the sandbox, so it
+// is cross compiled for the image's architecture by `make ptyhost` into
+// images/out/, which .gitignore covers because CLAUDE.md forbids committing
+// a binary. A fresh clone therefore has a Containerfile that cannot build.
+//
+// ensureImage prefers a repository build over the cached rootfs whenever a
+// Containerfile is above the working directory, so this is what a
+// contributor's first `shellforge init` hits, and what it used to hit was
+// docker's own
+//
+//	failed to compute cache key: "/out/bin/sf-ptyhost": not found
+//
+// which names neither the target that produces it nor the reason it is
+// absent. Falling through to the cached rootfs instead would be worse than
+// this error rather than better: it would quietly build nothing and run a
+// downloaded image, so a contributor editing the Containerfile would watch
+// their changes have no effect.
+func checkPtyhostArtifact() error {
+	artifact, err := repoRootRelative(ptyhostArtifactPath)
+	if err != nil {
+		// The Containerfile resolved a moment ago, so the repository root
+		// is findable and this cannot normally fail. Nothing useful to add
+		// if it does: let the build report whatever it finds.
+		return nil
+	}
+	if _, err := os.Stat(artifact); err == nil {
+		return nil
+	}
+
+	return ux.Fail(
+		"build the sandbox image from this repository",
+		fmt.Errorf("%s does not exist, and %s copies it into the image", ptyhostArtifactPath, containerfilePath),
+		"Run `make ptyhost`, or `make.ps1 ptyhost` on Windows, then run `shellforge init` again. `make image` and `make rootfs` already do this for you; a bare `shellforge init` from a clone does not.",
+		"ptyhost-not-built",
+	)
 }

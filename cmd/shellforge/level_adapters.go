@@ -365,6 +365,16 @@ func (r *gameResponder) check(ctx context.Context) string {
 		if banner, ok := r.passBanner(checkCtx, res); ok {
 			return crlf(truncateReply(banner))
 		}
+		// passBanner declined, which is a degradation rather than a
+		// failure: it reads the store for the XP line and returns not-ok
+		// when that read fails, and a learner who passed is still told
+		// they passed by the plain reply below.
+		//
+		// It returns WITHOUT the nudge, which the fallthrough used to
+		// append. stuckNudge is for a check that did not pass, as its own
+		// doc comment says, so on this path somebody who had just passed
+		// was offered a hint and quoted its price.
+		return renderCheckReply(res, r.color)
 	}
 	return renderCheckReply(res, r.color) + r.stuckNudge()
 }

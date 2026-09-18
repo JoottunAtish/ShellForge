@@ -520,3 +520,57 @@ func TestEnsureDirUsesRestrictivePermissions(t *testing.T) {
 		}
 	}
 }
+
+// TestRootfsCachePathIsTheLiteralTheInstallersWrite pins the cached rootfs
+// path on both sides of a boundary the compiler cannot see across.
+//
+// Four independent things have to agree on this one path or the artifact is
+// invisible to whoever looks next: scripts/install.sh resolves it in POSIX
+// sh, scripts/install.ps1 resolves it in PowerShell, internal/runtime/wsl
+// imports the distribution from it, and internal/runtime/docker imports the
+// same bytes into an image from it. Only the last two are type checked
+// against this function.
+//
+// So the literal is spelled out here rather than rebuilt from CacheDir, and
+// scripts/tests/test_install_sh.py spells out the same one. Changing the
+// path now means changing it in both places and being told so by a failing
+// test, rather than shipping an installer that writes a verified tarball
+// somewhere `shellforge init` does not look. That was issue #172's exact
+// shape, and it is worth one deliberately redundant test.
+func TestRootfsCachePathIsTheLiteralTheInstallersWrite(t *testing.T) {
+	p := sandboxEnv(t)
+
+	got, err := RootfsCachePath()
+	if err != nil {
+		t.Fatalf("RootfsCachePath: %v", err)
+	}
+
+	var want string
+	if runtime.GOOS == "windows" {
+		want = filepath.Join(p.localAppData, appDir, "cache", "rootfs", "rootfs.tar.gz")
+	} else {
+		want = filepath.Join(p.cacheBase, appDir, "rootfs", "rootfs.tar.gz")
+	}
+	if got != want {
+		t.Errorf("RootfsCachePath() = %q, want %q.\nBoth installers write this path by hand; changing it here means changing scripts/install.sh, scripts/install.ps1 and scripts/tests/test_install_sh.py in the same commit.", got, want)
+	}
+}
+
+// TestRootfsCachePathStaysUnderCacheDir pins the containment rule that keeps
+// a cache clear safe. CacheDir is nested below DataDir on Windows precisely
+// so that clearing the cache cannot reach the progress database or the
+// multi-gigabyte .vhdx, and a rootfs that drifted out of CacheDir would be
+// a re-downloadable artifact sitting somewhere uninstall does not sweep.
+func TestRootfsCachePathStaysUnderCacheDir(t *testing.T) {
+	sandboxEnv(t)
+
+	cache, err := CacheDir()
+	if err != nil {
+		t.Fatalf("CacheDir: %v", err)
+	}
+	got, err := RootfsCachePath()
+	if err != nil {
+		t.Fatalf("RootfsCachePath: %v", err)
+	}
+	assertUnder(t, cache, got)
+}

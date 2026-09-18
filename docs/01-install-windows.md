@@ -136,6 +136,11 @@ What the installer does, in full:
   match it deletes what it downloaded and stops, and nothing is installed.
 - Places `shellforge.exe` in `%LOCALAPPDATA%\Programs\shellforge`, refusing to
   overwrite an existing file there unless you pass `-Force`.
+- Downloads the sandbox image, `rootfs.tar.gz`, checks its checksum the same way,
+  and puts it in `%LOCALAPPDATA%\shellforge\cache\rootfs`. This is the Linux
+  system step 6 imports, and it is tens of megabytes, so it is the slow part.
+  Pass `-SkipRootfs` to skip it if you already have a clone of the repository and
+  would rather build the image yourself.
 - Adds that one directory to your own user `Path`, so that a new terminal can
   find `shellforge` without you editing anything by hand. Pass `-NoPathChange` to
   skip this and be told what to add yourself. It never touches the machine-wide
@@ -175,64 +180,22 @@ This builds your private Linux distribution and imports it into WSL. It takes a
 few minutes, it happens once, and it prints which backend it chose and why before
 it starts.
 
-**In v0.1.0 this step needs a clone of this repository, and that is a known
-bug.** `init` looks for a Linux system image that v0.1.0's installer does not
-fetch, and stops with a message about a missing rootfs. It is tracked as
-[issue #172](https://github.com/JoottunAtish/ShellForge/issues/172). Until it is
-fixed, you need Git, Go and Docker Desktop installed, and then:
+The Linux system image it imports is the `rootfs.tar.gz` the installer already
+downloaded and checksummed in step 5, so this step needs no network and no clone
+of the repository.
 
-```powershell
-git clone https://github.com/JoottunAtish/ShellForge.git
-cd ShellForge
-.\make.ps1 rootfs
-shellforge init
-```
-
-`.\make.ps1 rootfs` builds the image and writes `images\out\rootfs.tar.gz`, which
-is what `init` then imports. You only need the clone for this one step: once the
-distribution is imported, `shellforge play` works from any directory and you can
-delete the clone.
-
-[rootfs-not-found](05-troubleshooting.md#rootfs-not-found) has the same
-instructions if you meet the error before reading this far.
+If it stops saying it cannot find a rootfs, the installer did not get that far.
+[rootfs-not-found](05-troubleshooting.md#rootfs-not-found) says what to do, and
+running the installer again is usually all of it.
 
 ## 9. Step 7: play
 
-**Play from inside WSL, not from this PowerShell window.**
-
-Everything up to here works natively on Windows. Opening a level does not.
-`play`, `run` and `sandbox shell` allocate a pseudo terminal on the host, and
-Windows consoles have no implementation of that yet, on either backend. The
-commands say so up front rather than failing halfway through setting a level up,
-and it is tracked as
-[issue #138](https://github.com/JoottunAtish/ShellForge/issues/138).
-
-WSL is a real Linux machine, so the game runs there normally, and Docker Desktop
-shares one daemon between Windows and WSL, so nothing is built or downloaded a
-second time. You need a general purpose distribution to play from, which is not
-the `shellforge-sandbox` one step 6 imported:
-
 ```powershell
-wsl --install -d Ubuntu
+shellforge play
 ```
 
-It asks you to choose a username and a password for that distribution. Then, in
-the Ubuntu window it opens, install Go if you do not have it there
-(`sudo apt update && sudo apt install -y golang-go`), and build from the clone
-you already made in step 6:
-
-```bash
-cd /mnt/c/Users/you/ShellForge
-go build -o bin/shellforge ./cmd/shellforge
-./bin/shellforge play
-```
-
-[windows-needs-wsl](05-troubleshooting.md#windows-needs-wsl) has the same
-instructions, and says what to do if `docker version` does not work inside
-Ubuntu.
-
-Your progress is a file in the home directory of whichever side you are on, so
-play from the same place each time or you will start again from `nav-01`.
+That is it. Windows Terminal is the nicer place to run it, because it renders
+colour and box drawing properly, but the classic console works too.
 
 `play` picks your next level, says which one and why, provisions it, and prints
 the briefing. Read it, then type Linux commands at the prompt. `check` tells you

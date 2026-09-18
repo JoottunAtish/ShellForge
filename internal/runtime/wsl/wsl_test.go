@@ -877,7 +877,11 @@ func TestProvisionStartsAfterTerminatingAnAlreadyRunningDistribution(t *testing.
 
 func TestCapabilitiesMatchTheTicket(t *testing.T) {
 	rt := &wslRuntime{distro: sandboxDistro}
-	want := shellforgeruntime.Caps{Networking: true, MultiUser: true}
+	// InteractiveShell arrived with issue #77. It is true because the
+	// pseudo terminal moved inside the distribution (issue #138): this
+	// backend used to allocate one on the host with creack/pty, which has
+	// no Windows implementation, and Windows is the only host it runs on.
+	want := shellforgeruntime.Caps{Networking: true, MultiUser: true, InteractiveShell: true}
 	got1 := rt.Capabilities()
 	got2 := rt.Capabilities()
 	if got1 != want {

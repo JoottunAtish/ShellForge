@@ -57,15 +57,6 @@ Invoke-WebRequest -Uri https://raw.githubusercontent.com/JoottunAtish/ShellForge
 powershell -ExecutionPolicy Bypass -Scope Process -File install.ps1
 ```
 
-**On Windows, play from inside WSL.** The PowerShell build does everything
-except open a level. `play`, `run` and `sandbox shell` allocate a pseudo
-terminal on the host, and Windows consoles have no implementation of that yet,
-on either backend
-([#138](https://github.com/JoottunAtish/ShellForge/issues/138)). They say so up
-front rather than failing halfway. Run the Linux line above from inside your WSL
-distribution and play there instead: Docker Desktop shares one daemon with WSL,
-so it is the same sandbox and nothing is built twice.
-
 Then:
 
 ```
@@ -73,11 +64,6 @@ shellforge doctor    # checks your machine and tells you how to fix anything
 shellforge init      # sets up the sandbox (one time, a few minutes)
 shellforge play      # start
 ```
-
-**One known rough edge in v0.1.0:** `shellforge init` needs a clone of this
-repository, because the installers place the binary and not the sandbox image.
-It is tracked as [issue #172](https://github.com/JoottunAtish/ShellForge/issues/172)
-and both install guides give the workaround.
 
 If you have never opened a terminal, start with the
 [Windows install guide](docs/01-install-windows.md), which assumes nothing and

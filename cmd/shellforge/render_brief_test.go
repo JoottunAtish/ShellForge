@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -433,5 +434,80 @@ func TestCommandFooterReachesALevelWithNoObjectives(t *testing.T) {
 
 	if !strings.Contains(b.String(), "`hint`") {
 		t.Errorf("a level with no objectives leaves the learner with no commands: %q", b.String())
+	}
+}
+
+// crlfWriter is what keeps a briefing readable on a terminal that has
+// already hosted one level session and stopped returning the carriage by
+// itself. It has to be idempotent across Write calls, not only within one,
+// because it wraps a renderer that is handed a line at a time.
+func TestCRLFWriterGivesEveryNewlineACarriageReturn(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		writes []string
+		want   string
+	}{
+		{
+			name:   "a bare newline gains a carriage return",
+			writes: []string{"one\ntwo\n"},
+			want:   "one\r\ntwo\r\n",
+		},
+		{
+			name:   "a newline that already has one is left alone",
+			writes: []string{"one\r\ntwo\r\n"},
+			want:   "one\r\ntwo\r\n",
+		},
+		{
+			name:   "a pair split across two writes is not doubled",
+			writes: []string{"one\r", "\ntwo"},
+			want:   "one\r\ntwo",
+		},
+		{
+			name:   "a lone carriage return is untouched",
+			writes: []string{"progress\rdone"},
+			want:   "progress\rdone",
+		},
+		{
+			name:   "no newlines, nothing added",
+			writes: []string{"flat"},
+			want:   "flat",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var sink bytes.Buffer
+			w := &crlfWriter{w: &sink}
+			for _, s := range tc.writes {
+				n, err := w.Write([]byte(s))
+				if err != nil {
+					t.Fatalf("Write(%q): %v", s, err)
+				}
+				// io.Writer reports how much of the caller's input it
+				// consumed, never how many bytes it emitted.
+				if n != len(s) {
+					t.Errorf("Write(%q) reported %d consumed, want %d", s, n, len(s))
+				}
+			}
+			if got := sink.String(); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// hostWriter must leave redirected output exactly as it was: a stray "\r"
+// in `shellforge play > log` is corruption, and every golden test in this
+// package writes to a buffer.
+func TestHostWriterLeavesANonTerminalAlone(t *testing.T) {
+	t.Parallel()
+
+	var sink bytes.Buffer
+	if got := hostWriter(&sink); got != io.Writer(&sink) {
+		t.Fatal("hostWriter wrapped a buffer, want the buffer returned untouched")
 	}
 }

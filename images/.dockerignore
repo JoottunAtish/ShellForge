@@ -1,0 +1,9 @@
+# The build context is the whole of images/, so once `make rootfs` has run,
+# every later `make image` would ship the previous export to the daemon as
+# context: tens of megabytes, every build, for a file the image never reads.
+#
+# out/bin/ is deliberately NOT excluded. That is where `make ptyhost` puts
+# the in-sandbox pseudo terminal host, and the Containerfile copies it in.
+out/*.tar
+out/*.tar.gz
+out/*.sha256

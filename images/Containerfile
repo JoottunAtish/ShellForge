@@ -200,6 +200,21 @@ RUN set -eux; \
 COPY --chmod=0644 rc/instrument.bash /opt/shellforge/rc/instrument.bash
 COPY --chmod=0755 bin/ /opt/shellforge/bin/
 
+# The in-sandbox pseudo terminal host, built by `make ptyhost` into
+# images/out/bin/ before this file is ever read. It is what gives the
+# learner's bash a real Linux pty when the host can only offer pipes, which
+# is every Windows host and, since issue #138, Linux too: one attach path
+# rather than two, so the Windows one cannot rot untested.
+#
+# A built artifact rather than a script, so it is NOT in the tracked bin/
+# directory the COPY above sweeps up: CLAUDE.md forbids committing a binary,
+# and images/out/ is already gitignored.
+#
+# root owned and mode 0755 like everything else here, in a directory the
+# learner cannot write to. A permissions level that chmods its way around
+# /home/learner must not be able to replace the thing hosting its own shell.
+COPY --chmod=0755 out/bin/sf-ptyhost /opt/shellforge/bin/sf-ptyhost
+
 # WSL reads this on import. It is written again by WslRuntime after import
 # because the values matter enough to verify rather than assume, but baking it
 # in means a manually imported rootfs behaves correctly too.

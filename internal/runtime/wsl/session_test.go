@@ -8,7 +8,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/creack/pty"
+	"github.com/JoottunAtish/ShellForge/internal/platform/ux"
 
 	"github.com/JoottunAtish/ShellForge/internal/runtime"
 )
@@ -173,33 +173,35 @@ func TestAttachArgvConstruction(t *testing.T) {
 	}
 }
 
-// TestAttachStartErrorReportsWindowsPtyUnsupportedThroughUxFail covers the
-// error path Attach cannot exercise on this host: creack/pty's pty.Start
-// returns ErrUnsupported unconditionally on every Windows build, and
-// Windows is the only host the WSL backend runs on, so before this a
-// learner reaching a level here saw the bare Go error
-// "wsl.exe --exec: unsupported" with no remediation and no doc anchor.
-func TestAttachStartErrorReportsWindowsPtyUnsupportedThroughUxFail(t *testing.T) {
-	err := attachStartError(pty.ErrUnsupported)
-	if !hasDocAnchor(err, "windows-needs-wsl") {
-		t.Errorf("attachStartError(pty.ErrUnsupported) = %v, want DocAnchor windows-needs-wsl", err)
-	}
-	if !errors.Is(err, pty.ErrUnsupported) {
-		t.Errorf("attachStartError(pty.ErrUnsupported) = %v, want it to wrap pty.ErrUnsupported", err)
-	}
-}
-
-// TestAttachStartErrorWrapsAnyOtherFailurePlainly asserts the
-// windows-needs-wsl treatment is specific to pty.ErrUnsupported and does
-// not swallow an unrelated pty.Start failure under the same remediation.
-func TestAttachStartErrorWrapsAnyOtherFailurePlainly(t *testing.T) {
+// TestAttachStartErrorGoesThroughUxFail pins what survived issue #138.
+//
+// This test used to assert that attachStartError mapped creack/pty's
+// ErrUnsupported to the windows-needs-wsl anchor. That mapping is gone
+// because the condition is: the pseudo terminal is allocated inside the
+// distribution by cmd/sf-ptyhost now, so there is none on this side to fail
+// to allocate, and the refusal it justified has been deleted along with it.
+//
+// What has not changed, and is what this asserts instead, is
+// non-negotiable rule 6: whatever does go wrong starting `wsl.exe --exec`
+// still reaches the learner with a remediation and a doc anchor rather than
+// as a bare Go error.
+func TestAttachStartErrorGoesThroughUxFail(t *testing.T) {
 	other := errors.New("boom")
 	err := attachStartError(other)
-	if hasDocAnchor(err, "windows-needs-wsl") {
-		t.Errorf("attachStartError(%v) = %v, want no windows-needs-wsl anchor for an unrelated failure", other, err)
+
+	if !hasDocAnchor(err, "sandbox-unhealthy") {
+		t.Errorf("attachStartError(%v) = %v, want DocAnchor sandbox-unhealthy", other, err)
 	}
 	if !errors.Is(err, other) {
 		t.Errorf("attachStartError(%v) = %v, want it to wrap the original error", other, err)
+	}
+
+	var uxErr *ux.Error
+	if !errors.As(err, &uxErr) {
+		t.Fatalf("attachStartError(%v) = %T, want a *ux.Error", other, err)
+	}
+	if uxErr.Remediation == "" {
+		t.Error("attachStartError produced no remediation; non-negotiable rule 6 requires one")
 	}
 }
 

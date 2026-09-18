@@ -294,8 +294,18 @@ def test_nothing_outside_the_target_directory_was_written(
 
     changed_or_new = {rel for rel in after if after.get(rel) != before.get(rel)}
     assert changed_or_new, "expected the installer to have written something"
+
+    # Two allowed destinations, and no third. The bin directory holds the
+    # binary; the cache directory holds the sandbox rootfs, which issue
+    # #172 added here because that is where internal/runtime looks for it.
+    # Both are directories the program is allowed to write to, and this
+    # test exists to catch a write to anything else, not to pin the count.
+    allowed = (
+        os.path.join(".local", "bin"),
+        os.path.join(".cache", "shellforge"),
+    )
     for rel in changed_or_new:
-        assert rel.startswith(os.path.join(".local", "bin")), rel
+        assert rel.startswith(allowed), rel
 
 
 def test_a_failing_doctor_does_not_fail_the_install(tmp_path: pathlib.Path) -> None:
@@ -400,6 +410,139 @@ def test_checksum_mismatch_removes_its_temporary_directory(
     assert "checksum" in combined
     leftover = list(tmp_root.glob("shellforge-install.*"))
     assert leftover == [], leftover
+
+
+# ---------------------------------------------------------------------------
+# The sandbox rootfs (issue #172)
+# ---------------------------------------------------------------------------
+
+
+def _rootfs_dest(tmp_path: pathlib.Path) -> pathlib.Path:
+    """Where the rootfs must land, spelled out rather than derived.
+
+    This is platform.RootfsCachePath's answer for Linux and macOS written
+    by hand on purpose. internal/platform resolves it in Go, install.sh
+    resolves it in POSIX sh, and internal/runtime reads it back; a literal
+    here is what turns a drift between any two of those into a failing test
+    rather than a `shellforge init` that cannot find a file the installer
+    definitely wrote.
+    """
+    return tmp_path / "home" / ".cache" / "shellforge" / "rootfs" / "rootfs.tar.gz"
+
+
+def _sums_with_bad_rootfs_digest(tmp_path: pathlib.Path) -> None:
+    """Rewrite the fixture SHA256SUMS with the rootfs digest flipped.
+
+    The fixture's own SHA256SUMS.wrong flips the linux_amd64 line, which
+    makes the binary fail verification before the rootfs is ever fetched.
+    To exercise the rootfs refusal the binary has to verify cleanly first.
+    """
+    version_dir = tmp_path / "release" / "download" / DEFAULT_VERSION
+    sums = version_dir / "SHA256SUMS"
+    out = []
+    for line in sums.read_text(encoding="utf-8").splitlines():
+        digest, _, name = line.partition("  ")
+        if name == "rootfs.tar.gz":
+            flipped = "0" if digest[-1] != "0" else "1"
+            digest = digest[:-1] + flipped
+        out.append(f"{digest}  {name}")
+    sums.write_text("\n".join(out) + "\n", encoding="utf-8")
+
+
+def test_rootfs_is_placed_where_the_runtime_looks_for_it(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The whole point of issue #172: install, then init has an image.
+
+    Before this, both installers placed the binary and nothing else, so the
+    very next command the install guide gives failed on any machine without
+    a clone of the repository.
+    """
+    download_root = _build_fixture_release(tmp_path)
+
+    result = _run_install(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    dest = _rootfs_dest(tmp_path)
+    assert dest.is_file(), f"no rootfs at {dest}"
+
+    published = download_root / DEFAULT_VERSION / "rootfs.tar.gz"
+    assert dest.read_bytes() == published.read_bytes()
+    assert dest.stat().st_mode & 0o777 == 0o644
+
+
+def test_rootfs_checksum_mismatch_places_no_rootfs(tmp_path: pathlib.Path) -> None:
+    """A mismatch must leave the cache path empty, not partly written.
+
+    defaultRootfs and ensureImage both check this exact path first, so a
+    truncated or unverified file left at it is one `shellforge init` would
+    import. Verification happens before placement, and this is the test
+    that says so for the rootfs specifically.
+    """
+    _build_fixture_release(tmp_path)
+    _sums_with_bad_rootfs_digest(tmp_path)
+
+    result = _run_install(tmp_path)
+
+    assert result.returncode != 0
+    combined = (result.stdout + result.stderr).lower()
+    assert "checksum" in combined
+    assert "rootfs.tar.gz" in combined
+
+    dest = _rootfs_dest(tmp_path)
+    assert not dest.exists(), f"a rootfs was placed at {dest} despite a bad digest"
+    partial = dest.parent / ".rootfs.tar.gz.partial"
+    assert not partial.exists(), f"a partial file was left at {partial}"
+
+
+def test_skip_rootfs_installs_the_binary_only(tmp_path: pathlib.Path) -> None:
+    """The escape hatch for a developer with a clone, and for CI."""
+    _build_fixture_release(tmp_path)
+
+    result = _run_install(tmp_path, env={"SHELLFORGE_SKIP_ROOTFS": "1"})
+
+    assert result.returncode == 0, result.stderr
+    assert _bin_path(tmp_path).is_file()
+    assert not _rootfs_dest(tmp_path).exists()
+
+
+def test_rootfs_is_not_downloaded_on_arm64(tmp_path: pathlib.Path) -> None:
+    """The release publishes one rootfs and it is built on an amd64 runner.
+
+    Importing it on arm64 would produce a sandbox whose every binary is the
+    wrong architecture: `exec format error` on the first command, from a
+    file whose checksum verified perfectly. v0.1 is amd64 for the image,
+    which docs/design/DAY-3-TICKETS.md records as a deliberate cut, so the
+    installer says so instead of placing something broken.
+    """
+    _build_fixture_release(tmp_path)
+    fake_dir = _fake_uname_dir(tmp_path, "Linux", "aarch64", "arm64")
+
+    result = _run_install(
+        tmp_path,
+        env={"PATH": f"{fake_dir}:{os.environ.get('PATH', '/usr/bin:/bin')}"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert _bin_path(tmp_path).is_file()
+    assert not _rootfs_dest(tmp_path).exists()
+
+    combined = (result.stdout + result.stderr).lower()
+    assert "arm64" in combined
+    assert "amd64" in combined
+
+
+def test_rootfs_follows_xdg_cache_home(tmp_path: pathlib.Path) -> None:
+    """os.UserCacheDir honours XDG_CACHE_HOME, so install.sh must too."""
+    _build_fixture_release(tmp_path)
+    xdg = tmp_path / "xdg-cache"
+
+    result = _run_install(tmp_path, env={"XDG_CACHE_HOME": str(xdg)})
+
+    assert result.returncode == 0, result.stderr
+    dest = xdg / "shellforge" / "rootfs" / "rootfs.tar.gz"
+    assert dest.is_file(), f"no rootfs at {dest}"
+    assert not _rootfs_dest(tmp_path).exists()
 
 
 # ---------------------------------------------------------------------------

@@ -249,36 +249,56 @@ for that one command whatever the environment says.
 
 ## windows-needs-wsl
 
-**You'll see:** An error opening an interactive sandbox shell, when you run
-`shellforge run` or `shellforge sandbox shell` from PowerShell or the Windows
-command prompt.
+**This no longer happens, and the anchor is kept only so older links still
+land somewhere useful.**
 
-**What it means:** Opening an interactive sandbox shell allocates a pseudo
-terminal on the host, and the library Shellforge uses for that has no Windows
-implementation at all. This is true of the Docker backend, and it is also true
-of the WSL backend's own interactive attach, even though the WSL backend can
-already run one-shot commands and push files into the sandbox by shelling out
-to `wsl.exe` directly. Attaching an interactive shell is the one thing that
-does not yet work natively on Windows. Until Windows console support is built,
-the game runs from inside WSL, which is a real Linux host.
+Shellforge used to refuse `shellforge run`, `shellforge play` and
+`shellforge sandbox shell` from PowerShell or the Windows command prompt. The
+reason was real: opening a shell allocated a pseudo terminal on the **host**,
+and the library used for that has no Windows implementation, on either backend.
+
+That is fixed. The pseudo terminal is allocated inside the sandbox now, and the
+host exchanges plain bytes with it over pipes, which is how an SSH client has
+always worked on Windows. `shellforge play` works from PowerShell and from
+Windows Terminal, and so does everything else.
+
+You do not need WSL as a place to run Shellforge from any more. You still need
+WSL2 itself, because that is what the sandbox runs in; see
+[the Windows install guide](01-install-windows.md).
+
+If a shell does fail to open now, it is one of these instead:
+
+- [sandbox-needs-rebuild](#sandbox-needs-rebuild), if your sandbox predates this
+  change.
+- [sandbox-missing](#sandbox-missing) or [sandbox-unhealthy](#sandbox-unhealthy),
+  if it is not there or not answering.
+
+---
+
+## sandbox-needs-rebuild
+
+**You'll see:** `shellforge play` or `shellforge sandbox shell` stops saying the
+sandbox was built before the interactive shell moved inside it.
+
+**What it means:** Your sandbox image or WSL distribution was provisioned by an
+older Shellforge, before the pseudo terminal moved from the host into the
+sandbox. Upgrading the binary does not replace an image that is already there,
+so the sandbox is missing the piece the new shell needs. Nothing is broken and
+nothing of yours is at risk: your progress lives outside the sandbox.
 
 **Fix:**
 
-1. Open your WSL distribution.
-2. Change to the repository directory.
-3. Build and run there:
-
-```bash
-go build -o bin/shellforge ./cmd/shellforge
-./bin/shellforge run nav-01
+```
+shellforge sandbox rebuild
 ```
 
-Docker Desktop's WSL integration shares one daemon between Windows and WSL, so
-the sandbox image is not rebuilt and nothing is downloaded twice.
+That replaces the sandbox from the current image and takes a minute or two. Your
+progress, XP and achievements are untouched: they live in the progress database
+on your own machine, not inside the sandbox.
 
-**Still stuck?** Check that `docker version` works inside WSL. If it does not,
-turn on WSL integration for your distribution in Docker Desktop, under Settings,
-Resources, WSL integration.
+**Still stuck?** If `rebuild` itself fails, read what it printed. On Linux it is
+usually [docker-daemon-down](#docker-daemon-down); on Windows,
+[wsl-import-blocked](#wsl-import-blocked).
 
 ---
 
@@ -314,14 +334,27 @@ shellforge sandbox rebuild
 **You'll see:** `shellforge init` on Linux stops with `could not find
 images/Containerfile: no go.mod between ... and the filesystem root`.
 
-**What it means:** v0.1.0 builds the sandbox image from this repository's own
-`images/Containerfile`, and it looks for that file by walking up from the
-directory you are standing in. If you installed with `install.sh` and have no
-clone, there is nothing to find. This is a known bug rather than anything you
-did, and it is tracked as
-[issue #172](https://github.com/JoottunAtish/ShellForge/issues/172).
+**What it means:** `init` has three ways to get a sandbox image and none of them
+worked. It uses the image if you already have one; otherwise it builds from this
+repository's own `images/Containerfile`, found by walking up from the directory
+you are standing in; otherwise it imports the `rootfs.tar.gz` the installer
+downloads into `~/.cache/shellforge/rootfs`. You are seeing this because there is
+no image, no clone above you, and nothing in the cache.
 
-**Fix:** Run `init` once from inside a clone:
+The usual cause is an install that did not finish, or one run with
+`SHELLFORGE_SKIP_ROOTFS=1`. On arm64 it is expected: the published image is
+amd64, so the installer skips it deliberately and `init` has to build.
+
+**Fix:** Run the installer again. On amd64 it fetches and verifies the image, and
+`init` then imports it:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/JoottunAtish/ShellForge/main/scripts/install.sh | sh
+shellforge init
+```
+
+On arm64, or if you would rather build it yourself, run `init` once from inside a
+clone:
 
 ```bash
 git clone https://github.com/JoottunAtish/ShellForge.git
@@ -336,6 +369,36 @@ Once the image exists, Shellforge finds it by name and never rebuilds, so
 this is not your problem: read what Docker printed and check
 [docker-daemon-down](#docker-daemon-down) and
 [docker-permission-denied](#docker-permission-denied).
+
+---
+
+## ptyhost-not-built
+
+**You'll see:** `shellforge init`, run from inside a clone of this repository,
+stops with `images/out/bin/sf-ptyhost does not exist`.
+
+**What it means:** You are building the image from source, and one piece of it is
+not in the repository. `cmd/sf-ptyhost` is the small program that gives your
+shell a real Linux terminal from inside the sandbox. It runs in there rather than
+on your machine, so it is compiled for the sandbox's own architecture rather than
+yours, and the result is a binary, which this repository does not carry.
+
+`make image` and `make rootfs` build it for you. A bare `shellforge init` does
+not, and it prefers building from a clone over the image the installer
+downloads, so running it from the repository is what finds this.
+
+**Fix:**
+
+```bash
+make ptyhost
+shellforge init
+```
+
+On Windows, `.\make.ps1 ptyhost` instead of the first line.
+
+If you only wanted to play rather than to build, run `shellforge init` from
+anywhere outside the clone. It will import the image the installer downloaded
+and never touch the Containerfile.
 
 ---
 
@@ -378,29 +441,38 @@ open an issue with the output of `shellforge doctor --json`.
 **You'll see:** `init` reports that it cannot find the Linux system image to import.
 
 **What it means:** The Windows sandbox is built from a rootfs tarball. Shellforge
-looks for one you built yourself first, then for one it downloaded earlier. Neither
-was there.
+looks for one you built yourself first, then for the one the installer downloads
+into `%LOCALAPPDATA%\shellforge\cache\rootfs`. Neither was there.
 
-**If you installed with `install.ps1`, this is a known bug and not something you
-did.** v0.1.0's installer places the binary and nothing else, so the tarball it
-then looks for was never fetched. It is tracked as
-[issue #172](https://github.com/JoottunAtish/ShellForge/issues/172).
+The usual cause is an install that did not finish, or one run with `-SkipRootfs`.
+The download is tens of megabytes, so it is the step most likely to have been
+interrupted.
 
-**Fix:** Build the tarball from a clone of the repository. This needs Git, Go and
-a working Docker, and takes a few minutes:
+**Fix:** Run the installer again. It fetches the image, checks its checksum, and
+puts it where `init` looks:
 
-```bash
-git clone https://github.com/JoottunAtish/ShellForge.git
-cd ShellForge
-make rootfs
+```powershell
+Invoke-WebRequest -Uri https://raw.githubusercontent.com/JoottunAtish/ShellForge/main/scripts/install.ps1 -OutFile install.ps1
+powershell -ExecutionPolicy Bypass -Scope Process -File install.ps1
+shellforge init
 ```
 
-That writes `images/out/rootfs.tar.gz`. Run `shellforge init` from inside that
-same directory and it finds it. Once the distribution is imported you never need
-the clone again.
+If you would rather build the tarball yourself, that needs Git, Go and a working
+Docker, and takes a few minutes:
 
-**Still stuck?** If `make rootfs` fails rather than `init`, the problem is the
-image build rather than this. Read what it printed and check
+```powershell
+git clone https://github.com/JoottunAtish/ShellForge.git
+cd ShellForge
+.\make.ps1 rootfs
+shellforge init
+```
+
+That writes `images\out\rootfs.tar.gz`, which `init` finds when run from that
+same directory. Once the distribution is imported you never need the clone again.
+
+**Still stuck?** If the download itself keeps failing, check your network and any
+proxy. If `.\make.ps1 rootfs` fails rather than `init`, the problem is the image
+build rather than this: read what it printed and check
 [docker-daemon-down](#docker-daemon-down) first.
 
 ---

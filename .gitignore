@@ -12,6 +12,11 @@
 /build/
 /shellforge
 /shellforge.exe
+# cmd/sf-ptyhost builds to the repo root by default, and it is a linux
+# binary rather than a .exe, so nothing above catches it. It reached main
+# once that way: 2.9 MB of unstripped ELF in commit 8fd9dc1. `make ptyhost`
+# writes it to images/out/bin/, which /images/out/ below already covers.
+/sf-ptyhost
 *.exe
 *.test
 *.out

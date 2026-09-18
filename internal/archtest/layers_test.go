@@ -22,6 +22,15 @@ const modulePath = "github.com/JoottunAtish/ShellForge"
 var layers = map[string]int{
 	"cmd/shellforge": 5,
 
+	// The in-sandbox pseudo terminal host (issue #138). A command, so L5,
+	// though the layering barely applies to it: it is built into the
+	// sandbox image rather than the host binary and imports nothing from
+	// this module at all. It is registered here because the test below
+	// fails any package with no layer assigned, which is the right default.
+	// It is deliberately NOT in runtimeImplAllowed: it imports no runtime
+	// backend and must not start.
+	"cmd/sf-ptyhost": 5,
+
 	"internal/game":              4,
 	"internal/game/bus":          4,
 	"internal/game/score":        4,
@@ -38,6 +47,12 @@ var layers = map[string]int{
 
 	"internal/runtime": 1,
 	"internal/sandbox": 1,
+
+	// The in-sandbox pseudo terminal driver (issue #138). L1, beside the
+	// backends. Deliberately NOT under internal/runtime/: that prefix is
+	// confined by runtimeImplAllowed below to cmd/shellforge,
+	// internal/runtime and internal/sandbox, and both backends need this.
+	"internal/sandboxpty": 1,
 
 	// Runtime backends. Registered ahead of Day 1 so adding them does not trip
 	// the "no layer assigned" check. Rule B below is what actually confines
