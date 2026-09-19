@@ -54,7 +54,7 @@ curl -fsSL https://raw.githubusercontent.com/JoottunAtish/ShellForge/main/script
 
 ```powershell
 Invoke-WebRequest -Uri https://raw.githubusercontent.com/JoottunAtish/ShellForge/main/scripts/install.ps1 -OutFile install.ps1
-powershell -ExecutionPolicy Bypass -Scope Process -File install.ps1
+powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
 Then:

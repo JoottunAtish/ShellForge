@@ -3,7 +3,7 @@
     Shellforge installer for Windows.
 
 .DESCRIPTION
-    powershell -ExecutionPolicy Bypass -Scope Process -File install.ps1
+    powershell -ExecutionPolicy Bypass -File install.ps1
 
     Verification happens before placement. Test-Checksum runs before
     Install-Binary ever does, and Install-Binary cannot run at all unless
@@ -22,9 +22,16 @@
     cache `shellforge init` has nothing to import on a machine with no clone
     of the repository, which is issue #172.
 
-    -Scope Process is all this script needs. It never changes the machine or
-    user execution policy, and it never elevates: no Start-Process -Verb
+    The -ExecutionPolicy Bypass above is all this script needs, and it applies
+    to that one powershell.exe and nothing else. It never changes the machine
+    or user execution policy, and it never elevates: no Start-Process -Verb
     RunAs, anywhere.
+
+    Not -Scope Process. That is a Set-ExecutionPolicy parameter, and
+    powershell.exe does not take it: passing it makes powershell treat the
+    rest of the line as a command and fail with "The term '-Scope' is not
+    recognized", before this script has run at all. It was in every published
+    copy of this command until issue #178.
 
 .PARAMETER Version
     A tag such as v0.1.0. Default: the latest release.

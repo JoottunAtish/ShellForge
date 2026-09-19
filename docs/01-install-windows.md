@@ -117,17 +117,17 @@ In an ordinary terminal, not an Administrator one:
 
 ```powershell
 Invoke-WebRequest -Uri https://raw.githubusercontent.com/JoottunAtish/ShellForge/main/scripts/install.ps1 -OutFile install.ps1
-powershell -ExecutionPolicy Bypass -Scope Process -File install.ps1
+powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
 The first line downloads the installer. The second runs it.
 
 **Read that URL before you run it.** It is this repository's own
 `scripts/install.ps1` and nothing else, and you can open that same address in a
-browser and read the whole file first. `-ExecutionPolicy Bypass -Scope Process`
-allows an unsigned script to run in this one window only: it changes nothing
-about your machine or your user account, and it stops applying the moment you
-close the window.
+browser and read the whole file first. `-ExecutionPolicy Bypass` allows an
+unsigned script to run in this one window only: it changes nothing about your
+machine or your user account, and it stops applying the moment you close the
+window.
 
 What the installer does, in full:
 
