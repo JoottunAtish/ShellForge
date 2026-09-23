@@ -85,3 +85,64 @@ func TestUnsafeLevelRootNamesTheDotDotSegmentBeforeCleaning(t *testing.T) {
 		})
 	}
 }
+
+// TestLevelRootCollidesWithStateDirRefusals is a refusal table, in the shape
+// destructive-safety requires for anything bound for an rm -rf. Every case
+// here is a path that passes UnsafeLevelRoot cleanly and would still destroy
+// the learner's progress if it were used.
+func TestLevelRootCollidesWithStateDirRefusals(t *testing.T) {
+	const state = DefaultStateDir
+
+	cases := []struct {
+		name string
+		root string
+	}{
+		{"the state directory itself", DefaultStateDir},
+		{"the state directory with a trailing slash", DefaultStateDir + "/"},
+		{"an uncleaned spelling of the state directory", "/home/learner/./.shellforge"},
+		{"a directory inside the state directory", DefaultStateDir + "/levels"},
+		{"a level's own marker directory", DefaultStateDir + "/levels/nav-01"},
+		// The direction that actually destroys progress, and the one a
+		// plausible typo produces.
+		{"the learner home, which contains the state directory", "/home/learner"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := LevelRootCollidesWithStateDir(tc.root, state); err == nil {
+				t.Errorf("LevelRootCollidesWithStateDir(%q, %q) = nil, want a refusal: reset and teardown are rm -rf on this path", tc.root, state)
+			}
+		})
+	}
+}
+
+func TestLevelRootCollidesWithStateDirAccepts(t *testing.T) {
+	const state = DefaultStateDir
+
+	cases := []string{
+		"/home/learner/quest",
+		"/home/learner/quest/",
+		"/home/learner/atlas/logs",
+		// A sibling whose name merely starts with the state directory's,
+		// which a naive prefix test without the separator would refuse.
+		"/home/learner/.shellforge-backup",
+	}
+
+	for _, root := range cases {
+		t.Run(root, func(t *testing.T) {
+			if err := LevelRootCollidesWithStateDir(root, state); err != nil {
+				t.Errorf("LevelRootCollidesWithStateDir(%q, %q) = %v, want nil", root, state, err)
+			}
+		})
+	}
+}
+
+// TestDefaultStateDirIsUnderTheLearnerHome pins the one property everything
+// else here assumes. A state directory outside the learner home would make
+// every collision check above vacuous and would put the journal somewhere
+// the sandbox user may not be able to write.
+func TestDefaultStateDirIsUnderTheLearnerHome(t *testing.T) {
+	if err := UnsafeLevelRoot(DefaultStateDir); err != nil {
+		t.Errorf("DefaultStateDir %q does not satisfy UnsafeLevelRoot: %v", DefaultStateDir, err)
+	}
+}

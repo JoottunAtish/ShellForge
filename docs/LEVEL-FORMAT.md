@@ -209,10 +209,16 @@ is what makes it safe to run a level's setup twice in a row, or against a level
 root a previous run left dirty.
 
 Every level's world lives under `setup.root`, and `setup.root` must resolve
-under `/home/learner/`. The engine also refuses a `setup.root` that equals,
-contains, or is contained by the state directory (below), because a level whose
-root reached that far would let its own reset delete the journal, the command
-history, and every other level's progress marker.
+under `/home/learner/`. A `setup.root` that equals, contains, or is contained
+by the state directory (below) is refused, because a level whose root reached
+that far would let its own reset delete the journal, the command history, and
+every other level's progress marker.
+
+Both `shellforge author validate` and the engine refuse it, and the two are
+not redundant. The validator checks against the default state directory, so
+an author hears about the collision while writing the level rather than while
+playing it. The engine checks against the state directory actually in force,
+which an embedder can move, and it is the check that stops the delete.
 
 ### The state directory and the SETUP_OK marker
 

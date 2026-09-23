@@ -464,17 +464,28 @@ func (v *validator) validateSetup(lvl *Level) {
 }
 
 // validateSetupRoot refuses any level root that is not strictly inside the
-// sandbox learner's home directory.
+// sandbox learner's home directory, or that collides with the state
+// directory.
 //
-// The lexical rule itself lives in platform.UnsafeLevelRoot, shared with the
-// runner in internal/content/setup and internal/sandbox: reset and teardown
-// are rm -rf on this path, so all three callers must agree on what it can
-// never point at. This wrapper keeps the validator's own voice: an author
-// reads this message, not a runtime refusal, so it is phrased as what a
-// level.yaml field must satisfy rather than as a runtime "refusing to".
+// Both lexical rules live in internal/platform, shared with the runner in
+// internal/content/setup and internal/sandbox: reset and teardown are rm -rf
+// on this path, so all callers must agree on what it can never point at.
+// This wrapper keeps the validator's own voice: an author reads this
+// message, not a runtime refusal, so it is phrased as what a level.yaml
+// field must satisfy rather than as a runtime "refusing to".
+//
+// The state directory check is deliberately against platform.DefaultStateDir
+// rather than against a configured one. A shipped pack runs under the
+// default; WithStateDir exists for tests and embedders, and for those the
+// runner's own refusal is still the gate that stops the delete. This is
+// defence in depth, moving a refusal from play time to authoring time, not a
+// replacement for it. See issue #116.
 func validateSetupRoot(root string) error {
 	if reason := platform.UnsafeLevelRoot(root); reason != nil {
 		return fmt.Errorf("%q cannot be a level root: %v. reset and teardown are rm -rf on this path, so it must be a directory strictly inside %s", root, reason, learnerHomePrefix)
+	}
+	if reason := platform.LevelRootCollidesWithStateDir(root, platform.DefaultStateDir); reason != nil {
+		return fmt.Errorf("%q cannot be a level root: %v. reset and teardown are rm -rf on this path, so a root that collides with the state directory would delete the journal, the command history, and every other level's progress marker", root, reason)
 	}
 	return nil
 }

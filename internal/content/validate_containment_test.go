@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/JoottunAtish/ShellForge/internal/platform"
 )
 
 // The refusal tests for the two containment rules this package owns:
@@ -72,6 +74,46 @@ func TestSetupRootAcceptsALevelWorld(t *testing.T) {
 		report := validateFixture(t, fixturePack("", lvl))
 		requireNoProblem(t, report, "nav-01", "setup.root")
 	}
+}
+
+// The state directory collision cases (issue #116). The runner has refused
+// these since #93; the validator did not, so `shellforge author validate`
+// accepted a pack the engine would refuse at play time. Moving that refusal
+// to authoring time is the whole point of having a validator.
+//
+// Each of these passes the /home/learner/ prefix rule cleanly. That is what
+// makes them worth their own tests rather than a line in the table above:
+// they are the roots that look fine and would take the journal, the command
+// history and every other level's progress marker with them.
+
+func TestSetupRootRefusesTheStateDirectoryItself(t *testing.T) {
+	requireRootRefused(t, platform.DefaultStateDir)
+}
+
+func TestSetupRootRefusesADirectoryInsideTheStateDirectory(t *testing.T) {
+	requireRootRefused(t, platform.DefaultStateDir+"/levels")
+}
+
+// TestSetupRootRefusesARootContainingTheStateDirectory is the direction that
+// actually destroys progress, and the one a plausible typo produces: an
+// author who writes /home/learner rather than /home/learner/quest.
+//
+// It is already refused by the learner-home rule, so this test exists to
+// pin the reason as well as the outcome. If the prefix rule were ever
+// relaxed, this must still fail.
+func TestSetupRootRefusesARootContainingTheStateDirectory(t *testing.T) {
+	requireRootRefused(t, "/home/learner")
+}
+
+// TestSetupRootAcceptsASiblingOfTheStateDirectory is the other half. A naive
+// prefix test without the separator would refuse this, and it is a perfectly
+// legal level world.
+func TestSetupRootAcceptsASiblingOfTheStateDirectory(t *testing.T) {
+	lvl := defaultLevel()
+	lvl.Setup = "setup:\n  root: " + platform.DefaultStateDir + "-backup\n"
+
+	report := validateFixture(t, fixturePack("", lvl))
+	requireNoProblem(t, report, "nav-01", "setup.root")
 }
 
 // TestAssetSourceRefusesEscapingPaths covers the lexical half of source

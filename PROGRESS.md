@@ -5663,6 +5663,79 @@ test for this whole ticket, not part of it, and is still owed: it needs a
 person and two virtual machines, which this session had neither of.
 
 
+### 2026-09-10: the validator learns the state directory rule, and content/doc.go stops contradicting itself (issues #116, #157)
+
+Two `internal/content` corrections in one branch. They share a package and a
+theme, that a written rule and the code had drifted apart, and they touch no
+common line.
+
+**#116: `author validate` now refuses a `setup.root` that collides with the
+state directory.** The runner has refused it since #93. The validator did
+not, so a pack could pass `shellforge author validate` and then be refused at
+play time, which is exactly backwards: moving a refusal from play time to
+authoring time is what a validator is for.
+
+The ticket called the state directory "a real design question", because it is
+per-Runner state that `WithStateDir` can change, so the validator would have
+to know the layout. Two things settled it:
+
+- **Where the rule lives.** `internal/content` cannot import
+  `internal/content/setup`, because setup already imports content and Go
+  refuses the cycle. `internal/platform` (L0) is the only layer both can
+  read, which is the same argument `platform.UnsafeLevelRoot`'s own doc
+  comment already makes for itself. `DefaultStateDir` moved there and
+  `setup.DefaultStateDir` is now an alias, so no call site changed.
+- **Which state directory the validator checks.** The default, and it says
+  so. A shipped pack runs under the default; `WithStateDir` is for tests and
+  embedders, and for those the runner's refusal is still the gate that stops
+  the delete. Defence in depth, not a replacement.
+
+The rule itself is now one implementation,
+`platform.LevelRootCollidesWithStateDir`, called by both. The runner's
+wrapper keeps its own voice and its `ErrUnsafeLevelRoot` sentinel. Writing a
+second copy in the validator was the obvious move and would have been the
+wrong one, for the reason #132 spent a whole branch on.
+
+Both containment directions are tested, and the second is the one that
+matters: a root **inside** the state directory is the obvious case, but a
+root that **contains** it is what actually destroys progress, and it is what
+a plausible typo produces (`/home/learner` instead of `/home/learner/quest`).
+A sibling whose name merely starts with the state directory's,
+`.shellforge-backup`, is accepted, which a prefix test without the separator
+would have refused.
+
+Confirmed by reverting: with the validator's new check removed, the two new
+refusal tests fail naming the exact root that leaked. The shipped 25 level
+pack still reports `valid`, so nothing legitimate was caught by the tightening.
+
+**#157: `internal/content/doc.go` claimed the package may import
+`internal/verify`.** It may not. The two are peers at L3 and neither imports
+the other, which every production file and three separate test comments in
+the package already assumed. `doc.go` was the stale side and it was load
+bearing: `internal/archtest`'s `collectImports` skips every `_test.go` file,
+so a test-only import across that boundary is invisible to the gate, and
+#154's first pass added exactly that on the strength of this comment.
+
+The corrected comment now also records why the package pays for the rule, in
+`packcontent_test.go`'s hand-maintained mirror of `parseScope` and
+`fixture_test.go`'s own TypeChecker fake, so the next reader does not
+"simplify" the cost away. `internal/verify`'s own `doc.go` was checked and
+makes no equivalent false claim in the other direction, so it is unedited, as
+the ticket predicted.
+
+`internal/archtest`'s tables were re-read and left alone: they already encode
+content and verify as non-importing peers, and the ticket was explicit that
+turning up a real gap there meant stopping and opening a separate ticket
+rather than folding an archtest change in here. There was no gap.
+
+Gates run: gofmt, go build, go vet, go test ./..., go test -race on
+internal/content, internal/content/setup and internal/platform, the
+punctuation, allowlist, links, cli-package and layer gates, plus
+`shellforge author validate` against the shipped pack. Not run here:
+govulncheck, gosec, and anything needing a Docker daemon.
+
+---
+
 ## Day 6: hardening, CI, packaging
 
 - [ ] CI green on both platforms
