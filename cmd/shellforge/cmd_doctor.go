@@ -14,7 +14,7 @@ import (
 // docAnchorDataDirUnwritable is the heading in docs/05-troubleshooting.md
 // that explains a data directory Shellforge cannot create or write to. A
 // package-level constant, not an inline literal, so
-// cmd/shellforge/docanchor_test.go can verify it the same way it verifies
+// internal/docanchor can verify it the same way it verifies
 // every other anchor in this package.
 const docAnchorDataDirUnwritable = "progress-db-unwritable"
 

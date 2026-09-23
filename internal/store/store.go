@@ -18,7 +18,14 @@ import (
 
 // Doc anchors for every user-facing failure this package can produce. Each
 // one has a matching heading in docs/05-troubleshooting.md, added in the
-// same commit that introduced it; guards_test.go enforces that locally.
+// same commit that introduced it; internal/docanchor enforces that across
+// the whole module, resolving these constants by name at the ux.Fail call
+// sites below.
+//
+// They stay named constants rather than inlined literals because this
+// package references them by name in its own tests, asserting which anchor
+// a given failure carries. That is a use the doc heading contract does not
+// cover and does not replace.
 const (
 	anchorUnwritable      = "progress-db-unwritable"
 	anchorCorrupt         = "progress-db-corrupt"
