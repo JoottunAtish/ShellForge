@@ -879,7 +879,7 @@ jobs:
         # exist on the Windows leg, so if-no-files-found: ignore keeps that
         # leg's own (unrelated) failures from also failing on a missing path.
         if: failure() && matrix.os == 'ubuntu-latest'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fuzz-crashers
           path: internal/pty/testdata/fuzz/FuzzParser/
@@ -1100,7 +1100,7 @@ jobs:
           echo "OK: rootfs.tar.gz has every required path"
 
       - name: Upload rootfs artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: rootfs
           path: |
